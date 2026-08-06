@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# real secrets — never commit
+.env
+.env.local
+*.pem
+
+# ops artifacts specific to this one deploy, not app code
+es-threads-temporal-key.pem
+instance-id.txt
+sg-id.txt
+
+# contains real AWS credentials by design (matches the org's other Routine
+# skill files) — its authoritative copy lives on S3, not in this repo
+ES-Infographic-Creation-Skill-v1.md
