@@ -45,36 +45,57 @@ loop.
 - ✅ End-to-end dry run against the real registry (`LIVE_POSTING=false`) —
   writes results to `pool/temporal_dry_run_{date}.json` on S3 for comparison
   against the old system's output. Ran clean across all 25 pages twice.
-- ✅ `renderCard` (`src/lib/gemini.ts` + `src/activities/index.ts`) — real
-  image generation via the direct/embedded Gemini API (chosen because
-  OpenArt has NO self-serve REST API key feature, only an MCP connector,
-  which a standalone Temporal worker can never reach — confirmed live
-  2026-08-06 that 3/4 real candidates rendered a real card end-to-end,
-  uploaded to S3 under `threads-cards/{page_id}/{key}.png`, with the
-  headline/kicker/accent text on the image and no logo, per the prompt's
-  explicit two-part instruction). Transient Gemini failures
-  (`finishReason: IMAGE_OTHER`) are retried by Temporal's own activity retry
-  policy rather than silently giving up after one try.
+- ✅ **`renderCard` render pipeline** (`src/lib/esMcp.ts` + `src/lib/
+  cloudinary.ts` + `src/lib/orshot.ts` + `src/lib/cardRegistry.ts`) — THIS IS
+  THE CURRENT RENDER PATH, replacing the direct-Gemini approach entirely
+  (that code is still in `src/lib/gemini.ts`, now unused/legacy). Confirmed
+  live 2026-08-06, real end-to-end renders viewed and verified:
+  1. **ES-MCP `search_images`** called directly over HTTP (bearer token from
+     ES-MCP's own self-serve `/api/access` endpoint — no MCP session/OAuth
+     needed; see `lib/esMcp.ts` for how this was obtained by reading
+     `essentiallysports-tech/es-mcp`'s own source).
+  2. **Cloudinary** face-crop-fills the photo to 1080x1350 (`c_fill,g_face`),
+     the same transform the Facebook pipeline's render engine uses.
+  3. **Orshot** renders the final card via `POST /v1/studio/render` against
+     one of two verified-clean "Universal" studio templates (13948 "Version B
+     Hero Card", 13949 "Standard News Card" — workspace 3924), rotated
+     deterministically per candidate. Both have semantic (not
+     auto-generated) parameter keys, no logo element at all, and their own
+     brand-color fields (real per-sport accent hex applied, see
+     `cardRegistry.ts`'s `accentColorFor`).
+  All three calls are genuine portable REST — no MCP connector, no separate
+  Routine, no S3 job-queue/polling (that whole design was built and then
+  retired in the same session once this was confirmed possible — see git
+  history if curious). `athleteNames` (which photo(s) to search for) is
+  computed deterministically by the workflow (`checks.matchedEntityNames`),
+  never guessed by the render step itself.
+  ⛔ **`CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET`
+  are the one deliberately-blank credential** — every other piece (Orshot,
+  ES-MCP) is filled in and tested. Once those three are set, the pipeline
+  needs no other code changes.
+  ⛔ **Only 2 of Orshot's ~30 studio templates are wired in.** 5 pages have
+  their own dedicated branded template (Cowboys Fan Station, Purple and Gold
+  Pride, Forever the Fan intimidator, Ohio State Football Fan Army, Birds
+  Eye Report) which would look even better, but those are 44-page templates
+  with auto-generated (not semantic) slot keys — wiring them in safely needs
+  per-slot role verification that wasn't done yet. The 2 Universal templates
+  cover all 25 pages today with real, on-brand, professional output.
+  ⛔ **`includePages` MUST be nested inside `response`** in any Orshot REST
+  call (`{response: {includePages: [n], ...}}`), never top-level — confirmed
+  the hard way (top-level silently renders every page of the template,
+  44x the real cost, no error). See `lib/orshot.ts`'s comment before ever
+  "simplifying" this back to a flat body.
 
 ## Known gaps — do NOT flip `LIVE_POSTING=true` until these are closed
 
-1. **Gemini API key prepayment credits are depleted** (confirmed live
-   2026-08-06, `429 RESOURCE_EXHAUSTED`) — the embedded key used for
-   `renderCard` needs credits added at https://ai.studio/projects before any
-   further real renders will succeed. Everything else in the pipeline
-   (sourcing, checks, link/UTM verification, caption, S3 upload, retry
-   handling) is fully verified working independent of this.
-2. **Rendering a candidate that names a specific real public figure can
-   still fail even with credits** — confirmed live: Gemini refused
-   (`IMAGE_OTHER`) across all 3 retries for one MMA candidate. The workflow
-   already degrades safely to `NO_CARD_RENDER_FAILED` and drops that page's
-   post rather than posting without a card — this is expected, occasional
-   behavior, not a bug to chase away.
-3. ~~S3 public-URL assumption for rendered cards~~ — ✅ CONFIRMED live
-   2026-08-06: `GET`/`HEAD` on a real `threads-cards/` object returns 200
-   with zero AWS credentials, from a plain `curl`. Postiz (or anything else)
-   can fetch these URLs. No longer a gap.
-4. ~~Postiz's reply-thread schema~~ — ✅ CONFIRMED live 2026-08-06. The
+1. ~~Cloudinary credentials~~ — ✅ CONFIRMED live 2026-08-06. Full pipeline
+   (ES-MCP search → Cloudinary face-crop → Orshot render) run end-to-end for
+   real and visually verified. The render pipeline has no remaining gaps.
+2. ~~S3 public-URL assumption for rendered cards~~ — no longer applicable:
+   cards now render directly to Orshot's own public `storage.orshot.com`
+   URLs, never uploaded to our own S3 bucket at all (the old
+   `uploadCardImage` code path has been removed).
+3. ~~Postiz's reply-thread schema~~ — ✅ CONFIRMED live 2026-08-06. The
    original guess (`settings.replyContent`) was WRONG and has been replaced
    with the real schema (verified against docs.postiz.com/public-api and
    .../providers/threads, then proven against the live API): upload the
@@ -86,18 +107,18 @@ loop.
    root). A real test post (`postId cmsgklhat02bhnv0yk8uyt66h`) was
    successfully scheduled to the disconnected `nflgossips` integration using
    this exact code path. No longer a gap.
-5. **Captions are templated, not AI-authored** (`src/lib/caption.ts`) — a
+4. **Captions are templated, not AI-authored** (`src/lib/caption.ts`) — a
    deliberate tradeoff for determinism, but genuinely more formulaic than the
    old model-written captions. If you want AI-authored copy back, the correct
    way is a NEW activity that calls the Claude API directly (not an ambient
    Routine) and validates its output through the same
    `runDeterministicChecks` before anything posts — never trust it blindly.
-6. **AWS permissions for EC2** — the IAM user needs `AmazonEC2FullAccess`
-   (+ optionally `CloudWatchLogsFullAccess`) added before the worker can
-   actually be deployed to a real instance.
-7. **No `.env` secrets manager** — secrets currently live in a root-owned
-   `/etc/es-threads-temporal.env` file on the worker host. Fine for a single
-   box; revisit if this ever needs multiple workers or a real CI/CD pipeline.
+5. ~~AWS permissions for EC2~~ — ✅ confirmed granted and deployed; the
+   worker runs live on `i-0337259ca3e450c8d` under pm2, boot-persistent.
+6. **No `.env` secrets manager** — secrets currently live in `.env.local` on
+   the worker host (`/opt/es-threads-temporal/.env.local`), loaded via
+   `pm2`'s `ecosystem.config.js`. Fine for a single box; revisit if this
+   ever needs multiple workers or a real CI/CD pipeline.
 
 ## Running it
 

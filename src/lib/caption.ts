@@ -29,9 +29,31 @@ export function buildCaption(candidate: Candidate, page: PageConfig): string {
   const part3 =
     candidate.source === "beehiiv_newsletter"
       ? `We go deeper on this in today's newsletter.`
+      : candidate.linkContext === "subscribe"
+      ? `Want more stories like this? Subscribe to our newsletter — link's in the reply.`
       : `Full story linked in the reply.`;
 
   return [part1, "", part2, "", part3].join("\n");
+}
+
+// ⛔ LEARNING PORTED (2026-08-08, ES_Threads_Automation_Playbook.md Section 8
+// "Hashtag & Topic Logic"): channel selection is scope-based — a team/player-
+// specific story gets that entity's own hashtag, a league-wide story gets the
+// league hashtag, a cross-sport/national story gets none. Every real page's
+// registry entry already has `hashtag_logic: "write_then_delete"` and
+// `topic_registration: true` set (confirmed live 2026-08-08) — the schema was
+// always there, this is the first time it's actually used. Returns null when
+// no real scope-appropriate hashtag applies (never fabricates a generic one).
+export function buildTopicHashtag(matchedEntityNames: string[], sportGroup: string | null): string | null {
+  if (matchedEntityNames.length > 0) {
+    const tag = matchedEntityNames[0].replace(/[^a-zA-Z0-9]/g, "");
+    if (tag) return `#${tag}`;
+  }
+  if (sportGroup) {
+    const tag = sportGroup.replace(/[^a-zA-Z0-9]/g, "");
+    if (tag) return `#${tag}`;
+  }
+  return null; // cross-sport/national story — no topic channel to register
 }
 
 // Returns null (never throws) when the page has no registered UTM string —
@@ -43,7 +65,7 @@ export function buildCaption(candidate: Candidate, page: PageConfig): string {
 export function buildReplyLink(candidate: Candidate, page: PageConfig): string | null {
   const utm = page.threads?.utm_string;
   if (!utm) return null;
-  const contentTag = candidate.source === "beehiiv_newsletter" ? "&utm_content=reply_link" : "";
+  const contentTag = candidate.source === "beehiiv_newsletter" || candidate.linkContext === "subscribe" ? "&utm_content=reply_link" : "";
   const sep = candidate.link.includes("?") ? "&" : "?";
   return `${candidate.link}${sep}${utm}${contentTag}`;
 }

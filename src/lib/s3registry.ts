@@ -94,55 +94,33 @@ export async function writeDryRunResult(dateISO: string, results: unknown): Prom
   await putObject(`pool/temporal_dry_run_${dateISO}.json`, JSON.stringify(results, null, 2));
 }
 
-export interface InfographicJob {
-  page_id: string;
-  candidate_key: string;
-  headline: string;
-  page_theme: string;
-  athlete_names: string[];
-  kicker?: string;
-  accent?: string;
-  aspect_ratio?: string;
+export interface EvergreenAngle {
+  angle_id: string;
+  angle_type: number;
+  bucket: string;
+  subject: string;
+  subject_class: string;
+  frame: string;
+  verify_at_runtime: string;
+  default_photo_subject: string;
 }
 
-export interface InfographicResult {
-  status: "completed" | "failed";
-  page_id: string;
-  candidate_key: string;
-  card_url?: string;
-  error?: string;
-  completed_at: string;
-}
-
-// Handoff to the ES Infographic Creation Routine (a separate Claude session
-// with OpenArt + ES-MCP connectors this Node worker can never reach itself —
-// see ES-Infographic-Creation-Skill-v1.md). This worker writes the job here;
-// the Routine (woken by its own trigger, ideally a tight cron since the
-// externally-callable webhook/API-token endpoint for a direct wake-up call
-// is not yet confirmed — see README) picks it up and writes the result back.
-export async function writeInfographicJob(job: InfographicJob): Promise<void> {
-  await putObject(`pool/infographic_jobs/pending/${job.candidate_key}.json`, JSON.stringify(job, null, 2));
-}
-
-export async function getInfographicResult(candidateKey: string): Promise<InfographicResult | null> {
-  const raw = await getObject(`pool/infographic_jobs/results/${candidateKey}.json`);
-  if (!raw) return null;
+// Shared with the Facebook pipeline, keyed by FACEBOOK page_id (p02-p31) —
+// confirmed live (2026-08-07) that this key space has ZERO overlap with
+// Threads page_ids (p35-p61), exactly the gap the reference skill file
+// flagged as "likely genuinely empty for Threads pages." Flattened here
+// across every FB page's entries rather than looked up by page_id, since a
+// real angle about a real entity/subject is equally usable for any Threads
+// page covering that same entity — the FB-side page grouping is irrelevant
+// to whether the angle itself is on-topic for a given Threads page.
+export async function getAllEvergreenAngles(): Promise<EvergreenAngle[]> {
+  const raw = await getObject("config/evergreen_bank.json");
+  if (!raw) return [];
   try {
-    return JSON.parse(raw) as InfographicResult;
+    const parsed = JSON.parse(raw) as Record<string, EvergreenAngle[]>;
+    return Object.values(parsed).flat();
   } catch {
-    return null; // malformed result file — treat as "not ready yet", not a crash
+    return [];
   }
 }
 
-// Uploads a rendered card and returns a public URL for Postiz to fetch.
-// ⛔ UNCONFIRMED (see README "Known gaps"): assumes this bucket already
-// serves objects publicly under this key prefix, the same assumption the
-// Facebook pipeline's rendered cards rely on in this same bucket — has not
-// been independently verified from this new service. If Postiz can't fetch
-// the URL, check the bucket policy / CloudFront distribution in front of
-// `essentiallysports-images-v2prod` before assuming this code is wrong.
-export async function uploadCardImage(pageId: string, candidateKey: string, image: Buffer): Promise<string> {
-  const key = `threads-cards/${pageId}/${candidateKey}.png`;
-  await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: image, ContentType: "image/png" }));
-  return `https://${BUCKET}.s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com/${key}`;
-}
