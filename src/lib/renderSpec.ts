@@ -37,14 +37,44 @@ export function promptViolations(prompt: string): string[] {
   return BANNED_PROMPT_PHRASES.filter((re) => re.test(prompt)).map((re) => String(re));
 }
 
-const CATEGORY_PLACEHOLDERS = new Set([
+// ⛔ OPERATOR FIX (2026-08-12, real live incident): a page's own registered
+// entity list had a slot named "PGA Tour, LPGA" with keywords ["golf",
+// "pga tour", "pga", "lpga"] — a generic tour/league bucket registered as
+// if it were a real athlete entity. "LPGA" contains "pga" as a literal
+// substring, so a SINGLE mention of "LPGA" in a headline matched BOTH
+// keywords — two "hits" from one real event, counted as two distinct
+// people. That tripped the comparison/VS template and searched ES-MCP for
+// photos of "lpga" and "pga", neither a real depictable person, which is
+// why the same generic golfer stock photo landed on both sides of the
+// card. Exported so checks.ts's matchedEntityNames can filter these out
+// before they're ever treated as a real, distinct subject — tour/league
+// names are legitimate for broad relevance matching (that's what they're
+// FOR), never for "is this a two-person story" or "whose photo do I
+// search for."
+export const CATEGORY_PLACEHOLDERS = new Set([
   "nascar", "nfl", "nba", "mlb", "nhl", "ufc", "mma", "wnba", "f1", "golf",
   "tennis", "boxing", "pickleball", "football", "basketball", "baseball",
   "sports", "celebrities", "sports celebrities", "athletes", "legends",
+  "pga", "lpga", "pga tour", "lpga tour", "atp", "wta", "atp tour", "wta tour",
 ]);
 
 export function isCategoryPlaceholder(subject: string): boolean {
   return CATEGORY_PLACEHOLDERS.has(String(subject ?? "").trim().toLowerCase());
+}
+
+// ⛔ OPERATOR FIX (2026-08-11, real live incidents): "COACH: THAT'S WEILI'S
+// BELT" / "CLAIMED" and "LAKERS FACE LUKA DONCIC EXIT WARNING" / "WARNING"
+// both rendered the accent word as its own disconnected line, separate
+// from (and in one case literally duplicating) the actual headline
+// sentence. The user's framing: the power word must be ONE WORD FROM THE
+// SENTENCE, highlighted in place — never written apart from it. Same
+// word-presence check narrativeRenderSpec.ts's `violates()` now enforces
+// on the AI-authored path; duplicated here (not imported, to avoid a
+// circular dependency between the two files) so the deterministic path's
+// spec is held to the identical standard before it ever reaches a prompt.
+export function accentIsWordInHeadline(accent: string, headline: string): boolean {
+  const words = headline.toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+  return words.includes(accent.trim().toLowerCase());
 }
 
 export interface PromptOptions {
@@ -82,9 +112,12 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
       `A bold vertical accent-color #${spec.accent_hex} divider with a "VS" mark sits between the two halves.`,
       `Setting: a real in-context scene with depth on both sides — crowd bokeh, stadium lights, natural candid press-photo look. NEVER a flat single-color background.`,
       `THE CARD MUST CARRY THESE TEXT ELEMENTS, RENDERED LARGE AND PERFECTLY SPELLED:`,
-      `1. Headline in giant white condensed ALL-CAPS across the top under a dark scrim: "${spec.headline}"`,
-      ...(spec.accent ? [`2. One accent word in #${spec.accent_hex}: "${spec.accent}" — a DIFFERENT word from the kicker below, never the same text repeated.`] : []),
-      `${spec.accent ? "3" : "2"}. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
+      `1. Headline in giant white condensed ALL-CAPS across the top under a dark scrim: "${spec.headline}"${
+        spec.accent
+          ? ` — this is ONE CONTINUOUS SENTENCE. Within it, render the single word "${spec.accent.toUpperCase()}" in accent color #${spec.accent_hex} instead of white; every other word in the sentence stays white. Do NOT render "${spec.accent.toUpperCase()}" as a second, separate word anywhere else on the card — it is a color change applied in place to the word that already sits inside this headline, not an additional line of text.`
+          : ``
+      }`,
+      `2. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
       `High contrast (scrim or box behind text), nothing covering either subject's face, no truncation.`
     );
   } else {
@@ -102,14 +135,27 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
         ? nameRealPeople
           ? `Subject: ${namedSubjects} — real likeness${spec.photo_subjects.length > 1 ? ", ALL named people visibly present" : ""}, correct current team kit, face visible, ${layoutFraming}.`
           : `Subject: ${describedSubjects}${spec.photo_subjects.length > 1 ? ", both visibly present" : ""}, correct current team kit for this sport, face visible, ${layoutFraming}.`
+        : // ⛔ OPERATOR FIX (2026-08-12): "use the MLB sport image or the
+          // team logo rather than fabricating an image." A story with no
+          // real depictable person used to tell the model to invent an
+          // unanchored generic scene from nothing — if a real league/team
+          // logo or sport image was actually supplied as the reference
+          // (see activities/index.ts's pickGenericPhoto path), use THAT
+          // real image instead of fabricating one; only fall through to a
+          // fully invented scene when no real reference exists at all.
+        spec.reference_photo_url
+        ? `No specific person is depicted. Use the supplied real reference image (a league/team logo or generic sport scene) as the visual foundation — integrate it naturally into a typographic layout, never replace it with an invented scene.`
         : `No person is depicted: a clean typographic treatment over a real, richly textured sports scene (stadium, track, course) — never a fake or generic face.`,
       `Setting: a real in-context scene with depth — crowd bokeh, stadium lights, natural candid press-photo look. NEVER a flat single-color background, never a cut-out on a solid fill, never a plastic over-smoothed AI look.`,
       `THE CARD MUST CARRY THESE TEXT ELEMENTS, RENDERED LARGE AND PERFECTLY SPELLED:`,
-      `1. Headline in giant white condensed ALL-CAPS under a dark scrim: "${spec.headline}"`,
-      ...(spec.accent ? [`2. One accent word in #${spec.accent_hex}: "${spec.accent}" — a DIFFERENT word from the kicker below, never the same text repeated.`] : []),
-      `${spec.accent ? "3" : "2"}. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
+      `1. Headline in giant white condensed ALL-CAPS under a dark scrim: "${spec.headline}"${
+        spec.accent
+          ? ` — this is ONE CONTINUOUS SENTENCE. Within it, render the single word "${spec.accent.toUpperCase()}" in accent color #${spec.accent_hex} instead of white; every other word in the sentence stays white. Do NOT render "${spec.accent.toUpperCase()}" as a second, separate word anywhere else on the card — it is a color change applied in place to the word that already sits inside this headline, not an additional line of text.`
+          : ``
+      }`,
+      `2. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
       `High contrast (scrim or box behind text), nothing covering the subject's face, no truncation.`,
-      ...(spec.accent ? [] : [`Do NOT render the kicker word a second time anywhere else on the card — it appears exactly once, in the kicker bar only.`])
+      `Do NOT render the kicker word a second time anywhere else on the card — it appears exactly once, in the kicker bar only.`
     );
   }
 
@@ -134,6 +180,7 @@ export function specViolations(spec: RenderSpec): string[] {
     if (!spec.headline.trim()) problems.push("missing_headline");
     if (!spec.kicker.trim()) problems.push("missing_kicker");
     if (spec.headline.trim().split(/\s+/).length > 6) problems.push("headline_over_6_words");
+    if (spec.accent && !accentIsWordInHeadline(spec.accent, spec.headline)) problems.push("accent_not_in_headline");
   }
   if (spec.photo_subjects.length > 0 && !spec.reference_photo_url) problems.push("named_subject_without_reference_photo");
   problems.push(...promptViolations(buildRenderPrompt(spec)).map(() => "banned_prompt_phrase"));

@@ -30,7 +30,7 @@ export function buildCaption(candidate: Candidate, page: PageConfig): string {
     candidate.source === "beehiiv_newsletter"
       ? `We go deeper on this in today's newsletter.`
       : candidate.linkContext === "subscribe"
-      ? `Want more stories like this? Subscribe to our newsletter — link's in the reply.`
+      ? `Want more stories like this? Subscribe to our newsletter. Link's in the reply.`
       : `Full story linked in the reply.`;
 
   return [part1, "", part2, "", part3].join("\n");
@@ -62,10 +62,18 @@ export function buildTopicHashtag(matchedEntityNames: string[], sportGroup: stri
 // here made Temporal retry the activity 3 times pointlessly and then crash
 // the whole workflow run — confirmed live, caught and fixed same session.
 // Never auto-generate a substitute UTM; the caller must drop the candidate.
+// ⛔ OPERATOR FIX (2026-08-12): "the same UTMs are being used for manual and
+// autoposting both, so traffic from autoposts can't be tracked." page's own
+// utm_string is a static, hand-set value — identical whether a human or
+// this pipeline posts the link, so GA4 has no way to isolate autopost
+// traffic. utm_term is unused anywhere else in this codebase, so it's a
+// safe, dedicated slot for this signal — added on every link this
+// function builds, never touching the page's own source/medium/campaign
+// values (preserves any existing GA4 reports built on those).
 export function buildReplyLink(candidate: Candidate, page: PageConfig): string | null {
   const utm = page.threads?.utm_string;
   if (!utm) return null;
   const contentTag = candidate.source === "beehiiv_newsletter" || candidate.linkContext === "subscribe" ? "&utm_content=reply_link" : "";
   const sep = candidate.link.includes("?") ? "&" : "?";
-  return `${candidate.link}${sep}${utm}${contentTag}`;
+  return `${candidate.link}${sep}${utm}${contentTag}&utm_term=autopost`;
 }

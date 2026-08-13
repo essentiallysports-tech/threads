@@ -16,16 +16,22 @@ import {
   topicFrequencyCheck,
   dominantNarrativeCheck,
   matchedSportGroup,
+  matchedEntityNames,
+  realRegisteredEntityMatches,
+  extractSimilarPlayerName,
+  extractNameFromArticle,
   FrequencyCheckResult,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
+import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI } from "../lib/narrativeRenderSpec";
 import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
-import { searchImages } from "../lib/esMcp";
-import { pickPhoto, cropTo } from "../lib/cloudinary";
+import { searchImages, metadataMatchesSubject } from "../lib/esMcp";
+import { pickPhoto, pickGenericPhoto, cropTo } from "../lib/cloudinary";
 import { renderCardViaAi } from "../lib/renderChain";
 import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText } from "../lib/cardTextQC";
+import { extractEntitiesViaAI } from "../lib/entityResolution";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
 // cardRegistry, which was Orshot-specific and is no longer part of the
@@ -57,17 +63,53 @@ const PALETTE_BY_LAYOUT: Record<TemplateId, string> = {
   quote: "00B2A9", // teal — quote mark + attribution, photo stays untouched
 };
 
-// Kicker vocabulary keyed to what the story actually is, not a hardcoded
-// "BREAKING" default — mirrors the playbook's power-word bank (Section 7):
-// different real triggers get a different, specific kicker word.
-function chooseKicker(candidate: Candidate, layout: TemplateId): string {
-  const h = candidate.headline;
-  if (/trade/i.test(h)) return "TRADE RUMORS";
-  if (/fired|suspended|banned|benched|cut\b/i.test(h)) return "BREAKING";
-  if (/record|milestone|career|retire|hall of fame|history|legend/i.test(h)) return "MILESTONE";
-  if (layout === "comparison") return "HEAD-TO-HEAD";
-  if (layout === "dramatic_news") return "BREAKING";
-  return "UPDATE"; // standard editorial default — not every story is "breaking"
+// ⛔ OPERATOR FIX (2026-08-10, real live incident — screenshot of a p-nba
+// post): "rather than UPDATE or anything in the strip below, all posts must
+// contain full detail in reply / subscribe newsletter below — the post's CTA
+// should also be there in the strip." The kicker bar used to carry a story-
+// category label (TRADE RUMORS/BREAKING/MILESTONE/UPDATE) that told the
+// reader nothing actionable and, worse, didn't match what the caption
+// actually promises. The kicker bar now ALWAYS carries the real CTA — the
+// exact same promise the caption's own closing line makes (see caption.ts/
+// narrativeCaption.ts's `linkContext === "subscribe"` branch) — so the
+// on-image strip and the caption's CTA are never two different claims. This
+// is deterministic, not AI-reasoned (see narrativeRenderSpec.ts): a CTA is
+// the same fixed message every time, not something that benefits from
+// per-story reasoning the way the headline/accent word do.
+// ⛔ OPERATOR FIX (2026-08-12): "rather than SUBSCRIBE FOR MORE it should
+// have 'Join our Golf Newsletter, Link Below' or 'Join our MMA Newsletter,
+// link below.'" ⛔ OPERATOR CORRECTION (same day): "not derived from the
+// page's own sport but newsletter name" — the label names the actual
+// NEWSLETTER'S subject, not the page's registered sport_group (a page and
+// its shared newsletter can genuinely differ — e.g. Boxing Bulletin's own
+// focus is boxing, but the shared newsletter across all 4 combat pages is
+// branded "Essentially MMA"). Keyed by the real Beehiiv publication_id
+// (confirmed live against the actual publication list + operator
+// confirmation per-newsletter, 2026-08-12) rather than guessed from the
+// newsletter's own name text, since several ("Lucky Dog on Track,"
+// "Buckeye Daily," "Essentially Dunk," "Essentially W") don't parse to a
+// sport name programmatically at all.
+const NEWSLETTER_SPORT_LABELS: Record<string, string> = {
+  "pub_a85e9aab-5fc5-4008-bdc3-bc5391a29908": "Golf", // Essentially Golf
+  "pub_60817e5f-dfe8-4612-8b99-4c9c32f5afa9": "MMA", // Essentially MMA
+  "pub_637cd589-a9aa-4e46-b886-a830b9ab6a6e": "College Football", // Essentially CFB
+  "pub_a6e7942b-ad94-4396-b72a-81beecc3f321": "NFL", // The Huddle
+  "pub_7c3e742b-f222-4e7c-ac6e-ca3b1a6b59fa": "MLB", // Essentially Dugout
+  "pub_3af5e2b3-fd36-4b8b-b63f-453e7ac1c579": "NASCAR", // Lucky Dog on Track
+  "pub_3451ca03-fb01-4e74-adcf-3cd802a94d48": "College Football", // Buckeye Daily
+  "pub_c1c47f34-85aa-4498-aa12-2784789f3ad0": "NBA", // Essentially Dunk
+  "pub_0a9d3b9e-3f42-4067-8fe3-8943c200fdd8": "WNBA", // Essentially W
+  // pub_902529ab (EssentiallySports Daily) deliberately omitted — genuinely
+  // cross-sport, gets the "Daily" phrasing below instead of a sport name.
+};
+const DAILY_NEWSLETTER_PUB_ID = "pub_902529ab-962e-41b8-b981-e9a33d055a65";
+
+function chooseKicker(candidate: Candidate, page: PageConfig): string {
+  if (candidate.linkContext !== "subscribe") return "FULL STORY IN REPLY";
+  const pubId = page.threads?.beehiiv_publication_id;
+  if (pubId === DAILY_NEWSLETTER_PUB_ID) return "JOIN OUR DAILY NEWSLETTER, LINK BELOW";
+  const sport = pubId ? NEWSLETTER_SPORT_LABELS[pubId] : undefined;
+  return sport ? `JOIN OUR ${sport.toUpperCase()} NEWSLETTER, LINK BELOW` : "SUBSCRIBE FOR MORE";
 }
 
 // ⛔ OPERATOR FIX (2026-08-07, real live incidents): blindly truncating a
@@ -161,8 +203,19 @@ function shortHeadline(headline: string, maxWords = 6): string {
 const POWER_WORD_RE =
   /\b(blasts?|slams?|fires? back|clash(?:es)?|feud|no mercy|calls? out|robbed|snubbed|betrayed|stripped|denied|chaos|mayhem|stunning|erupts?|explodes?|hospitalized|injured|scary|collapses?|confirmed|exposed|banned|suspended|retires?|done|over|fine|slashed|jackpot)\b/i;
 
-function chooseAccentWord(headline: string): string | null {
-  const match = headline.match(POWER_WORD_RE);
+// ⛔ OPERATOR FIX (2026-08-11, real live incident): "LAKERS FACE LUKA DONCIC
+// EXIT WARNING" rendered a redundant standalone "WARNING" above a headline
+// that already ends in "...EXIT WARNING" — because this used to scan the
+// RAW candidate.headline for a power word while the card's actual headline
+// text is the separately-truncated shortHeadline() output; the matched
+// word could survive truncation (fine) or not (silent mismatch) with
+// nothing checking either way. Must be called with the EXACT text that
+// will render as the headline, so any match is a literal word already
+// inside it by construction — never a word found somewhere else in the
+// original headline that then gets rendered as if it were part of this
+// shortened one.
+function chooseAccentWord(renderedHeadline: string): string | null {
+  const match = renderedHeadline.match(POWER_WORD_RE);
   return match ? match[0].toUpperCase() : null;
 }
 
@@ -309,10 +362,25 @@ export async function buildCaptionText(candidate: Candidate, page: PageConfig, a
 // family portrait once the top action shots got rejected). More
 // candidates per term means more chances to find one that's BOTH
 // correctly-ranked AND passes the face-visibility requirement.
-async function searchAndPick(term: string, faceHeightMultiplier: number) {
-  const results = await searchImages(term, "agency", 12);
+// `sportHint` (the page's own primary sport_group) is appended to the
+// ES-MCP QUERY only — never to the name used for metadataMatchesSubject's
+// verification below. Mirrors webSearch.ts's existing, already-proven fix
+// for the exact same risk on the text-search tier ("a bare name search...
+// can surface an unrelated same-named person; adding the page's own sport
+// keeps results scoped to what this page is actually about") — ES-MCP's
+// photo search had the identical bare-name-collision exposure and was
+// simply never given the same guard.
+async function searchAndPick(term: string, faceHeightMultiplier: number, sportHint?: string) {
+  const query = sportHint ? `${term} ${sportHint}` : term;
+  const results = await searchImages(query, "agency", 12);
   if (results.length === 0) return null;
-  return pickPhoto(results.map((r) => r.url), CARD_WIDTH, CARD_HEIGHT, faceHeightMultiplier);
+  // Drop candidates whose own title/caption clearly names a different
+  // subject than what we searched for (see metadataMatchesSubject's
+  // 2026-08-11 comment) — ES-MCP's ranking still decides ORDER among
+  // whatever survives this filter.
+  const verified = results.filter((r) => metadataMatchesSubject(r, term));
+  if (verified.length === 0) return null; // every candidate's own metadata contradicts the subject we searched for
+  return pickPhoto(verified.map((r) => r.url), CARD_WIDTH, CARD_HEIGHT, faceHeightMultiplier);
 }
 
 // ⛔ OPERATOR FIX (2026-08-07): "MANDATORY TEMPLATE VARIETY — rotate through
@@ -340,9 +408,27 @@ function isQuoteQuotaDue(postedLog: PostedLogEntry[]): boolean {
   return !lastEight.some((p) => p.template === "quote");
 }
 
-function chooseTemplate(candidate: Candidate, subjectCount: number, hasRealQuote: boolean, postedLog: PostedLogEntry[], dateISO: string): TemplateId {
+// ⛔ OPERATOR ARCHITECTURE CHANGE (2026-08-12): "give template selection to
+// Claude as well." Two real, verified names (headlineNames — the
+// structural gate stays deterministic, since a comparison card physically
+// needs two real photos) used to be an automatic green light for
+// comparison/quote regardless of whether the STORY itself is actually
+// about their rivalry — see isGenuineComparisonViaAI's own comment for
+// the two real incidents this closes. Only asks the question when there
+// genuinely are 2+ verified names to ask about; a single-subject story
+// never pays for this call.
+async function chooseTemplate(
+  candidate: Candidate,
+  page: PageConfig,
+  headlineNames: string[],
+  hasRealQuote: boolean,
+  postedLog: PostedLogEntry[],
+  dateISO: string
+): Promise<TemplateId> {
+  const genuineComparison =
+    headlineNames.length >= 2 ? await isGenuineComparisonViaAI(candidate, page, headlineNames[0], headlineNames[1]) : false;
   const eligible: TemplateId[] =
-    subjectCount >= 2
+    genuineComparison
       ? ["comparison", "quote"]
       : /trade|fired|suspended|banned|benched|cut\b/i.test(candidate.headline)
       ? ["dramatic_news", "standard_editorial"]
@@ -364,7 +450,11 @@ function chooseTemplate(candidate: Candidate, subjectCount: number, hasRealQuote
       bestCount = c;
     }
   }
-  return best;
+
+  if (eligible.length <= 1) return best;
+  const countsObj: Record<string, number> = {};
+  for (const [k, v] of counts) countsObj[k] = v;
+  return chooseLayoutViaAI(candidate, page, eligible, countsObj, best);
 }
 
 // ⛔ OPERATOR OVERRIDE (2026-08-07): Orshot is REMOVED from this pipeline
@@ -384,6 +474,18 @@ function chooseTemplate(candidate: Candidate, subjectCount: number, hasRealQuote
 export interface RenderCardResult {
   cardUrl: string | null;
   template: TemplateId | null;
+  // ⛔ OPERATOR FIX (2026-08-12, real live incident): "still the same errors
+  // repeating" — the AI-priority entity fix only corrected the PHOTO search
+  // term inside this function. The workflow's own `primaryEntity` (used for
+  // topic-frequency/dominant-narrative capping AND the entity field written
+  // to the posted log) is computed separately, upstream, from the OLD
+  // regex-fallback-inclusive `matchedEntityNames` — never touched by that
+  // fix, so garbage entities ("Forced To," "Bold Ian") kept getting logged
+  // and kept feeding frequency caps even after the photo itself was fixed.
+  // Exposing the SAME correctly-resolved value computed inside this
+  // function lets the workflow use it for logging too, without a second
+  // AI call or a workflow-level activity restructure.
+  resolvedEntity: string | null;
 }
 
 // ⛔ OPERATOR FIX (2026-08-08, real live incident): a card rendered "DEION
@@ -396,14 +498,32 @@ export interface RenderCardResult {
 // attempt on failure, then treat as no card — matches the reference skill
 // file's own "MANDATORY TEXT-QC... regenerate → retry → DROP" rule, which
 // existed only as a slide of rendered card_url before this.
+// ⛔ OPERATOR FIX (2026-08-12, real live incident): confirmed live via
+// today's logs — every BELOW_RUN_FLOOR run hit the wall-clock run budget,
+// not genuine rejections, and the culprit was this function: 2 outer
+// attempts, each able to spawn up to 2 rerolls per render path, each call
+// able to hang for the full (now-shortened, see openart.ts) poll timeout.
+// A single bad candidate could consume 15-30+ minutes, and with
+// PAGE_CONCURRENCY=6 that stalls the whole run for every page behind it.
+// This hard deadline is the second, independent layer — bounds the ENTIRE
+// render+retry sequence for one candidate regardless of how many rerolls
+// or slow calls happen inside it, so one doomed candidate can never
+// consume a disproportionate share of the run's time budget.
+const RENDER_DEADLINE_MS = 3 * 60_000;
+
 async function renderAndVerifyText(spec: RenderSpec, pageId: string): Promise<string | null> {
+  const deadline = Date.now() + RENDER_DEADLINE_MS;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const outcome = await renderCardViaAi(spec);
+    if (Date.now() > deadline) {
+      console.error(`renderAndVerifyText: render deadline exceeded before attempt ${attempt + 1} for ${pageId} — moving to next candidate`);
+      break;
+    }
+    const outcome = await renderCardViaAi(spec, deadline);
     if (!outcome.card_url) {
       console.error(`renderAndVerifyText: attempt ${attempt + 1} produced no card for ${pageId}: ${JSON.stringify(outcome.render_attempts)}`);
       continue;
     }
-    const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent);
+    const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent, spec.photo_subjects);
     if (qc.pass) return outcome.card_url;
     console.error(`renderAndVerifyText: attempt ${attempt + 1} failed text-QC for ${pageId}: ${qc.reason}`);
   }
@@ -421,15 +541,6 @@ async function renderAndVerifyText(spec: RenderSpec, pageId: string): Promise<st
 // lean on) — a simple consecutive-capitalized-words heuristic pulls that
 // out directly from the text actually being posted about, which is a far
 // better search term than the page's own static theme description.
-const PROPER_NOUN_RE = /\b([A-Z][a-z']+(?:\s+[A-Z][a-z']+){1,2})\b/g;
-const HEADLINE_LEAD_WORDS = new Set(["the", "a", "an", "is", "was", "how", "why", "what", "when"]);
-
-function extractProperNounFallback(headline: string): string | null {
-  const matches = [...headline.matchAll(PROPER_NOUN_RE)].map((m) => m[1]);
-  const real = matches.find((m) => !HEADLINE_LEAD_WORDS.has(m.split(/\s+/)[0].toLowerCase()));
-  return real || matches[0] || null;
-}
-
 export async function renderCard(
   candidate: Candidate,
   page: PageConfig,
@@ -437,19 +548,113 @@ export async function renderCard(
   postedLog: PostedLogEntry[],
   dateISO: string
 ): Promise<RenderCardResult> {
-  const headlineFallback = extractProperNounFallback(candidate.headline);
-  const searchTerms =
-    athleteNames.length > 0 ? athleteNames : [headlineFallback || page.page_theme.split(/[.,—-]/)[0].trim()];
+  // ⛔ OPERATOR FIX (2026-08-12, real live incident): "when I told entity to
+  // be determined by Anthropic only, why do such issues still occur?" Root
+  // cause: this AI gate used to check `athleteNames.length === 0` — but
+  // `athleteNames` is `matchedEntityNames`'s result, which ALREADY includes
+  // its own regex-guess fallback (extractSimilarPlayerName) baked in. Every
+  // time that regex guessed something — right OR wrong ("Bold Ian",
+  // "Forced To") — athleteNames.length was NOT 0, so the AI check below
+  // never ran at all. The AI was only ever consulted when the regex found
+  // literally nothing, never when it found something wrong — the opposite
+  // of "AI determines the entity." `realRegisteredEntityMatches` is the
+  // OTHER signal: real, guaranteed hits against this page's own registered
+  // roster, with NO regex-guess fallback mixed in. The AI now runs whenever
+  // there's no guaranteed-real match, regardless of what the regex fallback
+  // guessed — matching the actual operator directive.
+  const realMatches = realRegisteredEntityMatches(candidate, page, { includeRawText: false });
+  const hasRealEntityMatch = realMatches.length > 0;
+  // ⛔ OPERATOR ARCHITECTURE CHANGE (2026-08-11): "deterministic code isn't
+  // able to choose which entity to pick from... claude has full context so
+  // that can easily pick up what entity is needed." Tried BEFORE the regex
+  // heuristics below since a model reading the whole story is exactly what
+  // catches the class of mistake regex can't ("He Is", "Sophie Targets"
+  // both read as plausible names to a pattern-matcher, never to something
+  // that actually understands the sentence). See entityResolution.ts for
+  // the hallucination-safety verification this result is put through
+  // before ever reaching here.
+  // ⛔ OPERATOR FIX (2026-08-13, real live incident): "why is fight between
+  // still picked up as entity when entity was being picked by Anthropic?"
+  // The single-entity extraction below used to be the ONLY AI call here —
+  // any story that turned out to need TWO subjects (a comparison/quote
+  // card) fell straight to the pure-regex `matchedEntityNames` path further
+  // down, which the AI never touched at all. `extractEntitiesViaAI` returns
+  // up to 2 verified names so the SAME AI judgment now drives both the
+  // single-subject search term AND `headlineNames` (comparison/quote
+  // entity resolution) below — closing that gap at the source instead of
+  // patching another regex stopword.
+  const aiEntitiesResult = !hasRealEntityMatch
+    ? await extractEntitiesViaAI(candidate, page).catch((e) => {
+        console.error(`renderCard: extractEntitiesViaAI failed for ${page.page_id}: ${(e as Error).message}`);
+        return undefined;
+      })
+    : undefined;
+  const aiEntities = Array.isArray(aiEntitiesResult) && aiEntitiesResult.length > 0 ? aiEntitiesResult : null;
+  // ⛔ OPERATOR FIX (2026-08-12, real live incident): "MLB Pro Ejected
+  // Without Even Playing" — a story that genuinely never names who was
+  // ejected — got "Pro Ejected" invented as a fake name by the regex
+  // fallback below anyway, because a real AI "no entity" judgment was
+  // indistinguishable from "AI didn't run" and so got second-guessed by a
+  // less reliable heuristic. An empty (but defined) array means the AI DID
+  // run and confirmed there's no real depictable subject — that must be
+  // trusted, never overridden by regex.
+  const aiConfirmedNoEntity = !hasRealEntityMatch && Array.isArray(aiEntitiesResult) && aiEntitiesResult.length === 0;
+  const headlineFallback = aiEntities || aiConfirmedNoEntity ? null : extractSimilarPlayerName(candidate);
+  // ⛔ OPERATOR FIX (2026-08-10, real live incident): "5x NBA Champion Dies
+  // at 86" — a real newsletter title with no name in it at all — left
+  // headlineFallback null, which used to fall straight to the page's
+  // generic theme text as the photo search term. The linked article
+  // itself almost always names the actual person even when the teaser
+  // headline doesn't; only fetched when genuinely needed (the registered-
+  // entity match, the AI extraction, AND the headline heuristic all came up
+  // empty — and only when the AI never actually ruled out a subject).
+  const articleFallback =
+    !hasRealEntityMatch && !aiEntities && !aiConfirmedNoEntity && !headlineFallback ? await extractNameFromArticle(candidate) : null;
+  // When the AI has actively confirmed no real subject exists, searchTerms
+  // stays empty on purpose — never fall back to the page's generic theme
+  // text either, which would just repeat the same mistake with a
+  // different fake query. An empty searchTerms flows into the "no person
+  // depicted, clean typographic card" path renderSpec.ts already supports.
+  // Priority: a real registered-roster match (free, reliable) wins outright;
+  // otherwise the AI's judgment wins over the regex guess, not the other
+  // way around — the whole point of this fix.
+  const searchTerms = aiConfirmedNoEntity
+    ? []
+    : hasRealEntityMatch
+    ? athleteNames
+    : [aiEntities?.[0] || headlineFallback || articleFallback || page.page_theme.split(/[.,—-]/)[0].trim()];
   const isTradeStory = /trade/i.test(candidate.headline);
   const hasRealQuote = extractQuotedPhrase(candidate.headline) !== null;
-  const template = chooseTemplate(candidate, searchTerms.length, hasRealQuote, postedLog, dateISO);
-  const kicker = chooseKicker(candidate, template);
+  // ⛔ OPERATOR FIX (2026-08-10, real live incidents): an Islam Makhachev
+  // post about HIM watching Topuria/Chimaev lose rendered a VS card against
+  // Khabib, and a Chase Elliott post about a NASCAR broadcast deal rendered
+  // a VS card against an unrelated driver — neither story is actually a
+  // comparison. Root cause: `athleteNames`/`searchTerms` (broad, includes
+  // names only mentioned in the fetched article body) fed `subjectCount`,
+  // so any second registered name dropped anywhere in rawText made the
+  // comparison/quote layout structurally "eligible." Whether this is
+  // GENUINELY a two-subject story must be judged from the headline alone —
+  // the actual claim being made — not from incidental body-text mentions.
+  // Same priority order as searchTerms above: a real registered-roster
+  // match wins outright; otherwise the AI's judgment (which can identify
+  // TWO real subjects for a genuine head-to-head) wins over the pure-regex
+  // guess; regex is the last resort only when the AI never ran at all (no
+  // gateway key, infra failure) — never when it ran and found nothing.
+  const headlineNames = hasRealEntityMatch
+    ? realMatches
+    : aiEntities
+    ? aiEntities
+    : aiConfirmedNoEntity
+    ? []
+    : matchedEntityNames(candidate, page, { includeRawText: false });
+  const template = await chooseTemplate(candidate, page, headlineNames, hasRealQuote, postedLog, dateISO);
+  const kicker = chooseKicker(candidate, page);
   const accentHex = isTradeStory ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
 
-  if ((template === "comparison" || template === "quote") && searchTerms.length >= 2) {
+  if ((template === "comparison" || template === "quote") && headlineNames.length >= 2) {
     const [subjectPhoto, speakerPhoto] = await Promise.all([
-      searchAndPick(searchTerms[0], HERO_FACE_MULTIPLIER),
-      searchAndPick(searchTerms[1], INSET_FACE_MULTIPLIER),
+      searchAndPick(headlineNames[0], HERO_FACE_MULTIPLIER, page.sport_groups[0]),
+      searchAndPick(headlineNames[1], INSET_FACE_MULTIPLIER, page.sport_groups[0]),
     ]);
     if (subjectPhoto && speakerPhoto) {
       // ⛔ OPERATOR FIX (2026-08-08, real live incident): quote_text used to
@@ -463,56 +668,108 @@ export async function renderCard(
       // layout instead of forcing a quote card with nothing to quote.
       const quotedPhrase = extractQuotedPhrase(candidate.headline);
       const isQuote = template === "quote" && quotedPhrase !== null;
+      // A quote card's own prompt (renderSpec.ts) never reads headline/
+      // accent/kicker at all — only quote_text/quote_attribution, which stay
+      // deterministic (extracted verbatim, never AI-paraphrased). Only the
+      // comparison layout's copy is worth a real reasoning pass.
+      const comparisonHeadline = shortHeadline(candidate.headline);
+      const copy = isQuote
+        ? { headline: comparisonHeadline, accent: chooseAccentWord(comparisonHeadline), kicker, story_type: "quote exchange" }
+        : await buildNarrativeRenderCopy(candidate, page, athleteNames, "comparison", {
+            headline: comparisonHeadline,
+            accent: chooseAccentWord(comparisonHeadline),
+            kicker,
+            story_type: "head-to-head comparison",
+          });
       const spec: RenderSpec = {
         page_id: page.page_id,
-        headline: shortHeadline(candidate.headline),
-        accent: chooseAccentWord(candidate.headline),
-        kicker,
-        story_type: isQuote ? "quote exchange" : "head-to-head comparison",
+        headline: copy.headline,
+        accent: copy.accent,
+        kicker: copy.kicker,
+        story_type: copy.story_type,
         layout: isQuote ? "quote" : "comparison",
         accent_hex: accentHex,
-        photo_subjects: [searchTerms[0], searchTerms[1]],
+        photo_subjects: [headlineNames[0], headlineNames[1]],
         reference_photo_url: cropTo(subjectPhoto, CARD_WIDTH, CARD_HEIGHT, HERO_FACE_MULTIPLIER).url,
         is_quote: isQuote,
         quote_text: isQuote ? quotedPhrase : null,
-        quote_attribution: isQuote ? searchTerms[1] : null,
+        quote_attribution: isQuote ? headlineNames[1] : null,
       };
       const cardUrl = await renderAndVerifyText(spec, page.page_id);
-      if (cardUrl) return { cardUrl, template: spec.layout };
+      if (cardUrl) return { cardUrl, template: spec.layout, resolvedEntity: headlineNames[0] || null };
     }
     // Fell through to single-entity spec below if either search failed, or
     // every render path failed — never post a two-person layout with an
     // unrelated/missing second photo.
   }
 
-  const photo = await searchAndPick(searchTerms[0], HERO_FACE_MULTIPLIER);
-  if (!photo) return { cardUrl: null, template: null }; // no real photo found for this candidate — never fabricate one
+  // searchTerms is empty ONLY when the AI already confirmed no real
+  // depictable subject exists — never attempt a photo search on nothing
+  // (that's how "Pro Ejected" got invented in the first place). A story
+  // with a genuine subject but a failed photo search is still dropped
+  // below, same as before — this only skips the search itself when there
+  // was never a real subject to search for.
+  const photo = searchTerms.length > 0 ? await searchAndPick(searchTerms[0], HERO_FACE_MULTIPLIER, page.sport_groups[0]) : null;
+  if (searchTerms.length > 0 && !photo) return { cardUrl: null, template: null, resolvedEntity: null }; // no real photo found for this candidate — never fabricate one
 
-  // Recompute kicker/accent when the two-subject layout fell back here (its
-  // photo search failed) — a card that's now single-subject standard
-  // editorial shouldn't still carry a "HEAD-TO-HEAD" kicker from the layout
-  // it didn't end up using.
+  // ⛔ OPERATOR FIX (2026-08-12): "use the MLB sport image or the team logo
+  // rather than fabricating an image." When there's genuinely no person to
+  // depict, ground the card in a real league logo/generic sport image
+  // instead of an AI-invented scene — pickPhoto (used for player photos
+  // above) hard-rejects any zero-face candidate, which a logo always is by
+  // definition, so this uses the separate, non-face-requiring path.
+  // ⛔ OPERATOR FIX (2026-08-12, same day): "the audience is fans — a wrong
+  // image gets reported straight away." This path shipped without the
+  // same metadata verification every player-photo search already has —
+  // filter candidates the exact same way searchAndPick does before
+  // accepting one, so a mislabeled or wrong-league logo can't slip through
+  // just because nothing here was checking.
+  const genericSearchTerm = page.sport_groups[0] || page.page_theme;
+  const genericPhoto =
+    searchTerms.length === 0
+      ? await searchImages(`${genericSearchTerm} logo`, "all", 8)
+          .then((results) => results.filter((r) => metadataMatchesSubject(r, genericSearchTerm)))
+          .then((verified) => pickGenericPhoto(verified.map((r) => r.url)))
+          .catch((e) => {
+            console.error(`renderCard: generic logo search failed for ${page.page_id}: ${(e as Error).message}`);
+            return null;
+          })
+      : null;
+
+  // The layout may fall back here (its photo search failed) — no kicker
+  // recompute needed since the kicker is now the CTA (chooseKicker above),
+  // never a layout-dependent story-category label.
   const singleLayout: TemplateId = template === "comparison" || template === "quote" ? "standard_editorial" : template;
-  const singleKicker = singleLayout === template ? kicker : chooseKicker(candidate, singleLayout);
   const singleAccentHex = isTradeStory ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
+  const singleHeadline = shortHeadline(candidate.headline);
+  const singleCopy = await buildNarrativeRenderCopy(candidate, page, athleteNames, singleLayout, {
+    headline: singleHeadline,
+    accent: chooseAccentWord(singleHeadline),
+    kicker,
+    story_type: isTradeStory ? "trade rumor" : singleLayout.replace(/_/g, " "),
+  });
   const spec: RenderSpec = {
     page_id: page.page_id,
-    headline: shortHeadline(candidate.headline),
-    accent: chooseAccentWord(candidate.headline),
-    kicker: singleKicker,
-    story_type: isTradeStory ? "trade rumor" : singleLayout.replace(/_/g, " "),
+    headline: singleCopy.headline,
+    accent: singleCopy.accent,
+    kicker: singleCopy.kicker,
+    story_type: singleCopy.story_type,
     layout: singleLayout,
     accent_hex: singleAccentHex,
-    photo_subjects: [searchTerms[0]],
-    reference_photo_url: cropTo(photo, CARD_WIDTH, CARD_HEIGHT, HERO_FACE_MULTIPLIER).url,
+    photo_subjects: searchTerms.length > 0 ? [searchTerms[0]] : [],
+    reference_photo_url: photo
+      ? cropTo(photo, CARD_WIDTH, CARD_HEIGHT, HERO_FACE_MULTIPLIER).url
+      : genericPhoto
+      ? cropTo(genericPhoto, CARD_WIDTH, CARD_HEIGHT).url
+      : null,
     is_quote: false,
     quote_text: null,
     quote_attribution: null,
   };
 
   const cardUrl = await renderAndVerifyText(spec, page.page_id);
-  if (!cardUrl) return { cardUrl: null, template: null };
-  return { cardUrl, template: singleLayout };
+  if (!cardUrl) return { cardUrl: null, template: null, resolvedEntity: null };
+  return { cardUrl, template: singleLayout, resolvedEntity: searchTerms[0] || null };
 }
 
 export async function postToThreads(

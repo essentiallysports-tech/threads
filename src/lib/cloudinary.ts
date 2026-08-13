@@ -24,6 +24,7 @@
 // still a real, deliberate choice, not a silent default.
 
 import { createHash } from "crypto";
+import { fetchWithTimeout } from "./httpUtil";
 
 function sign(params: Record<string, string | number | boolean>, apiSecret: string): string {
   const toSign = Object.keys(params)
@@ -66,11 +67,11 @@ async function uploadAndDetect(sourceUrl: string): Promise<UploadInfo> {
     signature,
   });
 
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form,
-  });
+  const res = await fetchWithTimeout(
+    `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+    { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form },
+    30_000
+  );
   if (!res.ok) throw new Error(`Cloudinary upload -> ${res.status}: ${await res.text()}`);
 
   const data = (await res.json()) as {
@@ -305,6 +306,32 @@ export async function cropForCard(sourceUrl: string, width: number, height: numb
 // (see faceFullyContained's module comment). A candidate whose largest face
 // would end up clipped at THIS target is skipped in favor of the next
 // ranked candidate, same as an unreachable URL.
+// ⛔ OPERATOR FIX (2026-08-12): "use the MLB sport image or the team logo
+// rather than fabricating an image." When a story genuinely has no
+// depictable person (extractEntityViaAI confirmed none), the render prompt
+// used to ask the AI to invent a generic "richly textured sports scene"
+// from scratch with nothing real to anchor it — better to use a REAL
+// league/team logo or generic sport image from ES-MCP instead. pickPhoto
+// above hard-rejects any zero-face candidate (correct for player photos —
+// a photo with no visible face can't be the athlete), which makes it
+// structurally unusable here: a logo has zero faces by definition. This is
+// the same reachability-check loop with that one requirement dropped —
+// cropTo/computeFaceCrop already have a real, deliberate zero-face
+// fallback (a centered crop at the target aspect), so nothing downstream
+// needs to change to accept this result.
+export async function pickGenericPhoto(candidateUrls: string[]): Promise<PickedPhoto | null> {
+  const { cloudName } = requireCreds();
+  for (const url of candidateUrls) {
+    try {
+      const info = await uploadAndDetect(url);
+      return { cloudName, ...info };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function pickPhoto(
   candidateUrls: string[],
   width: number,

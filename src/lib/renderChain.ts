@@ -42,10 +42,13 @@ function openartAvailable(): boolean {
   return Boolean(process.env.OPENART_MCP_RESOURCE?.trim() || process.env.OPENART_CLIENT_ID?.trim());
 }
 
+// ⛔ OPERATOR FIX (2026-08-12): I2I-only per operator direction — see
+// openart.ts's renderViaOpenArtPrompt, which now throws rather than
+// silently falling back to a differently-priced text2image mode when no
+// reference photo exists. That failure is caught by the try/catch in the
+// path-attempt loop below like any other render error, so the chain still
+// moves on to the next available path (or drops the candidate) normally.
 async function renderViaOpenArt(spec: RenderSpec, prompt: string): Promise<string> {
-  if (!spec.reference_photo_url) {
-    console.warn(`OPENART_NO_REFERENCE: ${spec.page_id} rendering text2image — likeness is unverified by construction`);
-  }
   const result = await renderViaOpenArtPrompt(prompt, spec.reference_photo_url);
   return result.imageUrl;
 }
@@ -145,7 +148,15 @@ export function isSafetyRefusal(message: string): boolean {
   return /safety system|content[_ ]policy|safety[_ ]violation|rejected by the safety|moderation[_ ]blocked/i.test(message);
 }
 
-export async function renderCardViaAi(spec: RenderSpec): Promise<RenderOutcome> {
+// ⛔ OPERATOR FIX (2026-08-12, real live incident): the poll-timeout cut
+// (openart.ts) closes the single-call cost, but the path/reroll matrix
+// below can still stack several calls back to back. `deadlineMs` is a
+// second, independent ceiling on the WHOLE chain — checked before every
+// path attempt and every reroll/described retry, so no combination of
+// rerolls and slow calls can ever exceed it. Optional and defaults to no
+// deadline so any other caller's behavior is unchanged.
+export async function renderCardViaAi(spec: RenderSpec, deadlineMs?: number): Promise<RenderOutcome> {
+  const deadlinePassed = () => deadlineMs !== undefined && Date.now() > deadlineMs;
   const prompt = buildRenderPrompt(spec);
   const attempts: RenderAttempt[] = [];
 
@@ -162,12 +173,35 @@ export async function renderCardViaAi(spec: RenderSpec): Promise<RenderOutcome> 
   const paths: Array<{ name: string; available: boolean; run: (p: string) => Promise<string>; retriesDescribed: boolean }> = [
     { name: "openart_mcp", available: openartAvailable(), run: (p) => renderViaOpenArt(spec, hasReference ? referencePrompt : p), retriesDescribed: !hasReference },
     { name: "openai_direct", available: openaiAvailable(), run: (p) => renderViaOpenAi(spec, hasReference ? referencePrompt : p), retriesDescribed: !hasReference },
-    { name: "gemini_direct", available: geminiAvailable(), run: () => renderViaGemini(spec), retriesDescribed: false },
+    // ⛔ OPERATOR FIX (2026-08-10, real live incident): a real reference photo
+    // existed (from ES-MCP) for a named athlete, but OpenArt/OpenAI both
+    // failed for unrelated reasons, so the chain silently fell through to
+    // Gemini — which by design NEVER uses the reference photo and NEVER
+    // names the real person (see renderViaGemini above). The result posted
+    // as a normal success: a fully generic, no-likeness image standing in
+    // for a real person, with nothing distinguishing it from a proper
+    // render. This is exactly the "never substitute a generic/unrelated
+    // stock image" rule this project already enforces for missing photos
+    // (sourcing.ts's sourceFromEvergreenBank) — a real reference existing
+    // means Gemini's blind, unnamed fallback would misrepresent the actual
+    // subject, so it's not an acceptable substitute here. When a reference
+    // photo exists, Gemini is not offered as a fallback at all — if
+    // OpenArt and OpenAI both fail, the whole render fails and the caller
+    // tries the next candidate, per the existing pool-retry design, rather
+    // than post a wrong-looking image.
+    { name: "gemini_direct", available: geminiAvailable() && !hasReference, run: () => renderViaGemini(spec), retriesDescribed: false },
   ];
 
   for (const path of paths) {
+    if (deadlinePassed()) {
+      attempts.push({ path: "deadline", result: "render deadline exceeded — stopping before trying further paths" });
+      break;
+    }
     if (!path.available) {
-      attempts.push({ path: path.name, result: "skipped: not configured" });
+      const reason = path.name === "gemini_direct" && geminiAvailable() && hasReference
+        ? "skipped: reference photo exists — Gemini's no-reference fallback would misrepresent the real subject"
+        : "skipped: not configured";
+      attempts.push({ path: path.name, result: reason });
       continue;
     }
     try {
@@ -181,6 +215,10 @@ export async function renderCardViaAi(spec: RenderSpec): Promise<RenderOutcome> 
       if (hasReference && path.name !== "gemini_direct" && isSafetyRefusal(message)) {
         let rerolled = false;
         for (let attempt = 1; attempt <= 2 && !rerolled; attempt++) {
+          if (deadlinePassed()) {
+            attempts.push({ path: `${path.name}_reroll${attempt}`, result: "skipped: render deadline exceeded" });
+            break;
+          }
           try {
             const url = await path.run(prompt);
             attempts.push({ path: `${path.name}_reroll${attempt}`, result: "ok" });
@@ -194,7 +232,7 @@ export async function renderCardViaAi(spec: RenderSpec): Promise<RenderOutcome> 
         continue;
       }
 
-      if (path.retriesDescribed && isSafetyRefusal(message)) {
+      if (path.retriesDescribed && isSafetyRefusal(message) && !deadlinePassed()) {
         try {
           const url = await path.run(describedPrompt);
           attempts.push({ path: `${path.name}_described`, result: "ok" });

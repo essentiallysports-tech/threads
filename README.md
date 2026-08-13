@@ -114,11 +114,19 @@ loop.
    Routine) and validates its output through the same
    `runDeterministicChecks` before anything posts — never trust it blindly.
 5. ~~AWS permissions for EC2~~ — ✅ confirmed granted and deployed; the
-   worker runs live on `i-0337259ca3e450c8d` under pm2, boot-persistent.
+   worker runs live on `i-00e6ab9285cec820a` (t4g.small, arm64,
+   18.234.87.57) under pm2, boot-persistent. Replaces the original
+   `i-0337259ca3e450c8d` (t3.small, x86_64), which developed a permanently
+   broken `authorized_keys` (SSH access lost, root cause never confirmed —
+   the private key itself was verified correct against AWS's key-pair
+   fingerprint, so something edited the file in place on a running
+   instance) and was retired 2026-08-10.
 6. **No `.env` secrets manager** — secrets currently live in `.env.local` on
-   the worker host (`/opt/es-threads-temporal/.env.local`), loaded via
-   `pm2`'s `ecosystem.config.js`. Fine for a single box; revisit if this
-   ever needs multiple workers or a real CI/CD pipeline.
+   the worker host (`/home/ec2-user/es-threads-temporal/.env.local`), loaded
+   via a small `start-worker.sh` wrapper script that `pm2` runs (Amazon
+   Linux 2023's pm2 build doesn't support `pm2 start --env-file`). Fine for
+   a single box; revisit if this ever needs multiple workers or a real
+   CI/CD pipeline.
 
 ## Running it
 

@@ -12,6 +12,7 @@
 
 import { Candidate, PageConfig } from "./types";
 import { buildCaption } from "./caption";
+import { fetchWithTimeout } from "./httpUtil";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-sonnet-4-5";
@@ -45,6 +46,22 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
   return t.replace(/\*\*/g, "").replace(/^#+\s*/gm, "");
 }
 
+// ⛔ OPERATOR FIX (2026-08-10): "remove the m dashes, they scream that post
+// is AI." An em/en dash as a stand-in for a period or comma is one of the
+// most-cited "this was written by an LLM" tells on Threads, and the model
+// reaches for it reflexively regardless of prompt instructions — a prompt
+// rule alone (below) isn't reliable enough on its own. This is the
+// deterministic backstop: applied to EVERY caption that ships, both the
+// AI-authored path and the deterministic template fallback, so no dash ever
+// survives to a live post even if the model ignores the instruction.
+function stripEmDashes(text: string): string {
+  return text
+    .replace(/\s*[—–]\s*/g, ", ")
+    .replace(/,\s*,/g, ",")
+    .replace(/,(\s*[.!?])/g, "$1")
+    .replace(/,(\s*\n)/g, "$1");
+}
+
 function violatesPolicy(text: string, charLimit: number): string | null {
   if (!text.trim()) return "EMPTY";
   if (text.length > charLimit) return `OVER_CHAR_LIMIT:${text.length}/${charLimit}`;
@@ -55,21 +72,25 @@ function violatesPolicy(text: string, charLimit: number): string | null {
 }
 
 async function callGateway(prompt: string, apiKey: string): Promise<string> {
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 400,
-      temperature: 0.8,
-    }),
-  });
+  const res = await fetchWithTimeout(
+    GATEWAY_URL,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 400,
+        temperature: 0.8,
+      }),
+    },
+    45_000
+  );
   if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
-  return stripWrappingQuotesAndMarkdown(content);
+  return stripEmDashes(stripWrappingQuotesAndMarkdown(content));
 }
 
 function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: string[], charLimit: number, retryNote?: string): string {
@@ -91,10 +112,23 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
       ? `must end on a genuine DEBATE QUESTION that forces the reader to take a side — a real, specific question tied to this exact story, never a generic "thoughts?"`
       : `must end on a strong DECLARATIVE TAKE, not a question — a real opinion stated as fact, in this account's own voice, that a reader will want to argue with or co-sign in the replies`;
 
+  // ⛔ OPERATOR FIX (2026-08-12, real live incident): a p54 (Conor McGregor
+  // fanpage) post shipped with the injury backwards — the real headline
+  // ("Max Holloway reveals what Conor McGregor said to him after injuring
+  // knee at UFC 329") has genuinely ambiguous gerund-clause grammar with no
+  // real article body available (web_search candidates carry no real page
+  // content, just title+URL — see webSearch.ts), and the model guessed the
+  // wrong subject for who actually got hurt. The page's OWN registered
+  // page_theme already has the correct ground truth ("his [McGregor's]
+  // first-round TKO loss to Holloway at UFC 329, the resulting knee
+  // injury") sitting unused in the registry the whole time — passing it in
+  // gives the model real grounding to resolve exactly this kind of
+  // ambiguous-headline entity-role confusion instead of guessing.
   const facts = [
     `Headline: ${stripHtml(candidate.headline)}`,
     candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
     athleteNames.length > 0 ? `Key people/teams involved: ${athleteNames.join(", ")}` : null,
+    page.page_theme ? `Established background on this page's ongoing storyline (use this to correctly resolve who did what to whom if the headline is ambiguous — this is real, verified context, not something to add new claims from): ${stripHtml(page.page_theme)}` : null,
     `Source: ${
       candidate.source === "beehiiv_newsletter"
         ? "our own newsletter"
@@ -106,6 +140,8 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
         ? "a real social media post (Reddit/X) found via search"
         : candidate.source === "evergreen_search"
         ? "a real news article found via search"
+        : candidate.source === "beehiiv_poll"
+        ? "a real poll our own newsletter already asked its readers — the headline IS the real question, don't invent a result or outcome, frame this as inviting Threads readers to weigh in the same way"
         : "a news story"
     }`,
   ]
@@ -115,24 +151,111 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
   return [
     `Write a Threads post (the main post, not the reply) for a sports fan page, voiced as ${voiceInstruction}.`,
     ``,
+    // ⛔ OPERATOR FIX (2026-08-12): "we are not creating for random masses
+    // but for fans, who know the basics... make sure the posts entice
+    // fans, not a generic experience." The audience already knows who
+    // this player/team is, their recent form, their role — writing like
+    // you're introducing them to a stranger is exactly the flat, generic
+    // tone that fails to entice someone who already follows this closely.
+    // The curiosity gap has to be pitched AT that existing knowledge (an
+    // insider angle, a detail even a close follower hasn't clocked yet),
+    // not a 101-level recap of things this audience already has.
+    `Your reader is a real, engaged fan of this team/sport — they already know who this player is, the team's current situation, and the recent context. NEVER explain basics they already know (who someone is, what their role is, generic background) — that reads as written for a stranger, not a fan, and instantly feels generic. Write like you're talking to someone already in the conversation, not introducing the topic to them.`,
+    ``,
     `Here are the ONLY facts you know about this story — do not invent any detail, quote, number, or context beyond what's given:`,
     facts,
     ``,
-    `Structure it in FOUR moves, same discipline as EssentiallySports's caption architecture:`,
+    `Before writing: if the headline's grammar leaves it unclear WHO did an action or WHO an injury/quote/event actually happened to (e.g. an unclear pronoun or an unattributed gerund clause), do not guess — resolve it using the background context above if it's given, and if it's still genuinely unclear, write around that specific detail rather than risk assigning it to the wrong person. Getting a real event backwards (who got hurt, who said what to whom) is a worse error than leaving a detail out.`,
     ``,
-    `1. HOOK (1 line) — must emotionally charge or surprise the reader. This must be a DIFFERENT angle than the headline, never a rephrasing of it — if the hook and the headline say the same thing, the reader has no reason to keep reading. Examples of the right register: "No one expected her to say that in front of the cameras." / "Just hours after it happened, he did something that left people speechless." Lead with the emotion/stakes, not a label.`,
-    `2. THE STORY (2 short paragraphs, conversational, NOT a copied or lightly-reworded headline) — narrate what actually happened using ONLY the given facts, cutting filler, highlighting the human stakes. First paragraph: the core of what happened. Second paragraph: why it matters / the real context or consequence. Write it the way you'd tell a friend, not like a blog intro. This is the substance of the post — go deeper than a one-line summary, using everything genuinely available in the given facts.`,
-    `3. CLIFFHANGER + REPLY HOOK (1-2 lines) — tease the part of the story you're deliberately NOT explaining, so there's a real reason to tap through, THEN ${replyForcingInstruction}. Give nothing away in the tease itself. Examples of the right register for the tease: "But what happened next is the part that changed everything." / "And there's one detail here most people are going to miss."`,
+    // ⛔ OPERATOR FIX (2026-08-13, real live incident): a real post opened
+    // "This one's tricky because the headline is pure WNBA but our page is
+    // Lakers through and through... not our lane... we're staying in our
+    // world on this one" — the model noticed the background context (this
+    // page's own theme) didn't match the story and, instead of just
+    // writing the post, wrote ABOUT the mismatch. That candidate should
+    // never have reached this prompt at all (fixed upstream), but this
+    // instruction is real defense-in-depth: NEVER let a future edge case
+    // produce this same self-referential, "let me address why this is
+    // weird" register — a reader should never see the account talking
+    // about its own selection process, uncertainty, or lane.
+    `NEVER write ABOUT this page, its usual focus, or whether this story "belongs" here — never say things like "this isn't our lane," "we're staying in our world," "this one's tricky," "not sure why we're covering this," or any version of that. If the facts given to you don't obviously fit this page's usual subject, that's not something to comment on — just write the real story directly and confidently, the way any of this page's normal posts would. The account should never sound uncertain about what it's allowed to post.`,
+    ``,
+    // ⛔ OPERATOR REVERSAL (2026-08-12): "same account, same reach — the
+    // quality of post is the reason our link clicks are so low." Real
+    // manual posts on these SAME accounts are self-contained (fact →
+    // context → one genuine closing line, nothing withheld) and get real
+    // clicks; ours mandated a hook that can't restate the headline, a
+    // DELIBERATELY incomplete story, and a forced reply-bait cliffhanger —
+    // every post, regardless of whether the facts actually support a real
+    // second beat. Operator's explicit call: hybrid, not a full reversal.
+    // Most real stories are ONE complete event with nothing distinct left
+    // to reveal — write those as a complete, self-contained post, the way
+    // a real editorial account would. Reserve the withhold-for-reply
+    // technique for the genuinely rarer case where the facts contain an
+    // actual separate, specific detail (a real quote, a distinct number,
+    // a named follow-up) worth holding back — never invent one just to
+    // justify a cliffhanger.
+    `Before structuring this: does the story have a genuine SECOND beat — a specific quote, number, or detail in the facts above that is meaningfully separate from the main event and worth holding back for the reply? Only answer yes if that detail is REALLY there in the facts, not something you'd need to invent. Most stories are a single complete event with nothing distinct left over — for those, use STRUCTURE A. Only use STRUCTURE B when there's a real, specific, separate detail to hold back.`,
+    ``,
+    `STRUCTURE A — COMPLETE POST (the default; use this unless the facts genuinely support Structure B):`,
+    `1. HOOK (1 line) — a genuine angle on the story, not a flat restatement of the headline. Doesn't need to be dramatic (not every story is), but it should give the reader something the headline alone doesn't — the stakes, the "why this matters" angle, or the specific human detail. Examples of the right register: "No one expected her to say that in front of the cameras." / "This is the kind of stat line that quietly changes a season."`,
+    `2. THE FULL STORY (2-3 short paragraphs, conversational, NOT a copied or lightly-reworded headline) — tell the WHOLE story using everything genuinely available in the given facts, including the specific detail/quote/number if there is one. Nothing held back. First part: what actually happened. Second part: why it matters / the real context or consequence. Write it the way you'd actually tell a friend the news — direct, complete, no artificial suspense.`,
+    `3. CLOSING LINE (1 short line) — a genuine editorial reaction to what you just told them: an opinion, an observation, or a real open question the story raises (not one you're pretending to withhold — a real one). This is NOT a cliffhanger; the story is already told. Examples of the right register: "Respect between champions speaks louder than any rivalry." / "Some legacies are measured by impossible standards." Then close with a short, honest CTA line pointing at the reply${
+      candidate.linkContext === "subscribe" ? " (our newsletter, not this exact story — see the honesty rule below)" : ""
+    }.`,
+    ``,
+    `STRUCTURE B — TWO-PART (only when the facts genuinely contain a real, separate detail worth holding back):`,
+    `1. HOOK (1 line) — same bar as Structure A.`,
+    `2. THE STORY (1-2 short paragraphs) — the core of what happened, everything EXCEPT that one specific held-back detail.`,
+    `3. CLIFFHANGER + REPLY HOOK (1-2 lines) — tease the ONE real, specific detail you're deliberately not explaining yet, then ${replyForcingInstruction}. Give nothing away in the tease itself, and never invent a tease for a detail that isn't real. Examples of the right register: "But what he said right after is the part nobody's talking about yet." / "And there's one number in this that changes the whole read."`,
+    `4. CTA (1 short line) — point at the link in the reply, tied to what's specifically waiting there.`,
+    ``,
     candidate.linkContext === "subscribe"
-      ? `4. CTA (1 short line) — the link in the reply is NOT this specific story, it's our newsletter — do not claim "full story in the reply" or imply the reply covers this exact story, that would be misleading. Instead frame it as "want more like this? subscribe below" in your own words, genuinely tied to the story's topic.`
-      : `4. CTA (1 short line) — point at the link in the reply below, tied to what's specifically waiting there. E.g. "(Full story in the reply below)" style, adapted to fit naturally after the cliffhanger.`,
+      ? // ⛔ OPERATOR FIX (2026-08-11): "the CTA is just subscribe for more...
+        // people wouldn't just subscribe till they're given a better bait."
+        // The honesty constraint (never claim the reply covers THIS exact
+        // story) stays — that's a real fabrication rule, not the problem.
+        // ⛔ OPERATOR CORRECTION (2026-08-12, same day, caught before this
+        // shipped wide): the first fix over-corrected into a NEW
+        // fabrication risk — "we break down every one of these late-race
+        // calls in the newsletter" is a specific claim about the
+        // newsletter's own editorial content that nothing here actually
+        // knows is true. "Only be used when we actually have that in our
+        // newsletter, else not okay" — same rule as everywhere else in
+        // this pipeline: specificity is only allowed when it's a
+        // VERIFIABLE fact, never an invented-but-plausible-sounding one.
+        // The one thing genuinely known and verifiable here is the
+        // story's own topic/entity (it's literally what was just written
+        // about) — so tie the pitch to THAT, never to a claim about what
+        // the newsletter specifically covers.
+        `CTA honesty rule (applies to whichever structure you used): the link in the reply is NOT this specific story, it's our newsletter — do not claim "full story in the reply" or imply the reply covers this exact story, that would be misleading. Make it a genuine reason to tap, not a flat command, by naming the SPECIFIC entity/team/topic this story is genuinely about (that's a real, known fact — it's what you just wrote about) — e.g. "Want more on Bell's title push? That's exactly our newsletter's lane." NEVER invent a specific claim about what the newsletter itself covers or how often ("we break down every one of these," "we cover this every week") unless that's a fact actually given to you — you don't know the newsletter's own content, only this story's topic. Vary the phrasing every time; never default to the same template sentence twice.`
+      : `CTA honesty rule (applies to whichever structure you used): point at the link in the reply, tied to what's specifically waiting there. E.g. "(Full story in the reply below)" style — but only if Structure B's held-back detail is genuinely IN that reply; for Structure A, phrase it as more/related coverage since you already told the whole story.`,
     ``,
-    `Formatting: aim for roughly 6-7 lines total across these four moves (a real, substantive post, not a 3-line skeleton) — but NEVER pad with filler or repeat yourself just to hit a line count. If the given facts genuinely don't support that much substance, a shorter, honest post beats a padded one. The ${charLimit}-character hard limit below is non-negotiable and takes priority over hitting 6-7 lines — write tighter sentences rather than overflow it; a well-edited 5-line post beats a 7-line post that gets discarded for going over.`,
+    // ⛔ OPERATOR FIX (2026-08-12, real live incident): live logs showed
+    // this prompt's own text repeatedly overshooting the hard limit by
+    // 100-180 characters across 3 full retries before falling back — "aim
+    // for 6-7 lines" and "the char limit is non-negotiable" were fighting
+    // each other, wasting real LLM round-trips inside the fixed run
+    // budget. Giving a concrete character TARGET below the hard limit
+    // (not just "stay under X") gives the model actual margin to work
+    // with instead of writing to the edge and overshooting.
+    `Formatting: aim for roughly 6-7 lines total across these four moves (a real, substantive post, not a 3-line skeleton) — but NEVER pad with filler or repeat yourself just to hit a line count. If the given facts genuinely don't support that much substance, a shorter, honest post beats a padded one. Target around ${Math.round(charLimit * 0.8)} characters total — leave real margin below the ${charLimit}-character hard limit, don't write to the edge and risk going over. That hard limit is non-negotiable and takes priority over hitting 6-7 lines — write tighter sentences rather than overflow it; a well-edited 5-line post beats a 7-line post that gets discarded for going over.`,
     `Use short paragraphs with a blank line between each of the four moves — never one dense wall of text.`,
     `- Do NOT ask people to like, comment, share, tag someone, double-tap, or react — that's banned engagement-bait, not a genuine hook.`,
     `- Never invent a detail, quote, or number not in the facts above just to make the post feel more substantive — a true, well-chosen detail from the real facts beats a fabricated dramatic one.`,
     `- Never reveal in the CTA/cliffhanger something you already fully explained in move 2 — the whole point is an open loop, not a redundant recap.`,
+    // ⛔ OPERATOR FIX (2026-08-10, real live incident): an Angel Reese post
+    // spelled out the exact record ("fastest to reach 70 career double-
+    // doubles... beating Tina Charles's old record by 25 games") in the
+    // caption text, and the on-image card ALSO showed those same numbers —
+    // so nothing was left unknown, and no one had a real reason to tap the
+    // reply. If the headline's core fact IS a specific number/stat/record,
+    // that exact figure is what the accompanying infographic exists to
+    // show — the caption's job is to sell the emotional weight of it, not
+    // re-print the number a second time.
+    `- If the story's core fact is a specific number, stat, or record (a milestone reached, a record broken, a stat line), do NOT spell out that exact figure in your text — assume the reader can already see it on the card. Reference the achievement qualitatively ("she just broke a WNBA record nobody saw coming") and save the actual number/detail for the reply — that number IS the reason to tap through, so give it away and there's nothing left to click for.`,
     `- Plain text only. No markdown, no hashtags, no emoji spam (one or two is fine if it fits the voice).`,
+    `- Never use em dashes (—) or en dashes (–) anywhere in the text — that's a well-known "this was written by AI" tell on Threads. Use a period, comma, colon, or "and" instead.`,
     `- Hard limit: ${charLimit} characters total, including spaces — use as much of that space as the real facts support.`,
     retryNote ? `\nIMPORTANT — your previous attempt failed because: ${retryNote}. Fix that specifically.` : "",
     ``,
@@ -158,13 +281,24 @@ export async function buildNarrativeCaptionText(
 ): Promise<NarrativeCaptionResult> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   const charLimit = page.threads?.char_limit || 500;
-  const fallback = buildCaption(candidate, page);
+  // Sanitized too, not just the AI path — a real headline pulled verbatim
+  // into the deterministic template (buildCaption's part1) can itself
+  // contain an em/en dash from the source article title.
+  const fallback = stripEmDashes(buildCaption(candidate, page));
 
   if (!apiKey) return { text: fallback, usedFallback: true, violation: "NO_API_KEY" };
 
   let retryNote: string | undefined;
   let lastOverLimitText: string | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // ⛔ OPERATOR FIX (2026-08-12, real live incident): was 3 attempts. Live
+  // logs (p58/p60, 2026-08-12 10:00Z run) showed char-limit overshoot
+  // failing 2-3 attempts in a row before the deterministic trimToFit
+  // recovery below ever ran — that's 2-3 full LLM round-trips wasted per
+  // affected candidate, inside a fixed 20-min run budget, for a case that
+  // already has a real, working fallback. 2 attempts (one real retry with
+  // the exact-overage feedback) then trim: same quality outcome, less
+  // wasted time.
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const prompt = buildPrompt(candidate, page, athleteNames, charLimit, retryNote);
       const text = await callGateway(prompt, apiKey);

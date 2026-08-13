@@ -9,6 +9,8 @@
 // parsing that line is more robust than depending on the exact wording
 // around it, which is UI copy the ES-MCP team could tweak.
 
+import { fetchWithTimeout } from "./httpUtil";
+
 const MCP_URL = "https://mcp.essentiallysports.com/mcp";
 const URL_LINE_RE = /Full-resolution URL[^:]*:\s*(\S+)/;
 
@@ -23,15 +25,19 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
   const token = process.env.ES_MCP_BEARER_TOKEN;
   if (!token) throw new Error("ES_MCP_BEARER_TOKEN is not set");
 
-  const res = await fetch(MCP_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
+  const res = await fetchWithTimeout(
+    MCP_URL,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
-  });
+    30_000
+  );
   if (!res.ok) throw new Error(`ES-MCP ${name} -> ${res.status}: ${await res.text()}`);
 
   const raw = await res.text();
@@ -65,6 +71,41 @@ export async function searchImages(query: string, type: "agency" | "custom" | "a
   return texts.map(parseResult).filter((r): r is EsImageResult => r !== null);
 }
 
+// ⛔ OPERATOR FIX (2026-08-11, real live incident): a Curt Cignetti photo was
+// used on a Stephanie White post (and another mismatched image on a
+// separate post) — confirmed live via a screenshot. pickPhoto/cropForCard
+// (cloudinary.ts) deliberately trust ES-MCP's own relevance ranking for
+// "is this the right subject" (see that file's 2026-08-06 revert comment —
+// face-detection can't tell WHICH face is the athlete), but nothing
+// anywhere ever cross-checks the search hit's OWN title/caption text
+// against the name we searched for. That's the real gap: ES-MCP's ranking
+// can and did return an unrelated person's photo, and no downstream step
+// catches it. This is a cheap, additional safety net — not a replacement
+// for ES-MCP's ranking, which still fully decides ORDER among results that
+// pass this filter.
+//
+// A candidate is rejected only when its title/caption has REAL, checkable
+// text that mentions a specific different context and contains none of the
+// searched name's tokens — generic/boilerplate credit lines ("Getty
+// Images", empty title) are waved through since there's nothing to verify
+// against, and rejecting those would starve real photos of comparably
+// terse metadata (a known, common case, not a bug).
+const GENERIC_METADATA_RE = /^(getty images?|action images?|icon sportswire|imagn|reuters|ap photo|usa today|zuma press)$/i;
+const STOPWORD_TOKENS = new Set(["the", "and", "of", "for", "vs", "news"]);
+
+export function metadataMatchesSubject(result: EsImageResult, searchTerm: string): boolean {
+  const tokens = searchTerm
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !STOPWORD_TOKENS.has(t));
+  if (tokens.length === 0) return true; // nothing meaningful in the search term to check against
+
+  const text = `${result.title} ${result.caption || ""}`.toLowerCase().trim();
+  if (!text || GENERIC_METADATA_RE.test(result.title.trim())) return true; // no real metadata to check against
+
+  return tokens.some((t) => text.includes(t));
+}
+
 // Searches ES's media library for a real, ACTUALLY REACHABLE photo — tries
 // each candidate in ranked order and HEAD-checks it, since the media
 // library confirmed live (2026-08-06) to occasionally contain entries whose
@@ -78,7 +119,7 @@ export async function searchOneImage(query: string, type: "agency" | "custom" | 
   const candidates = await searchImages(query, type, 5);
   for (const candidate of candidates) {
     try {
-      const head = await fetch(candidate.url, { method: "HEAD" });
+      const head = await fetchWithTimeout(candidate.url, { method: "HEAD" }, 10_000);
       if (head.ok) return candidate;
     } catch {
       // network error on this one candidate — try the next, don't fail the whole search

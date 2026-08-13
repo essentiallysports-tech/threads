@@ -4,14 +4,17 @@
 // "Invalid API key" even with a perfectly valid key. Do not "fix" this to
 // look more standard.
 
+import { fetchWithTimeout } from "./httpUtil";
+
 const BASE = "https://api.postiz.com/public/v1";
 const KEY = process.env.POSTIZ_API_KEY!;
 
 async function postizFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { Authorization: KEY, "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
+  const res = await fetchWithTimeout(
+    `${BASE}${path}`,
+    { ...init, headers: { Authorization: KEY, "Content-Type": "application/json", ...(init?.headers || {}) } },
+    30_000
+  );
   if (!res.ok) throw new Error(`Postiz ${path} -> ${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -33,12 +36,12 @@ export async function listIntegrations(): Promise<PostizIntegration[]> {
 // {id, path} a post's image array actually needs — passing the bare card
 // URL directly is not a valid image reference per their schema.
 async function uploadImageFromUrl(imageUrl: string): Promise<{ id: string; path: string }> {
-  const imageRes = await fetch(imageUrl);
+  const imageRes = await fetchWithTimeout(imageUrl, {}, 30_000);
   if (!imageRes.ok) throw new Error(`Fetching card image for Postiz upload -> ${imageRes.status}`);
   const blob = await imageRes.blob();
   const form = new FormData();
   form.append("file", blob, "card.png");
-  const res = await fetch(`${BASE}/upload`, { method: "POST", headers: { Authorization: KEY }, body: form });
+  const res = await fetchWithTimeout(`${BASE}/upload`, { method: "POST", headers: { Authorization: KEY }, body: form }, 30_000);
   if (!res.ok) throw new Error(`Postiz /upload -> ${res.status}: ${await res.text()}`);
   return res.json() as Promise<{ id: string; path: string }>;
 }

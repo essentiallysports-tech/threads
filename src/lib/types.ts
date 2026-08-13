@@ -57,7 +57,7 @@ export interface PageIndex {
 // an article-style story from the shared T2 pool the Facebook pipeline also
 // produces. This is the ONE thing per page this workflow tries to post.
 export interface Candidate {
-  source: "beehiiv_newsletter" | "shared_pool" | "es_article" | "web_search" | "social_search" | "evergreen_search";
+  source: "beehiiv_newsletter" | "shared_pool" | "es_article" | "web_search" | "social_search" | "evergreen_search" | "beehiiv_poll";
   key: string; // stable id for dedup — beehiiv post id, or source_story_id
   subject: string;
   headline: string;

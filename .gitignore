@@ -14,3 +14,19 @@ sg-id.txt
 # contains real AWS credentials by design (matches the org's other Routine
 # skill files) — its authoritative copy lives on S3, not in this repo
 ES-Infographic-Creation-Skill-v1.md
+
+# local tool config, one-off deploy packages, and scratch debug scripts —
+# never app code
+.claude/
+deploy*.tar.gz
+live-test-results*.json
+gen-*.js
+regenerate-*.js
+run-live-test*.js
+watch_*.ts
+wait_1500_v2*
+fix_missing_utm.js
+fix_registry.js
+samples/
+samples-*/
+samples-v4.json

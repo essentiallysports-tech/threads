@@ -22,6 +22,7 @@
 // bootstrap for when S3 is unreadable — after the first rotation, S3 is the
 // only place the current value lives.
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { fetchWithTimeout } from "./httpUtil";
 
 const TOKEN_ENDPOINT_DEFAULT = process.env.OPENART_TOKEN_ENDPOINT || "https://openart.ai/suite/api/auth/oauth/token";
 const MCP_RESOURCE_DEFAULT = process.env.OPENART_MCP_RESOURCE || "https://mcp.openart.ai/mcp";
@@ -68,11 +69,15 @@ interface TokenResponse {
 }
 
 async function postToken(endpoint: string, form: Record<string, string>): Promise<TokenResponse> {
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: new URLSearchParams(form).toString(),
-  });
+  const res = await fetchWithTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams(form).toString(),
+    },
+    20_000
+  );
   const json = (await res.json().catch(() => ({}))) as TokenResponse;
   if (!res.ok || json.error || !json.access_token) {
     throw new Error(`oauth_token_${res.status}: ${json.error ?? ""} ${json.error_description ?? ""}`.trim());
@@ -135,18 +140,39 @@ async function getAccessToken(): Promise<string> {
   }
 }
 
-async function mcpCall(method: string, params: Record<string, unknown>): Promise<any> {
+// ⛔ OPERATOR FIX (2026-08-12, real live incident): live logs confirmed a
+// real Cloudflare 502 ("origin_bad_gateway") from mcp.openart.ai itself at
+// 2026-08-12T10:13:26Z. Before this fix, that single transient blip threw
+// immediately and burned an entire reroll slot (a full new image-generation
+// attempt, up to 90s + real OpenArt credits) for what a 502/503/504 usually
+// is: a few-second edge-network hiccup, not a real outage. One quick,
+// cheap retry here recovers most of those for free, before falling back to
+// the expensive reroll machinery renderChain.ts already has.
+async function mcpCall(method: string, params: Record<string, unknown>, _isRetry = false): Promise<any> {
   const token = await getAccessToken();
-  const res = await fetch(MCP_RESOURCE_DEFAULT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
+  // Generous — this covers real image2image generation calls, which can
+  // legitimately take a while. Still a hard ceiling: no call here can hang
+  // forever regardless of how unresponsive OpenArt's server is.
+  const res = await fetchWithTimeout(
+    MCP_RESOURCE_DEFAULT,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  if (!res.ok) throw new Error(`OpenArt MCP ${method} -> ${res.status}: ${await res.text()}`);
+    150_000
+  );
+  if (!res.ok) {
+    if (!_isRetry && [502, 503, 504].includes(res.status)) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      return mcpCall(method, params, true);
+    }
+    throw new Error(`OpenArt MCP ${method} -> ${res.status}: ${await res.text()}`);
+  }
 
   const raw = await res.text();
   const dataLine = raw.split("\n").find((l) => l.startsWith("data: "));
@@ -198,7 +224,17 @@ export function isTerminalFailure(text: string): boolean {
 }
 
 export const OPENART_POLL_INTERVAL_MS = 5_000;
-export const OPENART_POLL_TIMEOUT_MS = 5 * 60_000;
+// ⛔ OPERATOR FIX (2026-08-12, real live incident): confirmed live — a single
+// stuck OpenArt generation burning the full 300s poll timeout, multiplied
+// across up to 2 rerolls x 2 outer renderAndVerifyText attempts, was the
+// dominant cause of runs missing the 13-post floor (every BELOW_RUN_FLOOR
+// log tonight shows "hit the time budget", not genuine rejections). With
+// PAGE_CONCURRENCY=6, one page stuck like this occupies a worker slot for
+// most of the run, starving every other page behind it. A real success
+// completes in well under 90s in practice; if it hasn't finished by then
+// it's effectively stuck, and failing fast to let the pipeline try the next
+// path/candidate/page beats waiting out a 5-minute hang on a doomed render.
+export const OPENART_POLL_TIMEOUT_MS = 90_000;
 
 export interface OpenArtCardResult {
   imageUrl: string;
@@ -215,13 +251,24 @@ export interface OpenArtCardResult {
 // the likeness, so the prompt (per the template) says nothing about the
 // subject's face/appearance in that mode. quality:"low" per operator
 // direction (~7 credits/image).
+// ⛔ OPERATOR FIX (2026-08-12): "make sure 7 credits are used per image
+// generation only, that is GPT image 2's I2I model only." This used to
+// silently fall back to mode:"text2image" whenever no reference photo was
+// available — a different OpenArt capability than the one costed and
+// approved at ~7 credits/low-quality. I2I-only now: no reference photo
+// means no OpenArt render is attempted at all (the caller's existing
+// try/catch treats this as a failed path and moves on), rather than
+// spending credits on an uncosted, unapproved mode.
 export async function renderViaOpenArtPrompt(prompt: string, referencePhotoUrl: string | null): Promise<OpenArtCardResult> {
+  if (!referencePhotoUrl) {
+    throw new Error("openart_i2i_only: no reference photo available — text2image is not an approved fallback");
+  }
   const generateTool = process.env.OPENART_MCP_TOOL?.trim() || "openart_generate_image";
   const pollTool = process.env.OPENART_MCP_POLL_TOOL?.trim() || "openart_creation_get";
 
   const started = await callTool(generateTool, {
     model: "gpt-image-2",
-    mode: referencePhotoUrl ? "image2image" : "text2image",
+    mode: "image2image",
     params: {
       prompt,
       imageCount: 1,
@@ -229,7 +276,7 @@ export async function renderViaOpenArtPrompt(prompt: string, referencePhotoUrl: 
       resolutionTier: "1k",
       quality: "low",
       autoEnhancePrompt: false,
-      ...(referencePhotoUrl ? { visualReferences: [{ type: "image", id: "subject", url: referencePhotoUrl, label: "subject reference" }] } : {}),
+      visualReferences: [{ type: "image", id: "subject", url: referencePhotoUrl, label: "subject reference" }],
     },
   });
   if (started.isError) throw new Error(`OpenArt generate_image tool error: ${started.text.slice(0, 300)}`);
