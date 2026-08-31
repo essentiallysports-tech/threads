@@ -161,7 +161,75 @@ export async function queryArticlesByEntity(entity: string, dateStart: string, d
   return queryArticles({ entity, publish_date_start: dateStart, publish_date_end: dateEnd, limit });
 }
 
+// Result memo for query_articles.
+//
+// Two call patterns above repeat identical questions many times per run:
+// resolveExternalLink (sourcing.ts) runs once per candidate and re-asks for the
+// same entity list over the same date window each time; sourceFromEsArticles
+// issues one query per sport_group, so pages sharing a sport ask the same
+// question independently. Within a run these answers cannot change — same
+// entity, same window, same day.
+//
+// This matters more than query latency suggests: the upstream data warehouse
+// bills per query EXECUTION as well as per byte scanned, so repeats are not free
+// even when the remote side serves them from its own cache.
+//
+// Caches the promise rather than the resolved value, so concurrent callers
+// coalesce onto one in-flight request instead of issuing N identical ones.
+// Rejections are evicted immediately: caching a failure would let one transient
+// error starve every later caller in the TTL window of a source that would have
+// succeeded on retry.
+//
+// TTL is shorter than the run schedule so each run still sees fresh articles;
+// it only collapses duplicates within a run. Raise ES_ARTICLE_CACHE_TTL_MS to
+// trade freshness for fewer calls.
+const ARTICLE_CACHE_TTL_MS = Number(process.env.ES_ARTICLE_CACHE_TTL_MS || 15 * 60 * 1000);
+const ARTICLE_CACHE_MAX_ENTRIES = Number(process.env.ES_ARTICLE_CACHE_MAX_ENTRIES || 500);
+
+const articleCache = new Map<string, { at: number; value: Promise<EsArticleResult[]> }>();
+
+// Key must be insensitive to property order — callers build `args` object literals
+// in different orders (queryRecentArticles adds `sport` conditionally, after the
+// dates), and two identical questions written in different key order must share
+// one cache entry.
+function articleCacheKey(args: Record<string, unknown>): string {
+  return JSON.stringify(
+    Object.keys(args)
+      .sort()
+      .map((k) => [k, args[k]])
+  );
+}
+
 async function queryArticles(args: Record<string, unknown>): Promise<EsArticleResult[]> {
+  const key = articleCacheKey(args);
+  const now = Date.now();
+
+  const hit = articleCache.get(key);
+  if (hit && now - hit.at < ARTICLE_CACHE_TTL_MS) return hit.value;
+
+  const value = queryArticlesUncached(args);
+  articleCache.set(key, { at: now, value });
+
+  // Evict on failure so a transient error is never served for the rest of the TTL.
+  // The identity check guards against deleting a newer entry that replaced this one.
+  value.catch(() => {
+    const current = articleCache.get(key);
+    if (current && current.value === value) articleCache.delete(key);
+  });
+
+  // Bounded FIFO — Map preserves insertion order, so the first key is the oldest.
+  // Keys rotate naturally as `dateISO` advances; this only stops unbounded growth
+  // in a long-lived worker process.
+  while (articleCache.size > ARTICLE_CACHE_MAX_ENTRIES) {
+    const oldest = articleCache.keys().next();
+    if (oldest.done) break;
+    articleCache.delete(oldest.value);
+  }
+
+  return value;
+}
+
+async function queryArticlesUncached(args: Record<string, unknown>): Promise<EsArticleResult[]> {
   const texts = await callTool("query_articles", args);
   const joined = texts.join("\n");
   const results: EsArticleResult[] = [];
