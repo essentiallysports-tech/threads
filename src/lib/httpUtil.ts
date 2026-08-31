@@ -20,3 +20,33 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
     clearTimeout(timer);
   }
 }
+
+// Bounded-concurrency map, used where a fan-out would otherwise open an
+// unbounded number of simultaneous remote calls.
+//
+// The shared Athena concurrency quota is account-wide, so an unbounded fan-out
+// here can exhaust capacity that other consumers depend on. Callers that swallow
+// their own query errors then treat a quota rejection as "no result found",
+// which degrades output quality silently as well as wasting spend.
+//
+// Total work, result ordering and Promise.all rejection semantics are unchanged;
+// only the number in flight at any moment differs.
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const bound = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: bound }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}

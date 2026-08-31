@@ -5,10 +5,18 @@ import { getSharedPool, getAllEvergreenAngles, EvergreenAngle } from "./s3regist
 import { queryRecentArticles, queryArticlesByEntity } from "./esMcp";
 import { sourceFromWebSearch, grokWebSearch, searchResultsToCandidates } from "./webSearch";
 import { sourceFromTwitter, sourceFromReddit } from "./socialSearch";
-import { fetchWithTimeout } from "./httpUtil";
+import { fetchWithTimeout, mapWithConcurrency } from "./httpUtil";
 
 const NEWSLETTER_MIX_TARGET = 0.7; // 70% of posts sourced directly from the newsletter, per operator directive
 const NEWSLETTER_MAX_AGE_HOURS = 24 * 5; // a 5-day-old "latest" edition is still a real, usable source; older falls back
+
+// How many candidates may have their ES link resolved concurrently. Each resolution
+// issues up to 3 query_articles calls and all shards run in parallel, so the real
+// ceiling on simultaneous warehouse queries is a multiple of this. Athena's
+// on-demand concurrency quota is account-wide and shared with other consumers, so
+// this job must not consume it alone. Latency cost is negligible because esMcp.ts
+// memoises the queries — most resolutions are cache hits with no network call.
+const LINK_RESOLUTION_CONCURRENCY = Number(process.env.LINK_RESOLUTION_CONCURRENCY || 3);
 
 // Deterministic source selection — no LLM judgment call. `todaysPostCountForPage`
 // and `newsletterCountForPage` are real counts read from the posted log by the
@@ -499,9 +507,16 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // caption writer never claims the newsletter covers a story it doesn't).
   // A candidate that resolves to neither is dropped here rather than left to
   // fail LINK_NOT_ES_OWNED downstream with no alternative tried.
-  unposted = (await Promise.all(unposted.map((c) => resolveExternalLink(c, page, dateISO)))).filter(
-    (c): c is Candidate => c !== null
-  );
+  // Bounded rather than an unbounded Promise.all: each resolution issues up to 3
+  // warehouse queries, so a page with many external candidates could otherwise
+  // open enough simultaneous queries to exhaust the shared account quota. Because
+  // resolveExternalLink catches its own query failures, a quota rejection is
+  // indistinguishable from "no matching ES article" and the candidate silently
+  // falls back to the generic subscribe CTA — so capping concurrency protects
+  // output quality as well as spend. Total work and ordering are unchanged.
+  unposted = (
+    await mapWithConcurrency(unposted, LINK_RESOLUTION_CONCURRENCY, (c) => resolveExternalLink(c, page, dateISO))
+  ).filter((c): c is Candidate => c !== null);
 
   // ⛔ OPERATOR FIX (2026-08-10): "there shouldn't be any ES article left on
   // which we have not created a post" — es_article candidates now sort
