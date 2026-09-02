@@ -9,7 +9,7 @@
 // those phrases — the sibling repo's own comment: the scan is mandated on
 // every prompt regardless of origin.
 
-export type TemplateId = "hero" | "standard_editorial" | "dramatic_news" | "comparison" | "quote";
+export type TemplateId = "hero" | "standard_editorial" | "dramatic_news" | "comparison" | "quote" | "retro";
 
 export type RenderSpec = {
   page_id: string;
@@ -94,7 +94,7 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
     lines.push(
       `A premium sports fan-page QUOTE card, portrait 3:4, full-bleed.`,
       fromReference
-        ? `Transform the supplied reference photo into this card: keep the photo real and candid, recomposed as a headshot or upper body in press-photo style.`
+        ? `Use the supplied reference photo as-is — do not edit, alter, or regenerate the person: their face, body, pose, and expression stay completely unchanged. Only extend/composite a real in-context background and card framing (headshot or upper body, press-photo style) around the existing photo.`
         : `Subject: ${subjectPhrase || "the quoted person"} — ${nameRealPeople ? "real likeness, " : ""}headshot or upper body, current look, candid press-photo style.`,
       `A giant opening quotation mark in #${spec.accent_hex} sits top-left or behind the text block.`,
       `THE QUOTE ITSELF MUST BE RENDERED AS LARGE, HIGH-CONTRAST, PERFECTLY SPELLED TEXT filling the middle third of the card: "${spec.quote_text}"`,
@@ -105,7 +105,7 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
     lines.push(
       `A premium sports fan-page COMPARISON card, portrait 3:4, full-bleed, split-frame head-to-head layout — NOT the same layout as a generic breaking-news card.`,
       fromReference
-        ? `Transform the supplied reference photo into this card: keep the photo real and candid, face visible, recomposed for a split-frame comparison.`
+        ? `Use the supplied reference photo as-is — do not edit, alter, or regenerate the person: their face, body, pose, and expression stay completely unchanged. Only extend/composite a real in-context background and split-frame comparison framing around the existing photo.`
         : nameRealPeople
         ? `Left half: ${spec.photo_subjects[0]} — real likeness, correct current team kit, face visible, knees-up. Right half: ${spec.photo_subjects[1]} — real likeness, correct current team kit, face visible, knees-up.`
         : `Left half and right half each show ${describedSubjects.replace("two ", "one ")}, correct current team kit for this sport, face visible, knees-up.`,
@@ -126,11 +126,13 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
         ? `full-bleed dominant hero shot filling the lower ~65% of the frame, heroic low angle, knees-up, real blurred crowd/stadium background — this is a milestone/hero card, not a plain news card`
         : spec.layout === "dramatic_news"
         ? `tight upper-body shot with high-drama directional lighting and deep shadow, moody real in-context background — this is a dramatic single-subject news card, not a standard editorial card`
+        : spec.layout === "retro"
+        ? `knees-up framing in the lower two thirds, warm sepia/faded-archival color grade over the whole photo, soft vintage film grain, muted contrast — this is a retrospective/nostalgia throwback card, deliberately styled to look OLD and revisited, never current-day breaking-news styling`
         : `knees-up framing in the lower two thirds, natural candid press-photo look — this is a standard editorial card`;
     lines.push(
       `A premium sports fan-page infographic card, portrait 3:4, full-bleed, magazine-grade. Layout: ${spec.layout.toUpperCase().replace(/_/g, " ")}.`,
       fromReference
-        ? `Transform the supplied reference photo into this card: keep the photo real and candid, face visible, recomposed with ${layoutFraming}.`
+        ? `Use the supplied reference photo as-is — do not edit, alter, or regenerate the person: their face, body, pose, and expression stay completely unchanged. Only extend/composite a real in-context background and card framing (${layoutFraming}) around the existing photo.`
         : spec.photo_subjects.length > 0
         ? nameRealPeople
           ? `Subject: ${namedSubjects} — real likeness${spec.photo_subjects.length > 1 ? ", ALL named people visibly present" : ""}, correct current team kit, face visible, ${layoutFraming}.`
@@ -156,6 +158,79 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
       `2. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
       `High contrast (scrim or box behind text), nothing covering the subject's face, no truncation.`,
       `Do NOT render the kicker word a second time anywhere else on the card — it appears exactly once, in the kicker bar only.`
+    );
+  }
+
+  lines.push(
+    `Story type: ${spec.story_type}.`,
+    `Palette discipline: #${spec.accent_hex} appears only on the accent word, kicker bar and emphasis — never as the whole background.`,
+    `Keep the entire card free of any drawn badge, shield, circular emblem, watermark or logo — top-right, top-center, anywhere. Do not render the word "LOGO" or any placeholder label.`
+  );
+
+  return lines.join("\n");
+}
+
+// ⛔ OPERATOR FIX (2026-08-17, real live incident, explicit operator
+// directive "text2image only to be used when i2i fails twice"): last-resort
+// path when both image2image attempts on a real reference photo get
+// rejected by the provider's identity-edit safety system. Describes NO
+// person at all — the real, unmodified photo gets composited on top by
+// code afterward (composite.ts) — and instead tells the model to leave an
+// explicit clean region open, at the exact same fractional position
+// composite.ts's REGION_BY_LAYOUT places the real photo into, so the two
+// pieces actually line up.
+const REGION_DESCRIPTION: Record<TemplateId, string> = {
+  hero: "the entire lower two-thirds of the frame",
+  standard_editorial: "a large centered panel across the middle-to-lower two-thirds of the frame, with a small margin on each side",
+  dramatic_news: "a tall centered panel across the middle-to-lower two-thirds of the frame",
+  // Same geometry as standard_editorial — retro differs by color grade/tone
+  // (see buildRenderPrompt's layoutFraming), not by photo placement.
+  retro: "a large centered panel across the middle-to-lower two-thirds of the frame, with a small margin on each side",
+  quote: "a smaller square-ish panel in the upper-left area of the frame",
+  comparison: "the left and right halves of the frame (two separate open panels, split by the center divider)",
+};
+
+export function buildBackgroundOnlyPrompt(spec: RenderSpec): string {
+  const lines: string[] = [];
+  const regionDesc = REGION_DESCRIPTION[spec.layout] ?? REGION_DESCRIPTION.standard_editorial;
+
+  if (spec.is_quote && spec.quote_text) {
+    lines.push(
+      `A premium sports fan-page QUOTE card background, portrait 3:4, full-bleed.`,
+      `Do NOT draw any person, face, silhouette, or figure anywhere on this card — leave ${regionDesc} as a clean, empty, softly blurred real-scene background (stadium/arena bokeh or a solid brand-color panel) with nothing drawn on top of it. A real photo of the subject will be placed there separately — your job is only the surrounding design.`,
+      `A giant opening quotation mark in #${spec.accent_hex} sits top-left or behind the text block, OUTSIDE the empty panel.`,
+      `THE QUOTE ITSELF MUST BE RENDERED AS LARGE, HIGH-CONTRAST, PERFECTLY SPELLED TEXT filling the middle third of the card: "${spec.quote_text}"`,
+      `Below the quote, a smaller attribution line rendered as text: "— ${spec.quote_attribution ?? spec.photo_subjects[0] ?? ""}"`,
+      `Accent color #${spec.accent_hex} applies ONLY to the quote mark and attribution.`
+    );
+  } else if (spec.layout === "comparison") {
+    lines.push(
+      `A premium sports fan-page COMPARISON card background, portrait 3:4, full-bleed, split-frame head-to-head layout.`,
+      `Do NOT draw any person, face, silhouette, or figure anywhere on this card — leave ${regionDesc} as clean, empty, softly blurred real-scene backgrounds (stadium/arena bokeh) with nothing drawn on top of either half. Real photos of both subjects will be placed there separately — your job is only the surrounding design.`,
+      `A bold vertical accent-color #${spec.accent_hex} divider with a "VS" mark sits between the two halves.`,
+      `THE CARD MUST CARRY THESE TEXT ELEMENTS, RENDERED LARGE AND PERFECTLY SPELLED:`,
+      `1. Headline in giant white condensed ALL-CAPS across the top under a dark scrim: "${spec.headline}"${
+        spec.accent
+          ? ` — this is ONE CONTINUOUS SENTENCE. Within it, render the single word "${spec.accent.toUpperCase()}" in accent color #${spec.accent_hex} instead of white; every other word in the sentence stays white.`
+          : ``
+      }`,
+      `2. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
+      `High contrast (scrim or box behind text), no truncation.`
+    );
+  } else {
+    lines.push(
+      `A premium sports fan-page infographic card background, portrait 3:4, full-bleed, magazine-grade. Layout: ${spec.layout.toUpperCase().replace(/_/g, " ")}.`,
+      `Do NOT draw any person, face, silhouette, or figure anywhere on this card — leave ${regionDesc} as a clean, empty, softly blurred real-scene background (crowd bokeh, stadium lights) with nothing drawn on top of it. A real photo of the subject will be placed there separately by a later step — your job is only the surrounding design and text.`,
+      `Setting outside that empty panel: a real in-context scene with depth — crowd bokeh, stadium lights. NEVER a flat single-color background, never a plastic over-smoothed AI look.`,
+      `THE CARD MUST CARRY THESE TEXT ELEMENTS, RENDERED LARGE AND PERFECTLY SPELLED:`,
+      `1. Headline in giant white condensed ALL-CAPS under a dark scrim: "${spec.headline}"${
+        spec.accent
+          ? ` — this is ONE CONTINUOUS SENTENCE. Within it, render the single word "${spec.accent.toUpperCase()}" in accent color #${spec.accent_hex} instead of white; every other word in the sentence stays white.`
+          : ``
+      }`,
+      `2. A kicker bar — solid #${spec.accent_hex} strip with white ALL-CAPS text: "${spec.kicker}"`,
+      `High contrast (scrim or box behind text), no truncation.`,
+      `Do NOT render the kicker word a second time anywhere else on the card.`
     );
   }
 

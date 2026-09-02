@@ -8,20 +8,25 @@
     "build": "tsc -p .",
     "worker": "node dist/worker.js",
     "worker:dev": "ts-node src/worker.ts",
-    "run-once": "ts-node src/client.ts"
+    "run-once": "ts-node src/client.ts",
+    "worker:firehose": "node dist/workerFirehose.js",
+    "worker:firehose:dev": "ts-node src/workerFirehose.ts",
+    "run-once:firehose": "ts-node src/clientFirehose.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.95",
+    "@ai-sdk/xai": "^2.0.0",
+    "@aws-sdk/client-s3": "^3.700.0",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.11.0",
     "@temporalio/worker": "^1.11.0",
     "@temporalio/workflow": "^1.11.0",
-    "@aws-sdk/client-s3": "^3.700.0",
     "ai": "^5.0.0",
-    "@ai-sdk/xai": "^2.0.0"
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
     "ts-node": "^10.9.2",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.6.0"
   }
 }

@@ -16,6 +16,7 @@
 import { Candidate, PageConfig } from "./types";
 import { TemplateId } from "./renderSpec";
 import { fetchWithTimeout } from "./httpUtil";
+import { isGenericFramingText } from "./checks";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-sonnet-4-5";
@@ -36,6 +37,12 @@ const LAYOUT_DESCRIPTIONS: Record<TemplateId, string> = {
   hero: "a milestone/hero card — full-bleed dominant shot, heroic low angle, for a big achievement or record",
   standard_editorial: "a standard editorial news card — plain, straightforward coverage",
   dramatic_news: "a dramatic single-subject news card — tight, high-drama shot for firings/suspensions/trades/controversy",
+  // ⛔ OPERATOR ADD (2026-08-31, policy): chooseTemplate (activities/index.ts)
+  // now forces this as the ONLY eligible layout whenever
+  // classifyCaptionAgeTone returns "retro" — this description also steers
+  // buildNarrativeRenderCopy's headline/story_type copy for that card, so it
+  // needs to read as throwback framing, not news.
+  retro: "a retrospective/nostalgia throwback card — sepia/vintage tone, for a genuinely old story (6+ months, or an evergreen archive piece of unconfirmed age) being resurfaced as banter/callback content. Headline and story_type should read as a callback ('on this day', 'remember when') — never framed as if it just happened.",
   comparison: "a split-frame head-to-head comparison card between two people",
   quote: "a quote card built around one specific quoted line from the story",
 };
@@ -126,6 +133,14 @@ export function accentIsWordInHeadline(accent: string, headline: string): boolea
 function violates(parsed: any, athleteNames: string[], kicker: string): string | null {
   if (!parsed || typeof parsed !== "object") return "NOT_AN_OBJECT";
   if (typeof parsed.headline !== "string" || !parsed.headline.trim()) return "MISSING_HEADLINE";
+  // ⛔ OPERATOR FIX (2026-08-20, real live incident): "Dallas Goedert News &
+  // Updates", "Penei Sewell Stats, News and Video" — the AI regressed to the
+  // exact generic-aggregator-title shape the source-level gate (checks.ts's
+  // isGenericProfileFraming) exists to block, independent of how specific
+  // the real story facts given to it were. Same check, same text shape,
+  // just applied here too — a retry gets a real chance to write something
+  // actually about the story instead of a label for it.
+  if (isGenericFramingText(parsed.headline)) return "GENERIC_HEADLINE_FRAMING";
   if (typeof parsed.story_type !== "string" || !parsed.story_type.trim()) return "MISSING_STORY_TYPE";
   if (parsed.accent !== null && parsed.accent !== undefined) {
     if (typeof parsed.accent !== "string" || !parsed.accent.trim()) return "INVALID_ACCENT_TYPE";
@@ -254,6 +269,57 @@ export async function isGenuineComparisonViaAI(
   }
 }
 
+// ⛔ OPERATOR FIX (2026-08-20, real live incident): "NFL STARS DEFY HC,
+// TENNIS PRODIGY" went out as a real on-image headline — it doesn't parse
+// as a coherent claim at all (reads like two unrelated facts jammed
+// together across a comma with no verb connecting the second half to the
+// first). None of the existing structural checks in violates() catch this —
+// they validate shape (is there a headline, is the accent a real word in
+// it), never whether the headline actually MEANS something coherent. That's
+// a semantic judgment, not a pattern match, so — same pattern as
+// isGenuineComparisonViaAI above — this is a dedicated, independent AI call
+// whose only job is to read the headline fresh and say whether it's one
+// real, coherent claim. Defaults to true (don't block) on any
+// infra failure/missing key — same conservative-default posture as every
+// other AI-augmented check in this pipeline; an unreachable check must
+// never be the reason a real, otherwise-fine post gets dropped.
+export async function isCoherentHeadlineViaAI(headline: string, facts: string): Promise<boolean> {
+  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
+  if (!apiKey) return true;
+  const prompt = [
+    `Here is a headline meant to be rendered as the giant on-image text of a sports infographic card:`,
+    `"${headline}"`,
+    ``,
+    `The real facts it's supposed to be about:`,
+    facts,
+    ``,
+    `Real sports headlines routinely compress grammar — dropping "that", stacking noun phrases, using dense clauses. That kind of density is NORMAL and is NOT what you're checking for; do not flag a headline just for being terse or headline-style. Example of a headline you must call COHERENT despite its density: "Ryan Day Warned of Major OSU Concern If Trouble Strikes Julian Sayin" — dense, but it's ONE connected claim about one situation (a warning, conditional on one thing happening to one person).`,
+    ``,
+    `You are ONLY checking for a specific, narrower failure: does the headline splice together TWO SEPARATE, UNRELATED pieces of information with no real logical or grammatical connection between them — e.g. naming two different people/events/topics joined only by a bare comma, with no shared verb or relationship tying them into one claim? Example of what you SHOULD call incoherent: "NFL Stars Defy HC, Tennis Prodigy" — this names an NFL dispute AND a tennis player with nothing connecting the two; it reads as two unrelated fragments jammed together, not one claim.`,
+    ``,
+    `Answer false ONLY for that specific splice-of-two-unrelated-things failure, or if the text is so garbled it doesn't parse as English at all. When in doubt, answer true — a dense-but-connected real headline must never be rejected for being merely terse.`,
+    `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
+  ].join("\n");
+  try {
+    const raw = await callGateway(prompt, apiKey);
+    const parsed = JSON.parse(raw);
+    return parsed?.coherent !== false; // any shape other than an explicit false is treated as "didn't flag it"
+  } catch (e) {
+    console.error(`isCoherentHeadlineViaAI: failed: ${(e as Error).message}`);
+    return true;
+  }
+}
+
+export function factsFor(candidate: Candidate, athleteNames: string[]): string {
+  return [
+    `Headline: ${stripHtml(candidate.headline)}`,
+    candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    athleteNames.length > 0 ? `Named people/teams in this story: ${athleteNames.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function buildNarrativeRenderCopy(
   candidate: Candidate,
   page: PageConfig,
@@ -272,16 +338,27 @@ export async function buildNarrativeRenderCopy(
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
-        return {
-          headline: capHeadlineLength(parsed.headline),
-          accent: parsed.accent ?? null,
-          // Kicker is the card's fixed CTA strip (see chooseKicker in
-          // activities/index.ts) — never AI-reasoned, always carried
-          // through from the caller's deterministic value.
-          kicker: fallback.kicker,
-          story_type: String(parsed.story_type).trim(),
-          usedFallback: false,
-        };
+        const headline = capHeadlineLength(parsed.headline);
+        // Structural checks (violates()) can't catch a headline that reads
+        // as two unrelated facts stitched together — this is a semantic
+        // judgment, made fresh, independent of whatever reasoning produced
+        // the headline in the first place.
+        const coherent = await isCoherentHeadlineViaAI(headline, factsFor(candidate, athleteNames));
+        if (coherent) {
+          return {
+            headline,
+            accent: parsed.accent ?? null,
+            // Kicker is the card's fixed CTA strip (see chooseKicker in
+            // activities/index.ts) — never AI-reasoned, always carried
+            // through from the caller's deterministic value.
+            kicker: fallback.kicker,
+            story_type: String(parsed.story_type).trim(),
+            usedFallback: false,
+          };
+        }
+        retryNote = `your last attempt violated: INCOHERENT_HEADLINE (read like two unrelated facts stitched together, or didn't parse as one real sentence) — fix that specifically`;
+        console.error(`buildNarrativeRenderCopy: attempt ${attempt + 1} violated policy (INCOHERENT_HEADLINE) for ${page.page_id}: "${headline}"`);
+        continue;
       }
       retryNote = `your last attempt violated: ${violation} — fix that specifically`;
       console.error(`buildNarrativeRenderCopy: attempt ${attempt + 1} violated policy (${violation}) for ${page.page_id}`);

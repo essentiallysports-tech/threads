@@ -9,10 +9,20 @@
 // parsing that line is more robust than depending on the exact wording
 // around it, which is UI copy the ES-MCP team could tweak.
 
-import { fetchWithTimeout } from "./httpUtil";
+import { fetchWithTimeout, createLimiter } from "./httpUtil";
 
 const MCP_URL = "https://mcp.essentiallysports.com/mcp";
 const URL_LINE_RE = /Full-resolution URL[^:]*:\s*(\S+)/;
+
+// ⛔ OPERATOR FIX (2026-08-29, real live incident): see httpUtil.ts's
+// createLimiter comment for the full incident. This value is a conservative
+// starting point, not a measured ES-MCP capacity figure (no published limit
+// exists for this internal endpoint) — chosen because the 2026-08-23 incident
+// confirmed ~162 simultaneous calls broke it, and this worker easily handled
+// normal day-to-day load (spread across the day, no mass-catchup) well
+// before that. Bounding in-process concurrency to single digits leaves real
+// throughput while queuing the burst instead of firing it all at once.
+const limitEsMcp = createLimiter(6);
 
 export interface EsImageResult {
   url: string;
@@ -21,32 +31,63 @@ export interface EsImageResult {
   credit?: string;
 }
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<string[]> {
+// ⛔ OPERATOR FIX (2026-08-23, real live incident): confirmed live — after
+// today's fixes removed an artificial 5-entity cap on evergreen-article
+// queries (real coverage gap, e.g. Golf Syndicate's other 10 entities), the
+// real concurrent call volume against this ONE shared, static-bearer-token
+// endpoint jumped substantially (up to ~27 pages × PAGE_CONCURRENCY=6
+// simultaneous, each now firing a query per registered entity instead of a
+// capped 5). Real logs immediately showed dozens of "This operation was
+// aborted" (30s timeout) failures across nearly every page's ES-article
+// tier — the single highest-trust, most real content source in the whole
+// pipeline going silent under its own increased load, with zero retry to
+// recover a call that just happened to be unlucky. One retry with a short
+// backoff (same pattern as checks.ts's fetchWithRetry) costs at most a few
+// seconds per call and directly targets a transient-load failure without
+// reopening the coverage gap the entity-cap removal fixed.
+async function callTool(name: string, args: Record<string, unknown>, attempts = 2): Promise<string[]> {
   const token = process.env.ES_MCP_BEARER_TOKEN;
   if (!token) throw new Error("ES_MCP_BEARER_TOKEN is not set");
 
-  const res = await fetchWithTimeout(
-    MCP_URL,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
-    },
-    30_000
-  );
-  if (!res.ok) throw new Error(`ES-MCP ${name} -> ${res.status}: ${await res.text()}`);
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await limitEsMcp(() => fetchWithTimeout(
+        MCP_URL,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+        },
+        // Bumped from a fixed 30s: real logs show these calls now genuinely
+        // slower under the increased concurrent load (not just occasionally
+        // flaking), so more patience per call matters more than firing
+        // another request at an already-strained endpoint.
+        45_000
+      ));
+      if (!res.ok) throw new Error(`ES-MCP ${name} -> ${res.status}: ${await res.text()}`);
 
-  const raw = await res.text();
-  const dataLine = raw.split("\n").find((l) => l.startsWith("data: "));
-  if (!dataLine) throw new Error(`ES-MCP ${name}: no data line in response: ${raw.slice(0, 300)}`);
-  const parsed = JSON.parse(dataLine.slice(6));
-  if (parsed.error) throw new Error(`ES-MCP ${name} error: ${JSON.stringify(parsed.error)}`);
-  const content = parsed.result?.content as Array<{ type: string; text?: string }> | undefined;
-  return (content || []).filter((c) => c.type === "text").map((c) => c.text || "");
+      const raw = await res.text();
+      const dataLine = raw.split("\n").find((l) => l.startsWith("data: "));
+      if (!dataLine) throw new Error(`ES-MCP ${name}: no data line in response: ${raw.slice(0, 300)}`);
+      const parsed = JSON.parse(dataLine.slice(6));
+      if (parsed.error) throw new Error(`ES-MCP ${name} error: ${JSON.stringify(parsed.error)}`);
+      const content = parsed.result?.content as Array<{ type: string; text?: string }> | undefined;
+      return (content || []).filter((c) => c.type === "text").map((c) => c.text || "");
+    } catch (e) {
+      lastError = e;
+      // Longer backoff than the checks.ts pattern this mirrors (1s) — that
+      // one retries against independent third-party URLs; this hits the
+      // SAME shared, currently-loaded endpoint, so giving load a real chance
+      // to clear before retrying matters more than retrying fast.
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  throw lastError;
 }
 
 function parseResult(metaText: string): EsImageResult | null {
@@ -93,7 +134,61 @@ export async function searchImages(query: string, type: "agency" | "custom" | "a
 const GENERIC_METADATA_RE = /^(getty images?|action images?|icon sportswire|imagn|reuters|ap photo|usa today|zuma press)$/i;
 const STOPWORD_TOKENS = new Set(["the", "and", "of", "for", "vs", "news"]);
 
-export function metadataMatchesSubject(result: EsImageResult, searchTerm: string): boolean {
+// ⛔ OPERATOR FIX (2026-08-25, real live incident): confirmed live via a
+// swept audit of render failures — 622 wasted render attempts in one
+// window, heavily concentrated on multi-entity hub pages (MLB Newsroom,
+// NBA Newsroom: 8 different athletes/teams each) and even single-entity
+// pages (Aaron Judge Fans, Yankees-only). Root cause: the name-token check
+// below only confirms the SEARCHED NAME appears somewhere in a photo's
+// caption — a caption that merely MENTIONS the target athlete (a
+// comparison, an aside, a group photo) passes cleanly even when the
+// photo's actual subject is a different player on a different team ("Aaron
+// Judge" name-matched a photo of a Mets player; "Ohtani" search matched a
+// Phillies player). That mismatch was only ever caught AFTER a full,
+// expensive AI render — this catches it before, at the cheap photo-search
+// step. Deliberately NOT a positive requirement (a caption naming no team
+// at all still passes, same as before — thin/terse real metadata is common
+// and shouldn't be punished) — only rejects on an EXPLICIT, checkable
+// conflict: the caption names a specific team from the same sport that
+// is NOT among the ones this search expects. Scoped to MLB/NBA, the two
+// sports with confirmed live evidence; safe to extend if the same pattern
+// shows up elsewhere.
+const TEAM_NAMES_BY_SPORT: Record<string, string[]> = {
+  MLB: [
+    "yankees", "mets", "red sox", "dodgers", "phillies", "cubs", "braves", "astros",
+    "rangers", "orioles", "blue jays", "rays", "guardians", "tigers", "royals",
+    "twins", "white sox", "athletics", "mariners", "angels", "padres", "giants",
+    "diamondbacks", "rockies", "brewers", "cardinals", "pirates", "reds", "marlins", "nationals",
+  ],
+  NBA: [
+    "lakers", "celtics", "warriors", "nets", "knicks", "bulls", "heat", "bucks",
+    "76ers", "sixers", "nuggets", "suns", "mavericks", "clippers", "grizzlies",
+    "pelicans", "kings", "spurs", "thunder", "trail blazers", "blazers", "jazz",
+    "timberwolves", "rockets", "hawks", "hornets", "magic", "pistons", "pacers", "raptors", "wizards", "cavaliers",
+  ],
+};
+
+// `expectedTeamKeywords` are the searched entity's OWN registered keywords
+// (e.g. ["ohtani", "dodgers", "two-way star"] for Shohei Ohtani) — any team
+// name from the same sport's list that ISN'T among them, but IS in the
+// photo's caption, means the caption is explicitly about a different team.
+export function hasConflictingTeamMention(text: string, sportGroup: string | undefined, expectedTeamKeywords: string[]): boolean {
+  const teamNames = sportGroup ? TEAM_NAMES_BY_SPORT[sportGroup.toUpperCase()] : undefined;
+  if (!teamNames) return false; // sport not covered by this list yet — no false positives, just no extra protection
+  // Substring match, not exact-set membership: a real entity keyword is
+  // often a PHRASE containing the team name ("yankees captain"), not the
+  // bare team name itself — exact matching missed this and would have
+  // flagged the EXPECTED team as a conflict (caught by this fix's own
+  // verification test before deploy).
+  const expected = expectedTeamKeywords.map((k) => k.toLowerCase());
+  return teamNames.some((team) => !expected.some((k) => k.includes(team) || team.includes(k)) && text.includes(team));
+}
+
+export function metadataMatchesSubject(
+  result: EsImageResult,
+  searchTerm: string,
+  teamCheck?: { sportGroup: string | undefined; expectedTeamKeywords: string[] }
+): boolean {
   const tokens = searchTerm
     .toLowerCase()
     .split(/\s+/)
@@ -103,7 +198,24 @@ export function metadataMatchesSubject(result: EsImageResult, searchTerm: string
   const text = `${result.title} ${result.caption || ""}`.toLowerCase().trim();
   if (!text || GENERIC_METADATA_RE.test(result.title.trim())) return true; // no real metadata to check against
 
-  return tokens.some((t) => text.includes(t));
+  // ⛔ OPERATOR FIX (2026-08-13, real live incident): searching "Usman
+  // Nurmagomedov" matched a photo captioned only "Umar Nurmagomedov" — his
+  // cousin, a different real fighter — because the any-token check below
+  // only required ONE token to appear, and the shared surname alone was
+  // enough. A two-token search term is almost always a real person's
+  // "First Last" name, where the surname alone can never confirm identity
+  // among relatives who share it (Nurmagomedov, Manning, Curry-family cases
+  // are all real). Requiring BOTH tokens for a plain two-word name closes
+  // this without weakening the original Cignetti-on-White fix below (an
+  // unrelated person's caption still won't share ANY token) or team/org
+  // phrases (3+ tokens), which keep the original any-token match since a
+  // caption legitimately may only carry part of a longer name.
+  const nameMatches = tokens.length === 2 ? tokens.every((t) => text.includes(t)) : tokens.some((t) => text.includes(t));
+  if (!nameMatches) return false;
+  // The name matches, but a name match alone doesn't confirm this photo's
+  // actual subject — see the 2026-08-25 fix above for why.
+  if (teamCheck && hasConflictingTeamMention(text, teamCheck.sportGroup, teamCheck.expectedTeamKeywords)) return false;
+  return true;
 }
 
 // Searches ES's media library for a real, ACTUALLY REACHABLE photo — tries
@@ -144,8 +256,8 @@ export interface EsArticleResult {
 // text-content shape as search_images, parsed the same defensive way.
 const ARTICLE_LINE_RE = /\*\*\[(.+?)\]\((https?:\/\/[^)]+)\)\*\*\s*\nSport:[^|]*\|[^|]*\|[^|]*\|\s*Published:\s*(\d{2}:\d{2})/g;
 
-export async function queryRecentArticles(sport: string | null, dateISO: string, limit = 20): Promise<EsArticleResult[]> {
-  const args: Record<string, unknown> = { publish_date_start: dateISO, publish_date_end: dateISO, limit };
+export async function queryRecentArticles(sport: string | null, dateISO: string, limit = 20, dateStart?: string): Promise<EsArticleResult[]> {
+  const args: Record<string, unknown> = { publish_date_start: dateStart || dateISO, publish_date_end: dateISO, limit };
   if (sport) args.sport = sport;
   return queryArticles(args);
 }

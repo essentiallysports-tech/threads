@@ -6,6 +6,7 @@
 import { PageConfig, Candidate, PostedLogEntry, PageRunResult, TemplateId } from "../lib/types";
 import { loadActiveThreadsPages, getPostedLog, appendPostedLog, writeDryRunResult } from "../lib/s3registry";
 import { sourceFromNewsletter, sourceFromSharedPool, shouldSourceFromNewsletter, sourceCandidatePoolForPage } from "../lib/sourcing";
+import { factCheckClaim } from "../lib/webSearch";
 import {
   runDeterministicChecks,
   linkResolves,
@@ -15,19 +16,23 @@ import {
   templatesUsedToday,
   topicFrequencyCheck,
   dominantNarrativeCheck,
+  duplicateStoryCheck,
+  DuplicateStoryCheckResult,
   matchedSportGroup,
   matchedEntityNames,
   realRegisteredEntityMatches,
   extractSimilarPlayerName,
   extractNameFromArticle,
+  isGenericFramingText,
   FrequencyCheckResult,
+  classifyCaptionAgeTone,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
-import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI } from "../lib/narrativeRenderSpec";
+import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI, isCoherentHeadlineViaAI, factsFor } from "../lib/narrativeRenderSpec";
 import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
 import { searchImages, metadataMatchesSubject } from "../lib/esMcp";
-import { pickPhoto, pickGenericPhoto, cropTo } from "../lib/cloudinary";
+import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
 import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText } from "../lib/cardTextQC";
@@ -35,15 +40,10 @@ import { extractEntitiesViaAI } from "../lib/entityResolution";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
 // cardRegistry, which was Orshot-specific and is no longer part of the
-// render path) since photo cropping still needs a target size.
+// render path); other modules (composite.ts, cardRegistry.ts) still need
+// this target size.
 export const CARD_WIDTH = 1080;
 export const CARD_HEIGHT = 1440;
-
-// Wide enough to give a full-bleed hero real context (not a stretched
-// mugshot); tight enough that a busy crowd shot still reads as one subject.
-const HERO_FACE_MULTIPLIER = 12;
-// Head-to-waist framing for the small circular inset.
-const INSET_FACE_MULTIPLIER = 6;
 
 // ⛔ OPERATOR FIX (2026-08-07): "why the same blue and white breaking
 // template — in the threads routine templates were so goated." Root cause:
@@ -59,6 +59,11 @@ const PALETTE_BY_LAYOUT: Record<TemplateId, string> = {
   hero: "C8A24B", // gold — milestone/record/hero, matches the playbook's tribute/list gold
   dramatic_news: "E10600", // red — urgency, single-subject breaking drama
   standard_editorial: "00B2A9", // teal — the default brand accent, not an urgency color
+  // Reuses hero's gold rather than inventing a new hex — the playbook (cited
+  // above) only defines Ink/Teal/Red/Gold, and gold is already the
+  // tribute/legacy-coded color in this system; retro/nostalgia content is
+  // the same coding, not a genuinely new visual category.
+  retro: "C8A24B",
   comparison: "00B2A9", // teal — head-to-head, VS mark takes the visual drama instead of color
   quote: "00B2A9", // teal — quote mark + attribution, photo stays untouched
 };
@@ -147,6 +152,21 @@ const TRAILING_STOPWORDS = new Set([
   "its", "that", "this", "into", "over", "under", "after", "before",
   "amid", "during", "about", "vs", "vs.",
 ]);
+// ⛔ OPERATOR FIX (2026-08-15, real live incident): a real card shipped
+// "Vrabel Refuses to Give Up Major" — the truncated headline ends on
+// "major," a dangling adjective that needs a noun after it ("Major"
+// WHAT?). TRAILING_STOPWORDS only ever covered articles/prepositions/
+// conjunctions; it has no concept of an adjective/intensifier that reads
+// as unfinished without whatever noun it was modifying. This is a curated
+// list of the same failure mode with a different part of speech — common
+// escalating/intensifying words that appear right before a noun in this
+// pipeline's real headlines, never a coherent way to end one.
+const DANGLING_MODIFIERS = new Set([
+  "major", "massive", "huge", "biggest", "big", "key", "critical", "new",
+  "next", "final", "latest", "surprise", "historic", "significant",
+  "record-breaking", "shocking", "stunning", "official", "important",
+  "exclusive", "breaking", "first", "last", "top", "worst", "best",
+]);
 
 function stripLabelPrefix(headline: string): string {
   const match = headline.match(LABEL_PREFIX_RE);
@@ -162,9 +182,9 @@ function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: num
   if (words.length <= maxWords) return text.trim();
   let end = maxWords;
   while (end < words.length && end < hardCeiling) {
-    const last = words[end - 1].replace(/[^a-zA-Z']/g, "").toLowerCase();
+    const last = words[end - 1].replace(/[^a-zA-Z'-]/g, "").toLowerCase();
     const endsInPunctuation = /[:;,]$/.test(words[end - 1]);
-    if (!TRAILING_STOPWORDS.has(last) && !endsInPunctuation) break;
+    if (!TRAILING_STOPWORDS.has(last) && !DANGLING_MODIFIERS.has(last) && !endsInPunctuation) break;
     end++;
   }
   return words.slice(0, end).join(" ").replace(/[:;,]+$/, "");
@@ -281,8 +301,27 @@ export async function checkCandidate(candidate: Candidate, page: PageConfig, pos
 // Deterministic accuracy-gate approximation (see checks.ts's own comment on
 // why this isn't full per-claim LLM fact-checking) — freshness + "does the
 // linked source's fetched text actually mention the matched subject."
+//
+// ⛔ OPERATOR FIX (2026-08-18, real live incident): "facetcheck using grok
+// websearch so that nothing poor goes out." The deterministic checks above
+// never verify the CLAIM itself — only that a link resolves and mentions a
+// name. Added a genuine live re-verification (webSearch.ts's
+// factCheckClaim) for web_search/evergreen_search specifically — the two
+// tiers with no inherent ES editorial trust, and the exact tiers every real
+// accuracy incident this session traced back to. es_article/beehiiv_* are
+// ES's own real content and skip this (same trust boundary the rest of the
+// pipeline already draws).
 export async function checkAccuracy(candidate: Candidate, primaryEntityName: string | null, maxAgeHours: number): Promise<AccuracyGateResult> {
-  return accuracyGateCheck(candidate, primaryEntityName, maxAgeHours);
+  const deterministic = await accuracyGateCheck(candidate, primaryEntityName, maxAgeHours);
+  if (!deterministic.pass) return deterministic;
+
+  if (candidate.source === "web_search" || candidate.source === "evergreen_search") {
+    const factCheck = await factCheckClaim(candidate);
+    if (!factCheck.verified) {
+      return { pass: false, reason: `FACT_CHECK_FAILED:${factCheck.reason}` };
+    }
+  }
+  return deterministic;
 }
 
 // ⛔ OPERATOR FIX (2026-08-08): "do what is left" — topic-frequency and
@@ -297,11 +336,29 @@ export async function checkTopicFrequency(
   postedLog: PostedLogEntry[]
 ): Promise<FrequencyCheckResult> {
   const sportGroup = matchedSportGroup(candidate, page);
-  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog);
+  // ⛔ OPERATOR FIX (2026-08-23): with N entities, a perfectly EVEN split
+  // still gives each a 1/N share — dominantNarrativeCheck's >25% threshold
+  // is unsatisfiable until N>=4, so a 2 or 3-entity page is just as
+  // structurally guaranteed to fail as a literal single-entity one. Same
+  // reasoning for the sport-group league cap on a single-sport-group page.
+  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog, page.entities.length <= 3, page.sport_groups.length <= 1);
 }
 
-export async function checkDominantNarrative(primaryEntityName: string | null, postedLog: PostedLogEntry[]): Promise<FrequencyCheckResult> {
-  return dominantNarrativeCheck(primaryEntityName, postedLog);
+export async function checkDominantNarrative(primaryEntityName: string | null, postedLog: PostedLogEntry[], page: PageConfig): Promise<FrequencyCheckResult> {
+  return dominantNarrativeCheck(primaryEntityName, postedLog, page.entities.length <= 3);
+}
+
+// ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): see
+// checks.ts's duplicateStoryCheck for the full incident — the SAME page
+// posting the SAME real-world event twice within hours, reworded, uncaught
+// by any link-based dedup because the links/sources genuinely differ. A
+// real activity (not local) because it makes a real AI-gateway call.
+export async function checkDuplicateStory(
+  candidate: Candidate,
+  primaryEntityName: string | null,
+  postedLog: PostedLogEntry[]
+): Promise<DuplicateStoryCheckResult> {
+  return duplicateStoryCheck(candidate, primaryEntityName, postedLog);
 }
 
 export interface LinkVerification {
@@ -370,17 +427,97 @@ export async function buildCaptionText(candidate: Candidate, page: PageConfig, a
 // keeps results scoped to what this page is actually about") — ES-MCP's
 // photo search had the identical bare-name-collision exposure and was
 // simply never given the same guard.
-async function searchAndPick(term: string, faceHeightMultiplier: number, sportHint?: string) {
+// ⛔ OPERATOR FIX (2026-08-25, real live incident): a page's own registered
+// entity keywords already encode its expected team/context (e.g. Shohei
+// Ohtani's keywords include "dodgers") — this just looks it up by name so
+// searchAndPick can pass it to metadataMatchesSubject's conflicting-team
+// check. Returns [] (not a guess) when no confident entity match is found,
+// which correctly leaves the extra check disabled for that call rather
+// than risk a false "expected nothing" rejection.
+function expectedTeamKeywordsFor(name: string, page: PageConfig): string[] {
+  const lower = name.toLowerCase();
+  const entity = page.entities.find((e) => e.name.toLowerCase() === lower || e.keywords.some((k) => k.toLowerCase() === lower));
+  return entity ? entity.keywords : [];
+}
+
+// ⛔ OPERATOR CHANGE (2026-08-29): Cloudinary preprocessing removed from the
+// render path per operator direction — ES-MCP photos now go straight to
+// OpenArt's image2image call. This drops Cloudinary's face-detection-based
+// checks (rejecting group/zero-face photos, guaranteeing the face isn't
+// clipped, reserving headline space) — ES-MCP's own relevance ranking is
+// the only remaining signal for "is this the right photo," same trust
+// pickPhoto's own 2026-08-06 revert already placed in that ranking for
+// SUBJECT correctness. This still HEAD-checks each candidate in ranked
+// order (mirrors esMcp.ts's searchOneImage) so an unreachable URL doesn't
+// reach OpenArt, but no longer verifies face count, framing, or crop safety.
+// ⛔ OPERATOR FIX (2026-08-29, real live incident): confirmed live via a real
+// user report (coloradoprimetime_) — the same Deion Sanders photo used
+// across many consecutive posts despite ES-MCP returning several real
+// alternatives. Root cause: this always returned the FIRST reachable
+// candidate in ES-MCP's own ranked order, and nothing anywhere tracked
+// "already used this on this page recently" — a clean, always-reachable
+// top-ranked photo wins every single time, forever. Rolling window (last
+// RECENT_PHOTO_WINDOW posts, not calendar days — same reasoning as
+// isQuoteQuotaDue's rolling window) so cadence-heavy pages don't need a
+// bigger window than slow ones. Still prefers a repeat over nothing: if
+// every real candidate has recently been used, the least-bad option is a
+// repeat photo, not a dropped post.
+const RECENT_PHOTO_WINDOW = 15;
+
+function recentlyUsedPhotoUrls(postedLog: PostedLogEntry[]): Set<string> {
+  return new Set(
+    [...postedLog]
+      .filter((p) => p.posted_at && p.source_photo_url)
+      .sort((a, b) => new Date(b.posted_at!).getTime() - new Date(a.posted_at!).getTime())
+      .slice(0, RECENT_PHOTO_WINDOW)
+      .map((p) => p.source_photo_url!)
+  );
+}
+
+async function pickReachableUrl(candidateUrls: string[], recentlyUsed: Set<string> = new Set()): Promise<string | null> {
+  const reachableButRecentlyUsed: string[] = [];
+  for (const url of candidateUrls) {
+    try {
+      const head = await fetchWithTimeout(url, { method: "HEAD" }, 10_000);
+      if (!head.ok) continue;
+      if (!recentlyUsed.has(url)) return url;
+      reachableButRecentlyUsed.push(url);
+    } catch {
+      // unreachable — try the next ranked candidate
+    }
+  }
+  // ⛔ OPERATOR FIX (2026-08-31, real live incident — p61 Colorado Prime
+  // Time, the "Deion Sanders" search): every fresh candidate was
+  // unreachable/exhausted — a repeat beats no photo at all, but always
+  // falling back to the SAME first-ranked stale candidate reproduced one
+  // photo over and over once a page's real usable photo pool (after HEAD
+  // checks + recency filtering) was smaller than its post cadence needed —
+  // search ranking for a fixed query is stable, so "first reachable stale
+  // one" was the same URL almost every call. Rotate through the whole
+  // stale-but-reachable set instead of always index 0 — same fix shape
+  // already proven on the sibling Facebook pipeline's image dedup (see
+  // [[es-image-dedup-v2]]: "no rotation... picks result #1... same photo").
+  // Date.now() is fine here — this is activity code, not workflow code, so
+  // it isn't subject to Temporal's replay-determinism requirement.
+  if (reachableButRecentlyUsed.length === 0) return null;
+  return reachableButRecentlyUsed[Date.now() % reachableButRecentlyUsed.length];
+}
+
+async function searchAndPick(term: string, recentlyUsed: Set<string>, sportHint?: string, expectedTeamKeywords?: string[]) {
   const query = sportHint ? `${term} ${sportHint}` : term;
   const results = await searchImages(query, "agency", 12);
   if (results.length === 0) return null;
   // Drop candidates whose own title/caption clearly names a different
   // subject than what we searched for (see metadataMatchesSubject's
   // 2026-08-11 comment) — ES-MCP's ranking still decides ORDER among
-  // whatever survives this filter.
-  const verified = results.filter((r) => metadataMatchesSubject(r, term));
+  // whatever survives this filter. The team-conflict check (2026-08-25) only
+  // engages when we have real, confident expected-team keywords to check
+  // against — never turns into a positive requirement for pages/entities
+  // where none were found.
+  const teamCheck = expectedTeamKeywords?.length ? { sportGroup: sportHint, expectedTeamKeywords } : undefined;
+  const verified = results.filter((r) => metadataMatchesSubject(r, term, teamCheck));
   if (verified.length === 0) return null; // every candidate's own metadata contradicts the subject we searched for
-  return pickPhoto(verified.map((r) => r.url), CARD_WIDTH, CARD_HEIGHT, faceHeightMultiplier);
+  return pickReachableUrl(verified.map((r) => r.url), recentlyUsed);
 }
 
 // ⛔ OPERATOR FIX (2026-08-07): "MANDATORY TEMPLATE VARIETY — rotate through
@@ -427,14 +564,35 @@ async function chooseTemplate(
 ): Promise<TemplateId> {
   const genuineComparison =
     headlineNames.length >= 2 ? await isGenuineComparisonViaAI(candidate, page, headlineNames[0], headlineNames[1]) : false;
+  // ⛔ OPERATOR FIX (2026-08-31, policy): "dramatic_news" is this pipeline's
+  // urgency layout — red accent, high-drama lighting, built for "firings/
+  // suspensions/trades/controversy" (see narrativeRenderSpec.ts's own
+  // description of it). It was being selected by headline keyword alone,
+  // with no check on whether the story was actually current — a resurfaced
+  // months-old trade rumor got the identical breaking-news visual treatment
+  // as a live one. Only offer it when classifyCaptionAgeTone says this is
+  // genuinely current (<=48h, or unconfirmed-but-recent); otherwise fall
+  // back to the already-neutral standard_editorial/hero layouts.
+  const ageTone = classifyCaptionAgeTone(candidate);
+  const isCurrent = ageTone === "current";
   const eligible: TemplateId[] =
     genuineComparison
       ? ["comparison", "quote"]
-      : /trade|fired|suspended|banned|benched|cut\b/i.test(candidate.headline)
+      // ⛔ OPERATOR ADD (2026-08-31, policy): genuinely old content (6+
+      // months, or evergreen archive content of unconfirmed age) now gets
+      // its own visual treatment, not just a neutral fallback layout — see
+      // renderSpec.ts/narrativeRenderSpec.ts's "retro" entries. Forced as
+      // the ONLY eligible option (no AI layout-pick call needed) so retro
+      // content always renders retro, no ambiguity.
+      : ageTone === "retro"
+      ? ["retro"]
+      : /trade|fired|suspended|banned|benched|cut\b/i.test(candidate.headline) && isCurrent
       ? ["dramatic_news", "standard_editorial"]
       : /record|milestone|career|retire|hall of fame|history|legend/i.test(candidate.headline)
       ? ["hero", "standard_editorial"]
-      : ["standard_editorial", "dramatic_news", "hero"];
+      : isCurrent
+      ? ["standard_editorial", "dramatic_news", "hero"]
+      : ["standard_editorial", "hero"];
 
   if (eligible.includes("quote") && hasRealQuote && isQuoteQuotaDue(postedLog)) return "quote";
 
@@ -474,6 +632,7 @@ async function chooseTemplate(
 export interface RenderCardResult {
   cardUrl: string | null;
   template: TemplateId | null;
+  sourcePhotoUrl?: string | null;
   // ⛔ OPERATOR FIX (2026-08-12, real live incident): "still the same errors
   // repeating" — the AI-priority entity fix only corrected the PHOTO search
   // term inside this function. The workflow's own `primaryEntity` (used for
@@ -494,39 +653,29 @@ export interface RenderCardResult {
 // on-image text independent of anything in our own headline/accent/quote
 // logic. No amount of fixing OUR text computation catches that class of
 // failure — only actually looking at the rendered pixels does. Real
-// vision-model check (cardTextQC.ts) after every render; one regenerate
-// attempt on failure, then treat as no card — matches the reference skill
-// file's own "MANDATORY TEXT-QC... regenerate → retry → DROP" rule, which
-// existed only as a slide of rendered card_url before this.
-// ⛔ OPERATOR FIX (2026-08-12, real live incident): confirmed live via
-// today's logs — every BELOW_RUN_FLOOR run hit the wall-clock run budget,
-// not genuine rejections, and the culprit was this function: 2 outer
-// attempts, each able to spawn up to 2 rerolls per render path, each call
-// able to hang for the full (now-shortened, see openart.ts) poll timeout.
-// A single bad candidate could consume 15-30+ minutes, and with
-// PAGE_CONCURRENCY=6 that stalls the whole run for every page behind it.
-// This hard deadline is the second, independent layer — bounds the ENTIRE
-// render+retry sequence for one candidate regardless of how many rerolls
-// or slow calls happen inside it, so one doomed candidate can never
-// consume a disproportionate share of the run's time budget.
+// vision-model check (cardTextQC.ts) after every render.
+// ⛔ OPERATOR FIX (2026-08-16, real live incident, explicit operator
+// directive): this used to retry with a second full render attempt on a
+// text-QC failure. Per-post budget is a fixed 7 credits — no do-overs.
+// Combined with the render-chain's own now-removed per-path rerolls
+// (renderChain.ts), this outer x2 loop stacked into up to ~10 real
+// generation attempts for a single post, confirmed live via OpenArt's
+// creation history. Now a single render, a single QC check — pass posts,
+// fail drops the candidate (caller moves to the next one in the pool).
+// The render deadline still bounds that one attempt so a slow/hanging call
+// can't stall the run for pages queued behind it.
 const RENDER_DEADLINE_MS = 3 * 60_000;
 
 async function renderAndVerifyText(spec: RenderSpec, pageId: string): Promise<string | null> {
   const deadline = Date.now() + RENDER_DEADLINE_MS;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (Date.now() > deadline) {
-      console.error(`renderAndVerifyText: render deadline exceeded before attempt ${attempt + 1} for ${pageId} — moving to next candidate`);
-      break;
-    }
-    const outcome = await renderCardViaAi(spec, deadline);
-    if (!outcome.card_url) {
-      console.error(`renderAndVerifyText: attempt ${attempt + 1} produced no card for ${pageId}: ${JSON.stringify(outcome.render_attempts)}`);
-      continue;
-    }
-    const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent, spec.photo_subjects);
-    if (qc.pass) return outcome.card_url;
-    console.error(`renderAndVerifyText: attempt ${attempt + 1} failed text-QC for ${pageId}: ${qc.reason}`);
+  const outcome = await renderCardViaAi(spec, deadline);
+  if (!outcome.card_url) {
+    console.error(`renderAndVerifyText: produced no card for ${pageId}: ${JSON.stringify(outcome.render_attempts)}`);
+    return null;
   }
+  const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent, spec.photo_subjects);
+  if (qc.pass) return outcome.card_url;
+  console.error(`renderAndVerifyText: failed text-QC for ${pageId}: ${qc.reason}`);
   return null;
 }
 
@@ -649,12 +798,19 @@ export async function renderCard(
     : matchedEntityNames(candidate, page, { includeRawText: false });
   const template = await chooseTemplate(candidate, page, headlineNames, hasRealQuote, postedLog, dateISO);
   const kicker = chooseKicker(candidate, page);
-  const accentHex = isTradeStory ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
+  // ⛔ OPERATOR FIX (2026-08-31, policy): isTradeStory is a pure headline
+  // keyword check, independent of chooseTemplate's age-aware layout pick —
+  // without this guard, a retro-toned trade throwback would still get
+  // slammed with the urgent red trade color on top of the sepia/vintage
+  // "retro" template, an internally contradictory card.
+  const accentHex = isTradeStory && template !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
+
+  const recentPhotos = recentlyUsedPhotoUrls(postedLog);
 
   if ((template === "comparison" || template === "quote") && headlineNames.length >= 2) {
     const [subjectPhoto, speakerPhoto] = await Promise.all([
-      searchAndPick(headlineNames[0], HERO_FACE_MULTIPLIER, page.sport_groups[0]),
-      searchAndPick(headlineNames[1], INSET_FACE_MULTIPLIER, page.sport_groups[0]),
+      searchAndPick(headlineNames[0], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[0], page)),
+      searchAndPick(headlineNames[1], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[1], page)),
     ]);
     if (subjectPhoto && speakerPhoto) {
       // ⛔ OPERATOR FIX (2026-08-08, real live incident): quote_text used to
@@ -690,13 +846,29 @@ export async function renderCard(
         layout: isQuote ? "quote" : "comparison",
         accent_hex: accentHex,
         photo_subjects: [headlineNames[0], headlineNames[1]],
-        reference_photo_url: cropTo(subjectPhoto, CARD_WIDTH, CARD_HEIGHT, HERO_FACE_MULTIPLIER).url,
+        reference_photo_url: subjectPhoto,
         is_quote: isQuote,
         quote_text: isQuote ? quotedPhrase : null,
         quote_attribution: isQuote ? headlineNames[1] : null,
       };
-      const cardUrl = await renderAndVerifyText(spec, page.page_id);
-      if (cardUrl) return { cardUrl, template: spec.layout, resolvedEntity: headlineNames[0] || null };
+      // ⛔ OPERATOR FIX (2026-08-20, real live incident): last-resort safety
+      // net — narrativeRenderSpec.ts's own retry loop already rejects this
+      // shape, but a real story can still land here via the deterministic
+      // isQuote branch above (never AI-checked) or after the AI's retries
+      // are exhausted. Never render a card whose actual on-image headline
+      // is a generic aggregator-title label — fall through to the single-
+      // entity path below exactly like a failed photo search would.
+      // ⛔ OPERATOR FIX (2026-08-20, real live incident): same reasoning as
+      // the generic-framing check above — a headline that reads as two
+      // unrelated facts stitched together can also reach here via the
+      // deterministic isQuote branch (never AI-checked) or after
+      // buildNarrativeRenderCopy's own retries are exhausted.
+      if (!isGenericFramingText(spec.headline) && (await isCoherentHeadlineViaAI(spec.headline, factsFor(candidate, headlineNames)))) {
+        const cardUrl = await renderAndVerifyText(spec, page.page_id);
+        if (cardUrl) return { cardUrl, template: spec.layout, resolvedEntity: headlineNames[0] || null, sourcePhotoUrl: subjectPhoto };
+      } else {
+        console.error(`renderCard: headline QC failed on comparison spec for ${page.page_id}: "${spec.headline}"`);
+      }
     }
     // Fell through to single-entity spec below if either search failed, or
     // every render path failed — never post a two-person layout with an
@@ -709,15 +881,16 @@ export async function renderCard(
   // with a genuine subject but a failed photo search is still dropped
   // below, same as before — this only skips the search itself when there
   // was never a real subject to search for.
-  const photo = searchTerms.length > 0 ? await searchAndPick(searchTerms[0], HERO_FACE_MULTIPLIER, page.sport_groups[0]) : null;
+  const photo =
+    searchTerms.length > 0
+      ? await searchAndPick(searchTerms[0], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(searchTerms[0], page))
+      : null;
   if (searchTerms.length > 0 && !photo) return { cardUrl: null, template: null, resolvedEntity: null }; // no real photo found for this candidate — never fabricate one
 
   // ⛔ OPERATOR FIX (2026-08-12): "use the MLB sport image or the team logo
   // rather than fabricating an image." When there's genuinely no person to
   // depict, ground the card in a real league logo/generic sport image
-  // instead of an AI-invented scene — pickPhoto (used for player photos
-  // above) hard-rejects any zero-face candidate, which a logo always is by
-  // definition, so this uses the separate, non-face-requiring path.
+  // instead of an AI-invented scene.
   // ⛔ OPERATOR FIX (2026-08-12, same day): "the audience is fans — a wrong
   // image gets reported straight away." This path shipped without the
   // same metadata verification every player-photo search already has —
@@ -729,7 +902,7 @@ export async function renderCard(
     searchTerms.length === 0
       ? await searchImages(`${genericSearchTerm} logo`, "all", 8)
           .then((results) => results.filter((r) => metadataMatchesSubject(r, genericSearchTerm)))
-          .then((verified) => pickGenericPhoto(verified.map((r) => r.url)))
+          .then((verified) => pickReachableUrl(verified.map((r) => r.url), recentPhotos))
           .catch((e) => {
             console.error(`renderCard: generic logo search failed for ${page.page_id}: ${(e as Error).message}`);
             return null;
@@ -740,7 +913,7 @@ export async function renderCard(
   // recompute needed since the kicker is now the CTA (chooseKicker above),
   // never a layout-dependent story-category label.
   const singleLayout: TemplateId = template === "comparison" || template === "quote" ? "standard_editorial" : template;
-  const singleAccentHex = isTradeStory ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
+  const singleAccentHex = isTradeStory && singleLayout !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
   const singleHeadline = shortHeadline(candidate.headline);
   const singleCopy = await buildNarrativeRenderCopy(candidate, page, athleteNames, singleLayout, {
     headline: singleHeadline,
@@ -757,19 +930,35 @@ export async function renderCard(
     layout: singleLayout,
     accent_hex: singleAccentHex,
     photo_subjects: searchTerms.length > 0 ? [searchTerms[0]] : [],
-    reference_photo_url: photo
-      ? cropTo(photo, CARD_WIDTH, CARD_HEIGHT, HERO_FACE_MULTIPLIER).url
-      : genericPhoto
-      ? cropTo(genericPhoto, CARD_WIDTH, CARD_HEIGHT).url
-      : null,
+    reference_photo_url: photo || genericPhoto || null,
     is_quote: false,
     quote_text: null,
     quote_attribution: null,
   };
 
+  // ⛔ OPERATOR FIX (2026-08-20, real live incidents): "Dallas Goedert News &
+  // Updates", "Penei Sewell Stats, News and Video" — the on-image headline
+  // independently regressed to a generic aggregator-title label even though
+  // the real story/caption was fine. This is the terminal path (no further
+  // fallback after this) — never render and post a card whose only reason
+  // for existing is to announce that content about this person exists,
+  // same "never post garbage" standard as NO_CARD_RENDER_FAILED.
+  if (isGenericFramingText(spec.headline)) {
+    console.error(`renderCard: GENERIC_HEADLINE_FRAMING on single-entity spec for ${page.page_id}: "${spec.headline}"`);
+    return { cardUrl: null, template: null, resolvedEntity: null };
+  }
+  // ⛔ OPERATOR FIX (2026-08-20, real live incident): "NFL Stars Defy HC,
+  // Tennis Prodigy" — an incoherent headline that reached this terminal
+  // path (no further fallback after this). Same "never post garbage"
+  // standard as the generic-framing check above.
+  if (!(await isCoherentHeadlineViaAI(spec.headline, factsFor(candidate, searchTerms)))) {
+    console.error(`renderCard: INCOHERENT_HEADLINE on single-entity spec for ${page.page_id}: "${spec.headline}"`);
+    return { cardUrl: null, template: null, resolvedEntity: null };
+  }
+
   const cardUrl = await renderAndVerifyText(spec, page.page_id);
   if (!cardUrl) return { cardUrl: null, template: null, resolvedEntity: null };
-  return { cardUrl, template: singleLayout, resolvedEntity: searchTerms[0] || null };
+  return { cardUrl, template: singleLayout, resolvedEntity: searchTerms[0] || null, sourcePhotoUrl: photo || genericPhoto || null };
 }
 
 export async function postToThreads(
@@ -786,17 +975,60 @@ export async function postToThreads(
   }
   const integrationId = page.threads!.postiz_integration_id;
 
-  // ⛔ LEARNING PORTED (2026-08-08, ES_Threads_Automation_Playbook.md Section
-  // 8) — only attempt the write-then-delete pattern when BOTH this page opts
-  // in (real registry data: every page currently has hashtag_logic:
-  // "write_then_delete", topic_registration:true) AND the strip step's schema
-  // has been explicitly confirmed live (see postiz.ts's hashtagStripVerified).
-  // Until then this is fully inert — no hashtag gets appended at all, since
-  // leaving one stuck permanently visible would be worse than not trying.
+  // ⛔ OPERATOR FIX (2026-08-20, real live incident — see postToThreads
+  // history): the write-then-delete design previously left the hashtag OFF
+  // entirely unless the unverified strip endpoint was confirmed, on the
+  // theory that "a hashtag stuck visible would be worse than not trying."
+  // That assumption is now disproven by direct live comparison against real
+  // manual SocialPilot posts on the SAME Threads account: every manual post
+  // carries 2-4 visible hashtags (#Ravens #RavensNation #RavensFlock) and
+  // drew ~13 likes, while our hashtag-less automated posts in the same
+  // window drew 1 like each — and this account has only 184 followers, so a
+  // hashtag-less post has no discovery path beyond that tiny follower base.
+  // A visible hashtag is not a cosmetic defect; it's the actual Threads
+  // discovery surface. Always append it when available; only attempt the
+  // (still-unverified) strip cleanup afterward, never gate appending on it.
   const wantsHashtagRegistration = page.threads?.topic_registration && page.threads?.hashtag_logic === "write_then_delete";
   const hashtag = wantsHashtagRegistration ? buildTopicHashtag(primaryEntity ? [primaryEntity] : [], sportGroup) : null;
-  const canStrip = hashtag && hashtagStripVerified();
-  const postHtml = canStrip ? `${mainPostHtml} ${hashtag}` : mainPostHtml;
+  // ⛔ OPERATOR FIX (2026-08-24, real live incident audit): confirmed live —
+  // manual posts on this page's own account (Ohio State Wireline) carry a
+  // fixed, repeated branded set on every post ("#GoBucks #BuckeyeNation
+  // #ohiostatefootball"), building an accumulating community/brand signal.
+  // Our per-story hashtag above is real and does matter (see the comment
+  // just above this one), but it's a DIFFERENT tag every post — never
+  // repeats, never builds that same signal. Append the page's own confirmed
+  // branded set alongside it; falls back to just the per-story tag (existing
+  // behavior) if the combined string doesn't fit the char limit below.
+  const brandedTags = page.threads?.branded_hashtags?.length ? page.threads.branded_hashtags.join(" ") : null;
+  const fullHashtags = [hashtag, brandedTags].filter(Boolean).join(" ") || null;
+  const withHashtag = fullHashtags ? `${mainPostHtml} ${fullHashtags}` : mainPostHtml;
+
+  // ⛔ OPERATOR FIX (2026-08-23, real live incident): confirmed live —
+  // narrativeCaption.ts's trimToFit already fills mainPostHtml as tightly as
+  // possible up to the page's own char_limit (deliberately, to maximize
+  // substance per post), then the 2026-08-20 "always append the hashtag"
+  // fix above adds another 15-20+ chars with ZERO re-check against the real
+  // limit — confirmed root cause of a live Postiz 400 on p48 (Baltimore
+  // Ravens): "post is too long, please fix it". The caption pipeline's own
+  // length guarantee was real at the point it was made; this call site
+  // silently invalidated it. Re-validate the ACTUAL final post text right
+  // before it's sent, and drop the hashtag (not the caption body — the real
+  // content is what matters) if appending it would overflow the limit.
+  // Threads' own real hard cap is 500; a page's configured char_limit is
+  // never higher than that, so it's the correct ceiling to check against.
+  const hardLimit = page.threads?.char_limit ?? 500;
+  // Three-tier fallback so a too-long branded set never costs the per-story
+  // hashtag too: full (per-story + branded) -> per-story only -> none.
+  const dynamicOnly = hashtag ? `${mainPostHtml} ${hashtag}` : mainPostHtml;
+  let postHtml = withHashtag;
+  if (postHtml.length > hardLimit) postHtml = dynamicOnly;
+  if (postHtml.length > hardLimit) postHtml = mainPostHtml;
+  if (postHtml !== withHashtag) {
+    console.error(
+      `postToThreads: dropped ${postHtml === dynamicOnly ? "branded hashtags" : "all hashtags"} for ${page.page_id} — "${withHashtag}" was ${withHashtag.length} chars, over the ${hardLimit} limit`
+    );
+  }
+  const canStrip = postHtml === withHashtag && hashtag && hashtagStripVerified();
 
   const posted = await scheduleThreadsPost(integrationId, postHtml, cardUrl, replyLinkHtml, new Date(postTimeUtc));
 

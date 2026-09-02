@@ -16,8 +16,9 @@
 // skipped.
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { renderViaOpenArtPrompt } from "./openart";
-import { RenderSpec, buildRenderPrompt, promptViolations } from "./renderSpec";
+import { renderViaOpenArtPrompt, renderBackgroundViaOpenArt } from "./openart";
+import { RenderSpec, buildRenderPrompt, buildBackgroundOnlyPrompt, promptViolations } from "./renderSpec";
+import { compositeRealPhoto } from "./composite";
 
 export type RenderAttempt = { path: string; result: string };
 export type RenderOutcome = { card_url: string | null; render_path: string | null; render_attempts: RenderAttempt[] };
@@ -118,6 +119,32 @@ async function renderViaGemini(spec: RenderSpec): Promise<string> {
   return uploadCard(Buffer.from(b64, "base64"), spec.page_id);
 }
 
+// ── Path D: deterministic composite (last resort) ───────────────────────────
+
+// ⛔ OPERATOR FIX (2026-08-17, real live incident, explicit operator
+// directive "text2image only to be used when i2i fails twice"): only
+// reached once BOTH I2I-capable paths above (openart_mcp, openai_direct)
+// have already failed — this is not a first-choice path. Generates the
+// background/text via text2image (no real photo submitted, so the
+// identity-edit moderation category that rejects ~46% of real I2I attempts
+// never applies) and composites the real, completely unmodified reference
+// photo on top via code. 5 credits (verified via openart_model_cost),
+// under the 7-credit/image budget.
+async function renderViaComposite(spec: RenderSpec): Promise<string> {
+  if (!spec.reference_photo_url) throw new Error("composite_no_reference_photo");
+  const backgroundPrompt = buildBackgroundOnlyPrompt(spec);
+  const background = await renderBackgroundViaOpenArt(backgroundPrompt);
+  const referenceUrls = spec.layout === "comparison" && spec.photo_subjects.length > 1
+    ? [spec.reference_photo_url, spec.reference_photo_url] // same reference photo carries both subjects when only one URL is tracked on the spec
+    : [spec.reference_photo_url];
+  return compositeRealPhoto({
+    page_id: spec.page_id,
+    layout: spec.layout,
+    backgroundUrl: background.imageUrl,
+    referencePhotoUrls: referenceUrls,
+  });
+}
+
 // ── Card hosting ────────────────────────────────────────────────────────────
 
 async function uploadCard(bytes: Buffer, pageId: string): Promise<string> {
@@ -161,18 +188,36 @@ export async function renderCardViaAi(spec: RenderSpec, deadlineMs?: number): Pr
   const attempts: RenderAttempt[] = [];
 
   const referencePrompt = buildRenderPrompt(spec, { subjectFromReference: true });
-  const describedPrompt = buildRenderPrompt(spec, { nameRealPeople: false });
   const hasReference = Boolean(spec.reference_photo_url);
 
-  const violations = [...promptViolations(prompt), ...promptViolations(describedPrompt), ...promptViolations(referencePrompt)];
+  const violations = [...promptViolations(prompt), ...promptViolations(referencePrompt)];
   if (violations.length > 0) {
     attempts.push({ path: "prompt_guard", result: `banned_phrases:${[...new Set(violations)].join(",")}` });
     return { card_url: null, render_path: null, render_attempts: attempts };
   }
 
-  const paths: Array<{ name: string; available: boolean; run: (p: string) => Promise<string>; retriesDescribed: boolean }> = [
-    { name: "openart_mcp", available: openartAvailable(), run: (p) => renderViaOpenArt(spec, hasReference ? referencePrompt : p), retriesDescribed: !hasReference },
-    { name: "openai_direct", available: openaiAvailable(), run: (p) => renderViaOpenAi(spec, hasReference ? referencePrompt : p), retriesDescribed: !hasReference },
+  const paths: Array<{ name: string; available: boolean; run: (p: string) => Promise<string> }> = [
+    { name: "openart_mcp", available: openartAvailable(), run: (p) => renderViaOpenArt(spec, p) },
+    { name: "openai_direct", available: openaiAvailable(), run: (p) => renderViaOpenAi(spec, p) },
+    // ⛔ OPERATOR FIX (2026-08-19, real live incident, TWICE): disabled
+    // entirely. Confirmed live — this path has now produced two distinct
+    // broken cards in one session despite a targeted crop fix in between
+    // (a legs-only crop with the face/torso entirely missing, then a card
+    // with the real photo pushed to one edge, a large empty background
+    // gap, and text elements overlapping/cut off at the frame edge).
+    // `compositeOnePhoto`'s sharp-based paste (composite.ts) is not
+    // reliably producing acceptable output and a second patch attempt
+    // (biasing the crop toward the top of the frame) did not fix the
+    // underlying class of defect. Per operator directive ("this isn't
+    // acceptable... rather than keep patching, drop the candidate"):
+    // never post a candidate through this intermediary again — if both
+    // real OpenArt/OpenAI image2image attempts fail, the render fails and
+    // the caller moves to the next candidate (existing pool-retry design),
+    // same as the gemini_direct exemption below already does when a real
+    // reference photo exists. `false` rather than deleting the code/file,
+    // in case a real fix (e.g. requesting an exact-region Cloudinary crop
+    // instead of a second blind sharp crop) is worth revisiting later.
+    { name: "composite", available: false, run: () => renderViaComposite(spec) },
     // ⛔ OPERATOR FIX (2026-08-10, real live incident): a real reference photo
     // existed (from ES-MCP) for a named athlete, but OpenArt/OpenAI both
     // failed for unrelated reasons, so the chain silently fell through to
@@ -189,7 +234,7 @@ export async function renderCardViaAi(spec: RenderSpec, deadlineMs?: number): Pr
     // OpenArt and OpenAI both fail, the whole render fails and the caller
     // tries the next candidate, per the existing pool-retry design, rather
     // than post a wrong-looking image.
-    { name: "gemini_direct", available: geminiAvailable() && !hasReference, run: () => renderViaGemini(spec), retriesDescribed: false },
+    { name: "gemini_direct", available: geminiAvailable() && !hasReference, run: () => renderViaGemini(spec) },
   ];
 
   for (const path of paths) {
@@ -204,43 +249,26 @@ export async function renderCardViaAi(spec: RenderSpec, deadlineMs?: number): Pr
       attempts.push({ path: path.name, result: reason });
       continue;
     }
+    // ⛔ OPERATOR FIX (2026-08-16, real live incident, explicit operator
+    // directive): NO RETRY of any kind on a single path. This used to reroll
+    // up to 2x by resubmitting the IDENTICAL prompt + reference photo that
+    // just got rejected by the provider's safety system (moderation
+    // rejections are near-deterministic for identical input, so those
+    // rerolls were guaranteed to fail again) and separately retried with a
+    // "described" prompt variant — confirmed live via OpenArt's creation
+    // history (an 18-in-a-row failure streak in one run). Per-post budget is
+    // a fixed 7 credits with no room for do-overs — every path below gets
+    // exactly ONE attempt with its best prompt; a miss moves straight to the
+    // next distinct provider (openart_mcp → openai_direct → gemini_direct),
+    // never a second attempt at the same provider with the same or a
+    // rephrased prompt.
     try {
-      const url = await path.run(prompt);
+      const url = await path.run(hasReference ? referencePrompt : prompt);
       attempts.push({ path: path.name, result: "ok" });
       return { card_url: url, render_path: path.name, render_attempts: attempts };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       attempts.push({ path: path.name, result: `error: ${message}` });
-
-      if (hasReference && path.name !== "gemini_direct" && isSafetyRefusal(message)) {
-        let rerolled = false;
-        for (let attempt = 1; attempt <= 2 && !rerolled; attempt++) {
-          if (deadlinePassed()) {
-            attempts.push({ path: `${path.name}_reroll${attempt}`, result: "skipped: render deadline exceeded" });
-            break;
-          }
-          try {
-            const url = await path.run(prompt);
-            attempts.push({ path: `${path.name}_reroll${attempt}`, result: "ok" });
-            return { card_url: url, render_path: `${path.name}_reroll${attempt}`, render_attempts: attempts };
-          } catch (retryErr) {
-            const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            attempts.push({ path: `${path.name}_reroll${attempt}`, result: `error: ${retryMessage}` });
-            if (!isSafetyRefusal(retryMessage)) rerolled = true;
-          }
-        }
-        continue;
-      }
-
-      if (path.retriesDescribed && isSafetyRefusal(message) && !deadlinePassed()) {
-        try {
-          const url = await path.run(describedPrompt);
-          attempts.push({ path: `${path.name}_described`, result: "ok" });
-          return { card_url: url, render_path: `${path.name}_described`, render_attempts: attempts };
-        } catch (retryErr) {
-          attempts.push({ path: `${path.name}_described`, result: `error: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}` });
-        }
-      }
     }
   }
 

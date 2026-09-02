@@ -44,28 +44,6 @@ const { checkCandidate, checkTopicFrequency, checkDominantNarrative } = proxyLoc
   retry: { maximumAttempts: 3 },
 });
 
-// ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): checkDuplicateStory
-// (see checks.ts's duplicateStoryCheck for the incident — the same page
-// posting the same real-world event twice within hours) is invoked at the
-// same high per-candidate frequency as the three pure checks above, but
-// unlike them it SOMETIMES makes a real AI-gateway call (only when there's
-// a genuine same-entity recent post to compare against — most invocations
-// short-circuit on a cheap, free pre-filter and never touch the network at
-// all). Still a local activity for the same history-cost reason as above,
-// but given its own separate proxy with a LONGER timeout: the underlying
-// isDuplicateStoryViaAI call has its own internal 30s fetch timeout and
-// deliberately fails open (never-duplicate) on any error — if this outer
-// timeout were shorter than that inner one (e.g. the 10s used above), a
-// slow-but-real AI call would get killed by Temporal BEFORE the function's
-// own graceful fail-open ever got a chance to run, throwing a hard error
-// instead of degrading gracefully. maximumAttempts:1 because the function
-// already handles its own failure path internally — an outer retry would
-// just redundantly re-attempt a call that already degraded on its own.
-const { checkDuplicateStory } = proxyLocalActivities<typeof activities>({
-  startToCloseTimeout: "35 seconds",
-  retry: { maximumAttempts: 1 },
-});
-
 const {
   loadPages,
   loadPostedLog,
@@ -89,44 +67,9 @@ const {
 // a slow sourcing call using more of the hour's slack is fine; the shared
 // 2-minute group above is for the many cheap S3-read activities it used to
 // sit alongside, which should still fail fast if THEY hang.
-// ⛔ OPERATOR FIX (2026-08-25, real live incident): confirmed live — 9
-// "SOURCING_FAILED ... Activity task timed out" events in the last ~30h,
-// all under the sharded config. Root cause traced into webSearch.ts:
-// sourceFromEvergreenWebSearch (always runs) and sourceFromWebSearch (the
-// risky-tier fallback, which fires exactly when a page is genuinely short
-// on safe candidates — the pages this matters most for) each wrap a
-// Claude-then-Grok chain with its own internal retry, worst-case ~168s
-// EACH, and the two tiers sit in separate sequential Promise.all groups —
-// so a page hitting both slow paths under real Gateway saturation could
-// legitimately need ~300s+ to get a real answer. The OLD 6-minute ceiling
-// left too little margin for that legitimate case, killing near-complete
-// work; and since gateway saturation persists for seconds-to-minutes (the
-// same reasoning already behind webSearch.ts's own backoff), a Temporal-
-// level retry of the WHOLE activity almost always just re-hits the same
-// wall — same "already handles its own failure path internally, an outer
-// retry is redundant" reasoning as renderCard's proxy below, since every
-// individual tier inside sourceCandidatePoolForPage already catches its
-// own errors. Raised the ceiling for real headroom, dropped to 1 attempt
-// so a doomed call fails once (~8 min) instead of twice (~12 min) before
-// that page's repair pass moves on to a candidate that can actually post.
-// ⛔ OPERATOR FIX (2026-08-31, real live incident): p44 (EssentiallySports
-// Media, the flagship multi-sport page) registers 6 sport_groups — every
-// other page in the fleet has 1-2 — so its sport×day fan-out in
-// sourceFromEsArticles is ~6x a normal page's (24 combos vs ~4), still at
-// the same page-local concurrency=2. That routinely blew through the old
-// 8-minute ceiling (confirmed live: p44 posted zero times in 44+ hours,
-// every attempt logging SOURCING_FAILED/"Activity task timed out", while
-// sibling pages in the same shard kept posting normally). Deliberately
-// fixed via MORE TIME, not more concurrency: this same file's ES-MCP
-// limiter (esMcp.ts) has already caused two real fleet-wide incidents
-// (2026-08-23, 2026-08-29) when concurrent load against that one shared
-// endpoint went up — raising p44's own fan-out concurrency would repeat
-// that exact class of failure for every other page sharing the limiter.
-// A longer single-attempt ceiling only costs anything for a page that
-// actually needs it; every other page still returns in seconds.
 const { sourceCandidatePool } = proxyActivities<typeof activities>({
-  startToCloseTimeout: "20 minutes",
-  retry: { maximumAttempts: 1 },
+  startToCloseTimeout: "6 minutes",
+  retry: { maximumAttempts: 2 },
 });
 
 // renderCard makes 3 real network calls (ES-MCP search, Cloudinary crop, AI
@@ -149,23 +92,6 @@ export interface DailyRunOptions {
   dateISO?: string;
   livePosting: boolean;
   dailyBudgetMax: number;
-  // ⛔ OPERATOR FIX (2026-08-24, real live directive): "40+ pages now, so
-  // daily 250+ posts are anyhow needed now, so transform the system such
-  // that it does not cause timeouts, it doesnt reduce the cadence." One
-  // workflow execution looping over every page (even at PAGE_CONCURRENCY=6)
-  // scales linearly with page count — this is the SAME shape of bug that
-  // caused the 2026-08-10/11 "run still going 2.5 hours later" incident at
-  // just 26 pages sequential; going from 27 to 45+ pages in the same single
-  // execution risks recreating it. Mirrors the FB pipeline's own proven
-  // SHARD MODE (es-pipeline skill: 6 shards of ~4 pages each, independently
-  // scheduled) instead of reinventing a different fix — when both are set,
-  // the workflow processes only pages whose numeric page_id mod shardCount
-  // equals shardIndex; every OTHER page is untouched by this execution.
-  // Undefined/omitted (either field) falls through to the pre-sharding
-  // behavior (every page, one execution) — this is what keeps a manual
-  // run-once or an already-scheduled fire from a pre-sharding deploy safe.
-  shardIndex?: number;
-  shardCount?: number;
 }
 
 // This function is the deterministic replacement for the old prose skill
@@ -181,20 +107,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // `new Date()`, which are non-deterministic and would break replay).
   const dateISO = opts.dateISO || new Date(workflowInfo().startTime).toISOString().slice(0, 10);
 
-  const allPages = await loadPages();
-  // Deterministic, no hash function needed — every real page_id here is
-  // "p" + a number (confirmed live across all 45+ registry entries), and a
-  // numeric mod distributes newly-added pages round-robin across shards
-  // automatically as page_ids keep incrementing, with zero shard-membership
-  // list to maintain by hand (the FB pipeline's shard table needs manual
-  // upkeep every time a page is added; this doesn't).
-  const pages =
-    opts.shardCount && opts.shardCount > 1
-      ? allPages.filter((p) => {
-          const n = parseInt(p.page_id.replace(/\D/g, ""), 10);
-          return Number.isFinite(n) && n % opts.shardCount! === (opts.shardIndex ?? 0);
-        })
-      : allPages;
+  const pages = await loadPages();
   const results: PageRunResult[] = [];
 
   // ⛔ OPERATOR CORRECTION (2026-08-07): the old cross-page "mass duplicate
@@ -231,7 +144,6 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     candidate: Candidate;
     caption: string;
     cardUrl: string;
-    sourcePhotoUrl: string | null;
     finalLink: string;
     template: string | null;
     entity: string | null;
@@ -277,43 +189,8 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // real candidate yield per page. MAX_REPAIR_PASSES raised to match — a
   // higher floor needs more real attempts to reach it honestly, not a
   // shortcut.
-  // ⛔ OPERATOR FIX (2026-08-24, sharding rollout): was 12, enforced against
-  // ALL ~27 pages in one execution. Post-sharding this floor applies PER
-  // SHARD (~7-8 pages, roughly 8/27 of the fleet) — kept proportional
-  // (12 * 8/27 ≈ 3.5, rounded up with margin) rather than carried over
-  // unchanged, which would demand nearly the OLD floor from a fraction of
-  // the pages. 6 shards * 5 * ~14.5 active hours (09:00-23:30 posting
-  // window) gives real headroom above the 250+/day target even if some
-  // hourly fires fall short — needs real-data validation like every other
-  // number here, not a guaranteed hit.
-  const MIN_POSTS_PER_RUN = 5;
-  // ⛔ OPERATOR FIX (2026-08-25, sharding rollout, real live incident):
-  // confirmed live — EVERY post-sharding BELOW_RUN_FLOOR log shows
-  // repairPassesUsed:10 (the max), with elapsedMs of 47-82 minutes; pre-
-  // sharding runs mostly used repairPassesUsed:1 and finished in 17-53
-  // minutes chasing a HIGHER floor (12, not 5). 10 was calibrated for a
-  // single execution's ~27-page pool with the ORIGINAL, higher per-shard
-  // concurrency; lowering PAGE_CONCURRENCY and the ES-MCP/web-search fan-out
-  // to fix the overload problem (see their own comments) directly made each
-  // individual repair pass slower, so the same pass count now costs
-  // proportionally more wall-clock. Halved rather than left unchanged —
-  // the MIN_GAP and retrospective-page fixes landed the same day should
-  // mean fewer pages NEED repair passes to begin with (less artificial
-  // blocking to retry around), so this isn't purely a "give up sooner"
-  // trade — needs real-data validation like every other number here.
-  const MAX_REPAIR_PASSES = 5;
-  // ⛔ OPERATOR FIX (2026-08-27, real live incident, explicit operator
-  // directive: "atleast 5 should go to every page per day that is the
-  // minimum"). Confirmed live: 14 of 42 pages had ZERO posts in 24h while a
-  // handful had 9-12 — not random variance, a structural bias. The repair-
-  // pass loop below only checked the SHARD-WIDE total against
-  // MIN_POSTS_PER_RUN, and stopped dispatching to a page the instant that
-  // shared total was hit by ANY sibling page — so pages with slower
-  // sourcing or harder-to-pass content lost the race every single cycle,
-  // all day, forever. This is a genuinely different, per-page floor (5/day/
-  // page, not 5/shard/run) — 5 * 42 pages = 210, which also satisfies the
-  // "at least 200/day total" directive as the same fix.
-  const MIN_POSTS_PER_PAGE_PER_DAY = 5;
+  const MIN_POSTS_PER_RUN = 12;
+  const MAX_REPAIR_PASSES = 10;
   // ⛔ OPERATOR FIX (2026-08-19): "make sure more posts are created now so
   // we can compete with manual postings." Raised from 3 — the same-day
   // fixes landed this run (OpenArt credential restored, the history-size
@@ -433,39 +310,8 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // an artificial time cutoff. Still a hard, finite ceiling, not removed —
   // an honest below-floor result from genuine exhaustion stays a logged
   // outcome, never a fabrication shortcut.
-  // ⛔ OPERATOR FIX (2026-08-25, sharding rollout, explicit operator
-  // directive: "high volume but not in 100 mins, in under 40 mins cos that
-  // is doable"). 90 minutes was calibrated for a single execution chasing a
-  // 12-post floor across ~27 pages — post-sharding, a shard chases a 5-post
-  // floor across ~7-8 pages, and the FIRST cycle's own healthy shards
-  // (before any of today's other fixes) already finished in ~29-33 minutes
-  // on their own. Today's other fixes (MIN_GAP, retrospective exemption,
-  // team-conflict check, generic-profile detection, the repair-pass short-
-  // circuit, MAX_REPAIR_PASSES halved) all target the SAME thing — fewer
-  // wasted attempts on candidates that were structurally doomed regardless
-  // of content — so the realistic per-pass yield should be higher than it
-  // was when 90 minutes was chosen, not lower. Set to 35 minutes for Phase 1
-  // (repair-pass chasing), leaving real margin below the 40-minute target
-  // for Phase 2's own posting time. Still a hard, finite ceiling — an
-  // honest below-floor result from hitting this stays a logged outcome, not
-  // a fabrication shortcut, same as always.
-  const RUN_TIME_BUDGET_MS = 35 * 60 * 1000;
-  // ⛔ OPERATOR REVERSAL (2026-08-24, sharding rollout, real live incident,
-  // same day): was raised 6->8 at rollout on the theory that a smaller
-  // ~7-8 page shard could afford more internal concurrency. The FIRST real
-  // sharded cycle disproved that: 2 of 6 shards (shard-2, shard-4) came in
-  // BELOW their own 5-post floor DESPITE burning all 10 repair passes and
-  // ~55-58 minutes each (vs ~30 min for the 4 healthy shards) — confirmed
-  // live via BELOW_RUN_FLOOR's own repairPassesUsed:10 — and the worker log
-  // showed 406 "operation was aborted" events in that same window. Raising
-  // PAGE_CONCURRENCY made EVERY shard's peak concurrent fan-out bigger at
-  // the exact moment 6 shards were ALSO now running concurrently with each
-  // other — the two changes compounded instead of offsetting. Lowered
-  // below the ORIGINAL pre-sharding value (not just back to 6): the 6-way
-  // shard split now supplies the primary parallelism system-wide, so each
-  // shard doesn't need to also aggressively parallelize internally against
-  // shared downstream services it's no longer using alone.
-  const PAGE_CONCURRENCY = 4;
+  const RUN_TIME_BUDGET_MS = 90 * 60 * 1000;
+  const PAGE_CONCURRENCY = 6;
   const runStartMs = new Date(workflowInfo().startTime).getTime();
   const timeBudgetExceeded = () => Date.now() - runStartMs > RUN_TIME_BUDGET_MS;
 
@@ -487,14 +333,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
   }
 
-  // ⛔ OPERATOR FIX (2026-08-24, sharding rollout): raised from 150 (site-
-  // wide target at ~27 pages) to reflect "40+ pages now, 250+ posts/day
-  // needed." `postedTodaySoFar` below only sums pages THIS execution can
-  // see, which post-sharding is one shard's slice (~8/45 pages), not the
-  // whole fleet — divided accordingly so this log stays internally
-  // consistent per shard. Telemetry only, same as before: logs a warning,
-  // never blocks or alters this run's own results.
-  const MIN_DAILY_POSTS_TARGET = opts.shardCount && opts.shardCount > 1 ? Math.ceil(250 / opts.shardCount) : 250;
+  const MIN_DAILY_POSTS_TARGET = 150; // secondary pace telemetry only, see below
   let postedTodaySoFar = 0;
 
   interface PageRunState {
@@ -624,18 +463,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         // (61 of ~200 in one run). A real story from 4 days ago is still a
         // real, accurate story — this loosens a time window, never the actual
         // truth/named-entity/ES-link requirements.
-        // ⛔ OPERATOR FIX (2026-08-31, real live incident): the flat 96h cap
-        // applied even to single-athlete entity fan pages (e.g. p54 Conor
-        // McGregor), whose whole premise is "the latest on this one person" —
-        // a day-old story reads as stale there in a way a 4-day-old team
-        // story doesn't. Entity pages now get a tighter 24h cap; general
-        // pages tightened back 96h -> 72h (operator call, same session —
-        // reverting most of the 2026-08-08 throughput widening now that the
-        // actual stale-content path, sourceFromEsEvergreenArticles's faked
-        // "now" timestamp, is handled explicitly via classifyCaptionAgeTone
-        // instead of relying on a loose accuracy-gate window to catch it).
-        const maxAgeHours = state.page.page_type === "entity" ? 24 : 72;
-        const accuracy = await checkAccuracy(candidate, athleteNames[0] || null, maxAgeHours);
+        const accuracy = await checkAccuracy(candidate, athleteNames[0] || null, 96);
         if (!accuracy.pass) {
           state.attemptFailures.push(`${candidate.key}:${accuracy.reason ?? "ACCURACY_GATE_FAILED"}`);
           continue;
@@ -666,21 +494,6 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         const frequency = await checkTopicFrequency(candidate, state.page, primaryEntity, effectivePostedLog);
         if (!frequency.pass) {
           state.attemptFailures.push(`${candidate.key}:${frequency.reason}`);
-          // ⛔ OPERATOR FIX (2026-08-25, real live incident): confirmed live
-          // as the single dominant failure reason before the MIN_GAP fix
-          // (100+ occurrences in one cycle) — unlike every other gate here,
-          // the MIN_GAP check is PAGE-LEVEL and time-based, not candidate-
-          // specific: it fails identically for EVERY candidate on this page
-          // until real wall-clock time passes, no matter which one is tried.
-          // `continue`-ing just burns the rest of this page's pool (and,
-          // across repair passes, fresh re-sourcing calls) on attempts that
-          // are structurally doomed regardless of content — confirmed via
-          // BELOW_RUN_FLOOR logs always showing repairPassesUsed at the max.
-          // The entity/league caps just above stay per-candidate (a
-          // DIFFERENT candidate about a less-saturated entity on the same
-          // page can still legitimately pass), so only this specific reason
-          // short-circuits the whole page for this run.
-          if (frequency.reason?.startsWith("TOPIC_FREQUENCY_MIN_GAP")) return;
           continue;
         }
         const dominantNarrative = await checkDominantNarrative(primaryEntity, effectivePostedLog, state.page);
@@ -688,22 +501,10 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
           state.attemptFailures.push(`${candidate.key}:${dominantNarrative.reason}`);
           continue;
         }
-        // ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): catches
-        // the SAME real-world event being posted twice by this SAME page
-        // within ~48h under a different link/wording — see checks.ts's
-        // duplicateStoryCheck for the full incident. Placed before caption
-        // generation so a real duplicate never spends an LLM call writing a
-        // caption for content that's about to be dropped anyway.
-        const duplicateStory = await checkDuplicateStory(candidate, primaryEntity, effectivePostedLog);
-        if (!duplicateStory.pass) {
-          state.attemptFailures.push(`${candidate.key}:${duplicateStory.reason}`);
-          continue;
-        }
 
         const caption = await buildCaptionText(candidate, state.page, athleteNames);
 
         let cardUrl: string | null = null;
-        let sourcePhotoUrl: string | null = null;
         let template: string | null = null;
         // ⛔ OPERATOR FIX (2026-08-12, real live incident): "still the same
         // errors repeating" — renderCard resolves the entity correctly
@@ -721,7 +522,6 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         try {
           const render = await renderCard(candidate, state.page, athleteNames, effectivePostedLog, dateISO);
           cardUrl = render.cardUrl;
-          sourcePhotoUrl = render.sourcePhotoUrl ?? null;
           template = render.template;
           if (render.resolvedEntity) resolvedPrimaryEntity = render.resolvedEntity;
         } catch (e) {
@@ -751,7 +551,6 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
             candidate,
             caption,
             cardUrl,
-            sourcePhotoUrl,
             finalLink: linkCheck.finalLink,
             template,
             entity: resolvedPrimaryEntity,
@@ -809,34 +608,14 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // candidates) every page still under its per-run and per-day cap,
   // skipping any candidate key already tried this run — and, like pass 1,
   // every page in a pass runs concurrently rather than one at a time.
-  const anyPageBelowDailyMin = () =>
-    states.some((s) => s.postedTodayCount < Math.min(MIN_POSTS_PER_PAGE_PER_DAY, s.cap) && s.postedThisRun < perRunCapFor(s.cap));
-
   let repairPass = 0;
-  while (
-    (totalPostedThisRun() < MIN_POSTS_PER_RUN || anyPageBelowDailyMin()) &&
-    repairPass < MAX_REPAIR_PASSES &&
-    !timeBudgetExceeded() &&
-    !attemptBudgetExceeded()
-  ) {
+  while (totalPostedThisRun() < MIN_POSTS_PER_RUN && repairPass < MAX_REPAIR_PASSES && !timeBudgetExceeded() && !attemptBudgetExceeded()) {
     repairPass++;
-    // Pages still below their own daily minimum go FIRST — mapWithConcurrency
-    // processes this array in order (bounded by PAGE_CONCURRENCY slots), so
-    // this is what actually gives a structurally-slower page priority for a
-    // concurrency slot instead of losing the race to faster pages every time.
-    const eligible = states
-      .filter((s) => s.postedThisRun < perRunCapFor(s.cap) && s.postedTodayCount < s.cap)
-      .sort((a, b) => a.postedTodayCount - b.postedTodayCount);
+    const eligible = states.filter((s) => s.postedThisRun < perRunCapFor(s.cap) && s.postedTodayCount < s.cap);
     if (eligible.length === 0) break; // every remaining page is genuinely exhausted — nothing left to repair
 
     await mapWithConcurrency(eligible, PAGE_CONCURRENCY, async (state) => {
-      // Only the real, run-wide safety valves stop a DISPATCHED page from
-      // getting its attempt — never the shard-wide MIN_POSTS_PER_RUN total,
-      // which is what let a page that hasn't been tried yet get silently
-      // skipped just because SOME OTHER page's success already hit the
-      // shared floor. See the MIN_POSTS_PER_PAGE_PER_DAY comment above.
-      if (timeBudgetExceeded() || attemptBudgetExceeded()) return;
-      if (state.postedTodayCount >= Math.min(MIN_POSTS_PER_PAGE_PER_DAY, state.cap) && totalPostedThisRun() >= MIN_POSTS_PER_RUN) return;
+      if (totalPostedThisRun() >= MIN_POSTS_PER_RUN || timeBudgetExceeded() || attemptBudgetExceeded()) return;
       try {
         const pool = await sourceCandidatePool(state.page, dateISO, state.postedLog);
         const fresh = pool.filter((c) => !state.triedKeys.has(c.key));
@@ -907,7 +686,6 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         entity: item.entity ?? undefined,
         sportGroup: item.sportGroup ?? undefined,
         card_url: item.cardUrl,
-        source_photo_url: item.sourcePhotoUrl,
         source: item.candidate.source,
         source_published_at: item.candidate.publishedAt,
       });

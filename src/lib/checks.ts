@@ -488,22 +488,25 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
 }
 
 export function matchedEntityNames(candidate: Candidate, page: PageConfig, opts: { includeRawText?: boolean } = {}): string[] {
-  const matched = realRegisteredEntityMatches(candidate, page, opts);
-  // ⛔ OPERATOR BROADENING (2026-08-10): "even on single entry build a more
-  // comprehensive list of similar players playing same sport can go... more
-  // output is needed." A narrow-roster page (one team, one fighter) already
-  // passes entityOrSportMatch on sport_group alone for same-sport stories
-  // about OTHER real players — but requiresNamedEntity was hard-blocking
-  // those anyway because matchedNames came back empty. A real, different,
-  // named player in the same sport is legitimate fan-page content, not
-  // off-topic; extract that real name from the candidate's own headline
-  // (never fabricated, never a hardcoded per-sport roster) so it can pass
-  // and still get fact-verified downstream like every other candidate.
-  if (matched.length === 0 && page.entities.length > 0) {
-    const fallback = extractSimilarPlayerName(candidate);
-    if (fallback) matched.push(fallback);
-  }
-  return matched;
+  // ⛔ OPERATOR REVERSAL (2026-08-15, real live incident, severe): the
+  // 2026-08-10 "same-sport, different real player" fallback below (removed)
+  // was already known to be too loose for a page representing one specific
+  // gender division (fixed 2026-08-12, Adesanya/Rampage on Fearless Female
+  // Fighters) — but it was left active for every OTHER entity/regional
+  // page, and it's the exact same flaw for those too: a page representing
+  // ONE specific team/athlete roster (Detroit Lions Community, entities:
+  // Goff/St. Brown/Gibbs/Hutchinson/Sewell) had its last 5 straight posts
+  // be about the Patriots, Giants, Browns, Raiders, and Packers — real NFL
+  // news, real named players, zero connection to the Lions — confirmed live
+  // via a direct user report ("This is not Detroit Lions content"). A real
+  // name in the same sport was never a legitimate substitute for this
+  // page's own registered roster; it just wasn't caught yet outside the
+  // gender case. The 2026-08-15 sourcing.ts fix (genuinely-relevant-count
+  // gate) already ensures a page short on REAL entity matches falls through
+  // to web_search/social_search instead of going dark, so this fallback is
+  // no longer needed to hit volume — it was only ever masking the same
+  // shortage this fix now surfaces and solves correctly.
+  return realRegisteredEntityMatches(candidate, page, opts);
 }
 
 // ⛔ OPERATOR FIX (2026-08-07, real live incident): a post about "Star
@@ -566,6 +569,30 @@ const PROMO_BETTING_PATTERNS = [
 export function isPromoBettingContent(candidate: Candidate): boolean {
   const text = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`;
   return PROMO_BETTING_PATTERNS.some((re) => re.test(text));
+}
+
+// ⛔ OPERATOR FIX (2026-08-27, real live incident, editorial complaint):
+// "10 Funniest Joe Rogan Quotes In His UFC Career" and "Joe Rogan's 10 Most
+// Memorable Post Fight Interviews" went live on the Rogan page — real ES
+// staff confirmed live: "we don't cover this, nor does the newsletter
+// provide anything like this." Both were sourced from evergreen_search
+// (webSearch.ts's EVERGREEN_ANGLE_QUERIES, e.g. "...famous quote interview
+// moment"), which pulls in third-party listicle-farm content (thesportster.
+// com) for a low-supply entity rather than real news. Operator directive:
+// ban this SHAPE of content on every page, not just this one — "in [the
+// entity's] absence posts are made on the particular athlete/entity's
+// sport's news, not such rubbish pieces." This is the deterministic gate on
+// the shape; sourcing.ts's evergreen tiers still need their own follow-up
+// to stop generating this framing in the first place, not just get caught
+// here after the fact.
+const LISTICLE_FILLER_PATTERNS = [
+  /\b\d+\s+(?:funniest|best|worst|greatest|craziest|wildest|weirdest|dumbest|smartest|most\s+\w+)\b/i,
+  /\btop\s+\d+\b/i,
+];
+
+export function isListicleFillerContent(candidate: Candidate): boolean {
+  const text = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`;
+  return LISTICLE_FILLER_PATTERNS.some((re) => re.test(text));
 }
 
 // ⛔ OPERATOR FIX (2026-08-12, real live incident, high volume): at least a
@@ -664,6 +691,215 @@ export function isBareQuotedFragment(candidate: Candidate): boolean {
   return withoutQuotes.length < 15;
 }
 
+// ⛔ OPERATOR FIX (2026-08-18, real live incident): "if you see from a
+// consumer POV what value are they adding, why would somebody click on a
+// link below." Confirmed live: Boxing Bulletin and Baltimore Ravens Community
+// posted ONLY generic bio/aggregator pages all day (8/8 and 5/5 posts —
+// "Tyson Fury - Wikipedia", "Tyson Fury — Profile, Record, Stats & Fight
+// History", "Lamar Jackson | Biography, Statistics... | Britannica",
+// "Derrick Henry NFL Player Profile and Career Stats") — every one traced to
+// sourceFromEvergreenWebSearch's "{entity} career history legacy
+// retrospective" query, which trivially surfaces exactly these pages. They
+// pass every existing gate (real entity match, real English content, not a
+// bare fragment) because nothing ever asked "does this have a story, or is
+// it just a name and a stat table" — a bio page has zero narrative hook, so
+// the caption/render pipeline can only ever produce a hollow "want more?
+// subscribe" CTA around it, which is exactly the pattern the operator
+// flagged as adding no value to a reader. This is a hard, source-agnostic
+// reject — a Wikipedia/Britannica/BoxRec-style page or a generic
+// "Profile/Biography/Career Stats" headline is never postable content,
+// regardless of which tier found it.
+// ⛔ OPERATOR FIX (2026-08-19, real live incident, TWICE more): confirmed
+// live — this gate's original domain/headline lists were too narrow and
+// kept letting the same class of content through with slightly different
+// wording/source each time: "Mark Andrews Stats, News and Video" (a
+// generic team-site player-hub page, not "Stats & News" the old regex
+// expected) and "Valentina Shevchenko Quotes on BrainyQuote" (a generic
+// third-party quote-compilation site never in the domain list at all).
+// Operator's own framing: "what incentive does someone have to click a
+// link below a compiled quotes page / a generic stats hub — there's no
+// story." The real, general pattern across every incident so far: a real
+// person's name followed by nothing but a small set of generic
+// content-type nouns (stats/news/video/quotes/bio/profile/overview/
+// highlights/record), in any order/punctuation, describing a static
+// reference page rather than an actual event — OR the source domain is a
+// known aggregator/compilation site by nature (quotes, stats, bio, boxing
+// record databases). Broadened both checks to the general pattern instead
+// of re-adding one more specific phrase/domain every time a new wording
+// shows up.
+// ⛔ OPERATOR FIX (2026-08-22, real live incident): "Tyson Fury - News &
+// Rumors - PBC Boxing | FOX Sports" and "Max Holloway - News & Rumors -
+// UFC | FOX Sports" both went out live on Combat pages — FOX Sports'
+// per-athlete "news hub" pages are structurally the same generic
+// aggregator-profile page as a Wikipedia bio (no single real event, just a
+// standing feed of headlines about the person), but the dash/pipe-heavy
+// title shape ("Name - News & Rumors - League | FOX Sports") doesn't match
+// GENERIC_PROFILE_HEADLINE_RE's anchored noun-list pattern — confirmed by
+// tracing real evergreen_search output that disproportionately fed Combat/
+// CFB pages these pages instead of real specific articles, directly
+// suppressing their real click-through (autopost_sessions near zero on
+// Boxing Bulletin/Conor McGregor/Ohio State despite real total traffic).
+// Domain-based, not headline-shaped, so it catches every title variant.
+const GENERIC_PROFILE_DOMAINS = [
+  "wikipedia.org", "britannica.com", "boxrec.com", "espn.com/boxing",
+  "brainyquote.com", "goodreads.com", "azquotes.com", "quotefancy.com",
+  "biography.com", "famousbirthdays.com", "celebrity.fm", "thefamouspeople.com",
+  "foxsports.com",
+];
+// ⛔ OPERATOR FIX (2026-08-19, real live incident, THIRD time on this exact
+// gate): "News & Updates" and "News & Rumors" slipped through — same class
+// of generic team-site aggregator title as every prior incident, just two
+// more nouns ("updates", "rumors") this list didn't have yet. Broadened
+// well past the specific words seen so far to the general category of
+// generic content-hub/aggregator suffixes, so the next slightly different
+// phrasing of the same underlying pattern doesn't require another
+// one-word patch.
+const GENERIC_CONTENT_NOUNS =
+  "(?:stats?|statistics|scores?|news|videos?|quotes?|bio(?:graphy)?|profile|overview|info(?:rmation)?|highlights?|recaps?|record|career|fight history|player profile|player stats|updates?|rumou?rs?|buzz|gossip|roundup|insider|tracker|reports?|watch|central|hub|digest|wire|notebook|corner|schedules?|rosters?|standings?)";
+const GENERIC_PROFILE_HEADLINE_RE = new RegExp(
+  // The whole headline (after a name of up to 4 capitalized words) is
+  // NOTHING BUT these generic nouns joined by punctuation/connectors —
+  // anchored end-to-end so a real event headline that merely CONTAINS one
+  // of these words (e.g. "Ravens Trade News: X happens") still passes,
+  // since it has real content beyond the generic noun list.
+  `^[\\w.'-]+:?(?:\\s+[\\w.'-]+:?){0,4}\\s+${GENERIC_CONTENT_NOUNS}(?:\\s*(?:,\\s*(?:&|and)?|&|and)\\s*${GENERIC_CONTENT_NOUNS})*(?:\\s+on\\s+[\\w.'-]+)?\\s*$` + // e.g. "X Stats, News and Video", "X Quotes on BrainyQuote", "X: NFL News, Rumors, & Updates" (Oxford-comma list, optional colon after a name word)
+    `|\\b(profile|biography|bio)\\b.*\\b(record|stats?|statistics|history)\\b` +
+    `|\\b(record|career)\\b.*\\b(history|stats?)\\b.*\\b(fight|boxing|player)\\b` +
+    `|\\bcareer (stats|history|record)s?\\b|\\bfight history\\b|\\bplayer (profile|stats)\\b|\\bstats\\s*&\\s*news\\b` +
+    `|^[\\w.\\s]+\\s*-\\s*wikipedia$`,
+  "i"
+);
+
+// ⛔ OPERATOR FIX (2026-08-20, real live incident — "ESPN Delivers NFL
+// Scores, Stats and Highlights" went out as a real post on a national
+// roundup page with no actual event/player/team named): a DIFFERENT shape
+// of the same underlying problem as GENERIC_PROFILE_HEADLINE_RE — that gate
+// matches "{name} + generic-noun-list" with no verb (a static reference
+// page's title); this is "{outlet} {delivers/rounds up/etc.} {generic-noun-
+// list}" with a verb, but the verb is itself content-free (an outlet
+// "delivering" scores/stats/highlights is not a real, specific event —
+// every outlet does this every day). End-anchored the same way, for the
+// same reason: a real headline that happens to use "delivers" but then
+// names an actual result/person/team afterward still has real content past
+// the noun list and correctly passes.
+const GENERIC_DELIVERY_VERBS = "(?:delivers?|provides?|rounds?\\s*up|brings?|shares?|offers?|posts?|drops?)";
+const GENERIC_ROUNDUP_RE = new RegExp(
+  `^[\\w.'-]+(?:\\s+[\\w.'-]+){0,2}\\s+${GENERIC_DELIVERY_VERBS}\\s+(?:[\\w.'-]+\\s+){0,2}${GENERIC_CONTENT_NOUNS}(?:\\s*(?:,\\s*(?:&|and)?|&|and)\\s*${GENERIC_CONTENT_NOUNS})*\\s*$`,
+  "i"
+);
+
+// ⛔ OPERATOR FIX (2026-08-19, real live incident, FOURTH time on this exact
+// gate): "Aidan Hutchinson - NFL News, Rumors, & Updates | FOX Sports" and
+// "Tyson Fury - News & Rumors - PBC Boxing | FOX Sports" both slipped
+// through — real generic aggregator titles, but with a trailing SOURCE
+// ATTRIBUTION suffix (a scraper artifact: "| Site Name" / "- Site Name")
+// that the end-anchored noun-list regex doesn't account for, so the
+// pattern never reaches the string's actual end. Rather than keep growing
+// one giant regex to also model every possible trailing-attribution shape
+// (risking it accidentally swallowing a real headline's own dash clause),
+// strip a KNOWN, bounded list of real sports-media site names from the end
+// first, then run the existing check against what's left — a real
+// headline's own content is never JUST a known outlet's name, so this
+// can't misfire the way a generic "any capitalized trailing words" rule
+// could.
+const TRAILING_SOURCE_RE =
+  /\s*[|]\s*[\w.'-]+(?:\s+[\w.'-]+){0,3}\s*$|\s*-\s*(?:FOX Sports|NBC Sports|CBS Sports|Sky Sports|Yahoo Sports|Yardbarker|PBC Boxing|ESPN|NFL\.com|NBA\.com|MLB\.com|Bleacher Report|The Athletic|Sporting News|NewsNow|RotoWire|USA Today|Box-pro|Grokipedia)\s*$/i;
+
+function stripTrailingSourceAttribution(text: string): string {
+  let stripped = text;
+  // Repeated — "News & Rumors - PBC Boxing | FOX Sports" has TWO trailing
+  // attribution segments chained together.
+  for (let i = 0; i < 3; i++) {
+    const next = stripped.replace(TRAILING_SOURCE_RE, "");
+    if (next === stripped) break;
+    stripped = next.trim();
+  }
+  return stripped;
+}
+
+// ⛔ OPERATOR FIX (2026-08-20, real live incident): "Dallas Goedert News &
+// Updates" and "Penei Sewell Stats, News and Video" went out live as the
+// ON-IMAGE headline — the exact pattern this gate exists for — even though
+// the underlying candidate/caption was fine. Root cause: this gate only ever
+// ran against the SOURCE candidate's headline/subject (in
+// runDeterministicChecks, before rendering); nothing ever checked the
+// SEPARATELY-COMPUTED on-image headline text (narrativeRenderSpec.ts's AI
+// output, or its deterministic shortHeadline(candidate.headline) fallback),
+// which can independently regress to this exact shape regardless of how good
+// the real story is. Extracted as its own text-only function so both the
+// AI-copy retry loop (narrativeRenderSpec.ts's violates()) and the final
+// render spec (activities/index.ts, covering the deterministic-fallback
+// case too) can check the ACTUAL text that's about to be rendered, not just
+// the original source headline.
+// ⛔ OPERATOR FIX (2026-08-22, real live incident): "Jazz Chisholm Jr. - New
+// York Yankees Second Baseman - ESPN" went out live — a roster/player-page
+// title, the same "describes who someone IS, reports no actual event"
+// failure this whole gate exists for, just shaped as "Name - Team Position
+// - Outlet" instead of "Name + generic noun list". GENERIC_PROFILE_HEADLINE_RE
+// only catches the noun-list-suffix shape; this is a middle-of-string
+// position/role description between two dashes, structurally identical to
+// a Wikipedia-style bio page.
+const SPORTS_POSITION_WORDS =
+  "(?:quarterback|running back|wide receiver|tight end|cornerback|safety|linebacker|defensive end|offensive lineman|point guard|shooting guard|small forward|power forward|center|pitcher|catcher|shortstop|(?:first|second|third) baseman|outfielder|designated hitter|goalie|goaltender|defenseman|midfielder|striker|goalkeeper|defender|head coach)";
+// ⛔ OPERATOR FIX (2026-08-22, real live incident): "Ryan Day | Head Coach |
+// Ohio State Football" went out live on a CFB page — the exact same
+// no-event coach/roster bio-page shape this gate exists for, just using "|"
+// as the title separator (a very common <title> tag convention on team/
+// league official sites) instead of "-", which the pattern didn't match.
+// Accepts either separator now — same failure shape, different punctuation.
+const GENERIC_ROLE_PROFILE_RE = new RegExp(
+  `^[\\w.'\\s]+\\s*[-|]\\s*[\\w.'\\s]*\\b${SPORTS_POSITION_WORDS}\\b\\s*(?:[-|]\\s*[\\w.'\\s-]+)?\\s*$`,
+  "i"
+);
+// ⛔ OPERATOR FIX (2026-08-25, real live incident, FOURTH time on this exact
+// bug class): "Josh Allen | Buffalo Bills - buffalobills.com" and "Charley
+// Hull | Bio | LPGA | Ladies Professional Golf Association" both went out
+// live — team/league official-site roster and bio pages, same "describes
+// who someone IS, reports no actual event" failure this whole gate exists
+// for, but neither the domain list nor GENERIC_ROLE_PROFILE_RE's specific
+// sports-position-word requirement caught them (no listed generic domain,
+// no position word — just a bare team/org name or the literal word "Bio").
+// Every prior fix in this file's history added ANOTHER specific domain or
+// separator shape — that pattern guarantees a fifth incident on the next
+// team's site. These two checks are domain-agnostic on purpose: a trailing
+// " - word.com"/"| word.com" suffix is something a real narrative headline
+// essentially never has (that's a raw <title> tag convention, not editorial
+// writing) regardless of WHICH site it's from, and a standalone "bio"/
+// "profile"/"roster" segment is the same tell independent of sport.
+const TRAILING_DOMAIN_SUFFIX_RE = /[-|]\s*[a-z0-9-]+\.(?:com|org|net)\s*$/i;
+const GENERIC_REFERENCE_SEGMENT_RE = /\|\s*(?:bio|profile|roster|player\s+page|official\s+site)\s*(?:\||$)/i;
+
+export function isGenericFramingText(text: string): boolean {
+  const trimmed = text.trim();
+  if (GENERIC_PROFILE_HEADLINE_RE.test(trimmed)) return true;
+  if (GENERIC_PROFILE_HEADLINE_RE.test(stripTrailingSourceAttribution(trimmed))) return true;
+  if (GENERIC_ROUNDUP_RE.test(trimmed)) return true;
+  if (GENERIC_ROUNDUP_RE.test(stripTrailingSourceAttribution(trimmed))) return true;
+  if (GENERIC_ROLE_PROFILE_RE.test(trimmed)) return true;
+  if (TRAILING_DOMAIN_SUFFIX_RE.test(trimmed)) return true;
+  if (GENERIC_REFERENCE_SEGMENT_RE.test(trimmed)) return true;
+  return false;
+}
+
+export function isGenericProfileFraming(candidate: Candidate): boolean {
+  const text = `${candidate.subject} ${candidate.headline}`.trim();
+  if (isGenericFramingText(text)) return true;
+  // Check BOTH `link` and `sourceLink` — by the time this runs, an
+  // externally-sourced candidate's `link` has usually already been swapped
+  // to an ES-owned URL by resolveExternalLink (sourcing.ts), so the real
+  // bio-site domain only still lives on `sourceLink`.
+  for (const url of [candidate.link, candidate.sourceLink]) {
+    if (!url) continue;
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, "");
+      if (GENERIC_PROFILE_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`))) return true;
+    } catch {
+      // not a parseable absolute URL — skip
+    }
+  }
+  return false;
+}
+
 // ⛔ OPERATOR FIX (2026-08-08): "do what is left" — two real guardrails the
 // reference skill file specified (Section 8's topic-frequency limits,
 // Section "Hard Caps"' dominant-narrative cap) but this project never built.
@@ -696,9 +932,58 @@ function withinHours(entry: PostedLogEntry, hours: number, now: number): boolean
 // skipping every other one, while still preventing the same page from
 // posting twice within a single hour if a run ever executes out of its
 // normal cadence.
-const MIN_GAP_MINUTES = 50;
+// ⛔ OPERATOR FIX (2026-08-24, sharding rollout, real live incident,
+// severe): confirmed live as the single dominant failure reason (100+
+// occurrences in one cycle, well ahead of every other gate combined) —
+// 50 minutes assumed each run posts a page near the START of its own
+// execution, so the NEXT hourly fire (60 min later) always clears the gap
+// with margin. Real sharded runs now take 30-70+ minutes, and a page's
+// `posted_at` is recorded whenever Phase 2 actually gets to it — often well
+// into that window, not near the start. The real gap between "this post was
+// recorded" and "the next hourly execution tries this page again" is
+// (60 minutes - however far into the PREVIOUS run this page's post landed),
+// which routinely drops under 50 the moment a run takes more than ~10
+// minutes to reach a given page — meaning most pages were failing their OWN
+// next legitimate hourly attempt, not actually being protected from rapid
+// duplicate posting. The real "same-run rapid double-post" case this gate
+// was written for is separately covered by Phase 2's own 15-minute
+// same-page stagger (dailyRunWorkflow.ts) — lowering this further doesn't
+// remove that protection, just stops it from also eating the next hour's
+// legitimate, distinct post.
+const MIN_GAP_MINUTES = 20;
 
-export function topicFrequencyCheck(primaryEntityName: string | null, primarySportGroup: string | null, postedLog: PostedLogEntry[]): FrequencyCheckResult {
+// ⛔ OPERATOR FIX (2026-08-23, real live incident): "same story repetition"
+// was reported as the reason single-team fan pages (Michigan, Ohio State,
+// Colorado — pages with exactly ONE registered entity, e.g. p35's only
+// entity is "Michigan Wolverines") were stuck near-zero posts/day despite
+// real, genuinely distinct ES articles being available (a QB-room update, a
+// recruiting story, a coach's brother's lawsuit — different real events).
+// Root cause traced to this exact entity-count cap, not actual duplication:
+// on a single-entity page, EVERY real candidate necessarily shares that one
+// registered entity (there's nothing else to attribute it to), so this cap
+// hard-blocks the page at 3 posts/24h the moment it has any real content at
+// all, regardless of daily_budget_max (8-12) or how many genuinely different
+// stories exist. The cap's real purpose (stop one player crowding out a
+// roster page's many OTHER real players — the original DJ Moore/Bills
+// incident) is meaningless when there's no other entity to crowd out. Real
+// duplicate-story prevention already exists independently (checkCandidate's
+// alreadyPostedRecently/duplicateLinkRecently, per-link not per-entity) —
+// this cap only ever added value on multi-entity pages, so it's now skipped
+// entirely for single-entity ones rather than loosened for everyone.
+export function topicFrequencyCheck(
+  primaryEntityName: string | null,
+  primarySportGroup: string | null,
+  postedLog: PostedLogEntry[],
+  isSingleEntityPage = false,
+  // ⛔ OPERATOR FIX (2026-08-23): identical blind spot to the entity cap
+  // above, for the league/sport-group cap — a page registered under exactly
+  // one sport_group (entities:[] pages that only pass entityOrSportMatch via
+  // the sport-group substring path) necessarily has every real candidate
+  // share that one sport_group, so this 5/24h cap permanently caps such a
+  // page's 6th+ post of the day regardless of daily_budget_max. Skipped the
+  // same way, for the same reason.
+  isSingleSportGroupPage = false
+): FrequencyCheckResult {
   const now = Date.now();
   const last24h = postedLog.filter((p) => withinHours(p, 24, now));
 
@@ -710,11 +995,11 @@ export function topicFrequencyCheck(primaryEntityName: string | null, primarySpo
     return { pass: false, reason: `TOPIC_FREQUENCY_MIN_GAP_${MIN_GAP_MINUTES}M` };
   }
 
-  if (primaryEntityName) {
+  if (primaryEntityName && !isSingleEntityPage) {
     const entityCount = last24h.filter((p) => p.entity === primaryEntityName).length;
     if (entityCount >= 3) return { pass: false, reason: `TOPIC_FREQUENCY_ENTITY_CAP:${primaryEntityName}` };
   }
-  if (primarySportGroup) {
+  if (primarySportGroup && !isSingleSportGroupPage) {
     const sportCount = last24h.filter((p) => p.sportGroup === primarySportGroup).length;
     if (sportCount >= 5) return { pass: false, reason: `TOPIC_FREQUENCY_LEAGUE_CAP:${primarySportGroup}` };
   }
@@ -726,14 +1011,123 @@ export function topicFrequencyCheck(primaryEntityName: string | null, primarySpo
 // rolling 7-day window (the real, twice-recurring DJ Moore/Bills incident
 // that rule exists to stop). Exempt below a minimum sample (4 posts) since
 // a ratio is meaningless — and misleadingly restrictive — over a tiny count.
-export function dominantNarrativeCheck(primaryEntityName: string | null, postedLog: PostedLogEntry[]): FrequencyCheckResult {
-  if (!primaryEntityName) return { pass: true, reason: null };
+export function dominantNarrativeCheck(
+  primaryEntityName: string | null,
+  postedLog: PostedLogEntry[],
+  isSingleEntityPage = false
+): FrequencyCheckResult {
+  // ⛔ OPERATOR FIX (2026-08-23): see topicFrequencyCheck's comment above —
+  // same root bug. On a single-entity page every post necessarily matches
+  // the page's one registered entity, so this ratio is mathematically ~100%
+  // forever, not a real signal of narrative crowding.
+  if (!primaryEntityName || isSingleEntityPage) return { pass: true, reason: null };
   const now = Date.now();
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   const entityCount = last7d.filter((p) => p.entity === primaryEntityName).length;
   if ((entityCount + 1) / (last7d.length + 1) > 0.25) {
     return { pass: false, reason: `DOMINANT_NARRATIVE_CAP:${primaryEntityName}` };
+  }
+  return { pass: true, reason: null };
+}
+
+// ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): confirmed live
+// via a 197-post audit sample — 10+ real clusters where the SAME page
+// posted the SAME real-world event twice within hours, reworded each time
+// (newyorkyankeescommunity: the Gerrit Cole "passed Clemens, 6 IP/8 K"
+// story at 11:48 and again at 17:30 the same day; kingscourtchronicles: a
+// former-employee lawsuit story 9 hours apart; lsu_community_central: the
+// same Kiffin callout twice, ~2 hours apart; and more). None of this is
+// caught by any existing gate — duplicateLinkRecently/alreadyPostedRecently
+// both key off the candidate's LINK, but these are usually genuinely
+// DIFFERENT real articles/sources (or the same event surfaced twice by
+// different sourcing tiers with different keys) about the identical
+// real-world event — no link-based check can ever catch "different URL,
+// same story," because the URLs really are different strings.
+//
+// This has to be a semantic check, not a lexical one — same reasoning that
+// justified isCoherentHeadlineViaAI (narrativeRenderSpec.ts) for catching
+// incoherent-but-structurally-valid headlines. Cheap pre-filter first (only
+// compare against this page's own recent posts that share the SAME primary
+// entity — a strong, free prior that a same-event collision is even
+// plausible) so the real AI call only fires when there's something
+// genuine to compare against, not on every candidate.
+export interface DuplicateStoryCheckResult {
+  pass: boolean;
+  reason: string | null;
+}
+
+const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
+const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
+// ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
+// fine to repost once real time has passed, but the cutoff should match the
+// 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter
+// than it.
+const DUPLICATE_STORY_WINDOW_HOURS = 72;
+
+async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string }> {
+  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
+  // Fail OPEN, same policy as every other AI-judgment gate in this pipeline
+  // (isCoherentHeadlineViaAI, factCheckClaim) — an infra hiccup on this
+  // specific check must never cost the whole run's volume; a real link/
+  // dedup incident is worse than an occasional missed semantic duplicate.
+  if (!apiKey) return { duplicate: false };
+  const prompt = [
+    `A sports fan page is about to post this NEW headline:`,
+    `"${candidateHeadline}"`,
+    ``,
+    `Here are headlines this SAME page already posted recently:`,
+    ...recentHeadlines.map((h, i) => `${i + 1}. "${h}"`),
+    ``,
+    `Is the NEW headline describing the SAME specific real-world event as any of the headlines above — the same game, same quote, same announcement, same incident — just worded differently? Answer true ONLY if it's genuinely the same underlying event. A genuinely NEW development involving the same person/team (a follow-up, a reaction to the earlier event, a different game, an update to a developing story) is NOT a duplicate — answer false for that. When in doubt, answer false; this check exists to catch obvious reposts, not to block legitimate follow-up coverage.`,
+    `Output ONLY a JSON object: {"duplicate": true, "matched": "<the exact headline number/text it duplicates>"} or {"duplicate": false}. No markdown, no explanation.`,
+  ].join("\n");
+  try {
+    const res = await fetchWithTimeout(
+      AI_GATEWAY_URL,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: AI_GATEWAY_MODEL,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 200,
+          temperature: 0.3,
+        }),
+      },
+      30_000
+    );
+    if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = json.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new Error("AI gateway returned no text content");
+    const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
+    const parsed = JSON.parse(cleaned);
+    return { duplicate: parsed?.duplicate === true, matched: parsed?.matched };
+  } catch (e) {
+    console.error(`isDuplicateStoryViaAI: failed, treating as not-duplicate: ${(e as Error).message}`);
+    return { duplicate: false };
+  }
+}
+
+export async function duplicateStoryCheck(
+  candidate: Candidate,
+  primaryEntityName: string | null,
+  postedLog: PostedLogEntry[]
+): Promise<DuplicateStoryCheckResult> {
+  if (!primaryEntityName) return { pass: true, reason: null }; // no entity match — nothing reliable to compare against
+  const now = Date.now();
+  const recentSameEntity = postedLog
+    .filter((p) => p.entity === primaryEntityName && withinHours(p, DUPLICATE_STORY_WINDOW_HOURS, now) && p.headline)
+    .slice(-5); // bound the prompt — the most recent handful is what a real reader would actually remember seeing
+  if (recentSameEntity.length === 0) return { pass: true, reason: null }; // nothing on this entity recently — cheap exit, no AI call needed
+
+  const result = await isDuplicateStoryViaAI(
+    candidate.headline,
+    recentSameEntity.map((p) => p.headline!)
+  );
+  if (result.duplicate) {
+    return { pass: false, reason: `DUPLICATE_STORY_SAME_EVENT:${primaryEntityName}${result.matched ? `:${result.matched}`.slice(0, 100) : ""}` };
   }
   return { pass: true, reason: null };
 }
@@ -786,6 +1180,29 @@ export function requiresNamedEntity(candidate: Candidate, page: PageConfig, matc
   if (isWomensOnlyPage(page)) {
     return realRegisteredEntityMatches(candidate, page).length === 0;
   }
+  // ⛔ OPERATOR FIX (2026-08-31, real live incident): a single-athlete fan
+  // page (page_type "entity") registers its subject's real rivals/peers as
+  // their own entity slots too, at lower weight, so genuine crossover
+  // stories ("McGregor vs Poirier") still match — but that let a story
+  // ENTIRELY about a rival, zero mention of the page's actual subject, pass
+  // this gate just because the rival is also a registered slot. Live
+  // incident: p54 (Conor McGregor fan page, McGregor weight 40) posted a
+  // Khabib Nurmagomedov/Islam Makhachev story — Islam is a real registered
+  // slot (weight 10, for legitimate crossover coverage) but McGregor wasn't
+  // mentioned at all. Regional/team pages are unaffected — a roster has no
+  // single "flagship" to prefer over teammates, so this only tightens
+  // page_type "entity" (one-athlete) pages, and only requires the match
+  // include the page's OWN highest-weight entity, not exclusively it.
+  if (page.page_type === "entity") {
+    const maxWeight = Math.max(...page.entities.map((e) => e.weight));
+    const flagshipKeywords = new Set(
+      page.entities
+        .filter((e) => e.weight === maxWeight)
+        .flatMap((e) => (e.keywords.length > 0 ? e.keywords : [e.name]))
+        .map((k) => k.toLowerCase())
+    );
+    return !matchedNames.some((m) => flagshipKeywords.has(m.toLowerCase()));
+  }
   return matchedNames.length === 0;
 }
 
@@ -806,13 +1223,50 @@ export function alreadyPostedRecently(candidate: Candidate, log: PostedLogEntry[
   });
 }
 
+// ⛔ OPERATOR FIX (2026-08-22, real live incident): this check has been
+// silently DEAD since it was written — it compares `p.reply_url` (the
+// STORED value, which is always `candidate.link` + a UTM query string, per
+// buildReplyLink in caption.ts: `${candidate.link}${sep}${utm}...`) against
+// a fresh candidate's bare `candidate.link` (no query string). Those two
+// can never be equal, so this "duplicate link" gate has never once fired —
+// confirmed live on the sibling es-threads-temporal-photo pipeline (same
+// checks.ts, forked verbatim): the exact class of incident this function's
+// own original comment named ("same link posted... under different story
+// wrappers") happened again, TWICE in one day, on lsu_community_central —
+// two different real articles each posted twice via the multi-angle
+// sourcing feature's `key`/`key:angle` variants, which deliberately use
+// different dedup KEYS for the same real link. This check exists
+// specifically as the backstop for that exact case, and it was never
+// working on either pipeline. Compare the base URL (everything before `?`)
+// on both sides instead of the raw strings.
+function baseUrlNoQuery(url: string): string {
+  const qIndex = url.indexOf("?");
+  return qIndex === -1 ? url : url.slice(0, qIndex);
+}
+
 // Same literal link already posted on this page within 24h — this is the
 // exact check that would have caught the real coloradoprimetime_ incident
 // (same link posted 10+ times in a day under different story wrappers).
+//
+// ⛔ OPERATOR FIX (2026-08-22, caught while verifying the fix above, before
+// it caused real damage): a "subscribe" candidate's link is deliberately a
+// generic newsletter homepage, the SAME URL for every genuinely different
+// real story that falls back to a "subscribe for more" CTA (confirmed live:
+// essentiallysportsmedia legitimately posted 13 different real headlines
+// all reusing essentiallysports-daily.beehiiv.com as their CTA link in one
+// week) — the base-URL fix above would have flagged every one of those as
+// "the same story repeated" and silently dropped real, distinct candidates.
+// Skip the check entirely for subscribe-context candidates, and skip any
+// historical entry that was ALSO a subscribe link (identifiable by the same
+// utm_content=reply_link tag buildReplyLink always adds for that case) —
+// never compare a subscribe link's shared homepage against itself.
 export function duplicateLinkRecently(candidate: Candidate, log: PostedLogEntry[], withinHours = 24): boolean {
+  if (candidate.linkContext === "subscribe") return false;
   const cutoff = Date.now() - withinHours * 3600 * 1000;
+  const candidateBase = baseUrlNoQuery(candidate.link);
   return log.some((p) => {
-    if (p.reply_url !== candidate.link) return false;
+    if (!p.reply_url || p.reply_url.includes("utm_content=reply_link")) return false;
+    if (baseUrlNoQuery(p.reply_url) !== candidateBase) return false;
     const t = p.posted_at ? new Date(p.posted_at).getTime() : NaN;
     return !isNaN(t) && t > cutoff;
   });
@@ -971,10 +1425,37 @@ export async function accuracyGate(candidate: Candidate, primaryEntityName: stri
     const res = await fetchWithRetry(verifyUrl, { redirect: "follow" });
     if (!res.ok) return { pass: false, reason: `SOURCE_UNREACHABLE:${res.status}` };
     const body = await res.text();
-    // Strip HTML tags for a plain-text substring check — cheap, no parser dependency.
-    const plain = body.replace(/<[^>]+>/g, " ").toLowerCase();
+    // Strip HTML tags for a plain-text substring check — cheap, no parser
+    // dependency. ⛔ OPERATOR FIX (2026-08-23, real live incident): confirmed
+    // live drop, p52 ("Kobe 8/24 Legacy") — SOURCE_DOES_NOT_MENTION_SUBJECT:
+    // Kobe Bryant on a real tribute/retrospective article that referred to
+    // him by first name throughout, never spelling the full registered two-
+    // word form. Also decode HTML entities before matching — an un-decoded
+    // "&#8217;"/"&rsquo;" apostrophe means a straight-apostrophe registered
+    // name (Ja'Marr Chase, De'Aaron Fox, Shaquille O'Neal) can never match
+    // even when the full name IS present verbatim in the rendered page. The
+    // entity was already confirmed relevant upstream by entityOrSportMatch/
+    // realRegisteredEntityMatches before ever reaching this gate — this
+    // check only re-confirms the SPECIFIC LINKED ARTICLE is really about it,
+    // so accepting a strong single-token match (the surname, the part of a
+    // name people are least likely to omit) is a safe loosening, not a
+    // weakening of what "mentions the subject" means.
+    const plain = body
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&(?:rsquo|lsquo|#8216|#8217|#x2018|#x2019);/gi, "'")
+      .replace(/&(?:rdquo|ldquo|#8220|#8221|#x201c|#x201d);/gi, '"')
+      .replace(/&(?:amp|#38|#x26);/gi, "&")
+      .replace(/&nbsp;/gi, " ")
+      .toLowerCase();
     const nameLower = primaryEntityName.toLowerCase();
-    if (!plain.includes(nameLower)) {
+    // Any single significant token (first OR last name, length > 2) — not
+    // just the surname. The real motivating incident (Kobe Bryant) is a
+    // FIRST-name-only reference, the more common convention in tribute/
+    // retrospective writing for a globally recognized figure; a surname-only
+    // fallback would have missed that exact case.
+    const nameTokens = nameLower.split(/\s+/).filter((t) => t.length > 2);
+    const matches = plain.includes(nameLower) || nameTokens.some((t) => plain.includes(t));
+    if (!matches) {
       return { pass: false, reason: `SOURCE_DOES_NOT_MENTION_SUBJECT:${primaryEntityName}` };
     }
   } catch (e) {
@@ -1009,6 +1490,32 @@ export function appendUtm(url: string, utmString: string): string {
 export function isFreshEnough(candidate: Candidate, maxAgeHours: number): boolean {
   const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
   return ageMs <= maxAgeHours * 3600 * 1000;
+}
+
+export type CaptionAgeTone = "current" | "standard" | "retro";
+
+// ES policy (2026-08-31): urgency/"breaking" framing is only honest up to
+// 48h old; nostalgia/retro framing is appropriate past 6 months; the wide
+// middle band gets plain news tone with no urgency language.
+export const BREAKING_ELIGIBLE_MAX_HOURS = 48;
+export const RETRO_TONE_MIN_DAYS = 180;
+
+export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
+  // sourceFromEsEvergreenArticles (sourcing.ts) deliberately stamps
+  // publishedAt as "now" — ES-MCP's older-article results carry no real
+  // date, and this tier is a 5-YEAR lookback by design (genuinely-old ES
+  // catalog content, meant to be reused as banter/legacy content per
+  // Aashish, not as if it just happened). Trusting that fake timestamp here
+  // would do the opposite of this tier's own purpose: every evergreen
+  // candidate would read as "current" and become breaking-news-eligible.
+  // We don't know the TRUE age (could be weeks or years old), so "standard"
+  // (plain news tone, no urgency, no false immediacy) is the only always-
+  // correct answer — "retro" would overclaim an age we can't confirm.
+  if (candidate.source === "evergreen_search") return "standard";
+  const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
+  if (ageMs <= BREAKING_ELIGIBLE_MAX_HOURS * 3600 * 1000) return "current";
+  if (ageMs >= RETRO_TONE_MIN_DAYS * 24 * 3600 * 1000) return "retro";
+  return "standard";
 }
 
 export interface CandidateCheckResult {
@@ -1059,7 +1566,40 @@ function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig)
   // to catch actual current-season news slipping in via keyword-only
   // matching (es_article/web_search/social_search), not to second-guess
   // the one tier built specifically for these pages.
+  //
+  // ⛔ OPERATOR FIX (2026-08-24, real live incident, resolves the 2026-08-23
+  // flagged decision above): confirmed live on the two newly-onboarded
+  // retrospective pages (Classic NASCAR, MMA Archives) — TOO_RECENT_FOR_
+  // RETROSPECTIVE_PAGE was the failure reason on the overwhelming majority
+  // of ALL attempted candidates (60+ and 40+ respectively in one run alone),
+  // because sourceFromEsArticles legitimately surfaces real, CURRENT stories
+  // that are genuinely ABOUT a registered legend (e.g. "Jeff Gordon
+  // advocates for a modern IROC revival") — exactly the content this page's
+  // audience wants, just rejected for having an accurate "today" timestamp.
+  // The 2026-08-23 concern (a current story that merely REFERENCES a legend
+  // in passing, e.g. "X breaks Kobe's record", shouldn't count) is real, but
+  // narrower than "any es_article" — checked directly here: only exempt when
+  // the candidate's own headline/subject text actually names one of this
+  // page's REGISTERED legend entities via its curated keywords, not just any
+  // current story. A passing mention without a registered-keyword match
+  // still gets the strict age check below, same as before this fix.
   if (candidate.source === "evergreen_search") return false;
+  // ⛔ OPERATOR FIX (2026-08-24, same day, real live incident): the es_article
+  // fix above didn't move the needle for Classic NASCAR — confirmed live the
+  // dominant failures there were nascar.com/hendrickmotorsports.com/
+  // azquotes.com/nascarhall.com results (Jeff Gordon retrospective pieces,
+  // Richard Petty Q&As, legend quote pages), all tagged "web_search" or
+  // "social_search", not "es_article". Same underlying bug, two more source
+  // types that hit the identical wall — this gate's own comment already
+  // named "es_article/web_search/social_search" as the three keyword-only
+  // tiers it exists to police, but only es_article got the entity-match
+  // exemption. Extending the same check (must actually name a registered
+  // legend, not just any current story) to all three keyword-matched tiers.
+  if (candidate.source === "es_article" || candidate.source === "web_search" || candidate.source === "social_search") {
+    const text = `${candidate.headline} ${candidate.subject || ""}`.toLowerCase();
+    const mentionsRegisteredLegend = page.entities.some((e) => e.keywords.some((k) => text.includes(k.toLowerCase())));
+    if (mentionsRegisteredLegend) return false;
+  }
   const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
   return ageMs < RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000;
 }
@@ -1081,8 +1621,14 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   if (isPromoBettingContent(candidate)) {
     return { pass: false, reason: "PROMO_BETTING_CONTENT" };
   }
+  if (isListicleFillerContent(candidate)) {
+    return { pass: false, reason: "LISTICLE_FILLER_CONTENT" };
+  }
   if (isBareQuotedFragment(candidate)) {
     return { pass: false, reason: "BARE_QUOTED_FRAGMENT" };
+  }
+  if (isGenericProfileFraming(candidate)) {
+    return { pass: false, reason: "GENERIC_PROFILE_FRAMING" };
   }
   if (isReplyTweetContent(candidate)) {
     return { pass: false, reason: "REPLY_TWEET_CONTENT" };

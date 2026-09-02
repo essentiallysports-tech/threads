@@ -70,10 +70,36 @@ export function buildTopicHashtag(matchedEntityNames: string[], sportGroup: stri
 // safe, dedicated slot for this signal — added on every link this
 // function builds, never touching the page's own source/medium/campaign
 // values (preserves any existing GA4 reports built on those).
+// ⛔ OPERATOR FIX (2026-08-24, real live incident, audit-confirmed): this used
+// to append our utm_string onto whatever query string candidate.link already
+// had, with no check for pre-existing utm_source/utm_medium keys. Some
+// es_article canonical URLs ARE themselves a Beehiiv post URL (e.g. niche
+// single-team newsletters like Buckeye Daily) and already carry Beehiiv's own
+// "?utm_source=buckeye-daily.beehiiv.com&utm_medium=referral&utm_campaign=..."
+// — appending ours after that produced a URL with utm_source/utm_medium each
+// appearing TWICE. Confirmed live on Ohio State Wireline and Colorado Prime
+// Time posts: real readers were clicking through (large real `sessions`
+// totals on the dashboard), but GA4 attributed the session to whichever
+// duplicate key it read first — Beehiiv's own pre-existing "referral" tag,
+// not ours — so this pipeline's own dashboard showed near-zero attributed
+// clicks for real, working links. Stripping any tracking params the source
+// URL already carries before appending ours makes our tag authoritative
+// every time, regardless of what the link happened to arrive with.
+function stripExistingTracking(url: string): string {
+  try {
+    const u = new URL(url);
+    ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"].forEach((k) => u.searchParams.delete(k));
+    return u.toString();
+  } catch {
+    return url; // malformed URL — leave it untouched, caller's own validation handles that case
+  }
+}
+
 export function buildReplyLink(candidate: Candidate, page: PageConfig): string | null {
   const utm = page.threads?.utm_string;
   if (!utm) return null;
   const contentTag = candidate.source === "beehiiv_newsletter" || candidate.linkContext === "subscribe" ? "&utm_content=reply_link" : "";
-  const sep = candidate.link.includes("?") ? "&" : "?";
-  return `${candidate.link}${sep}${utm}${contentTag}&utm_term=autopost`;
+  const cleanLink = stripExistingTracking(candidate.link);
+  const sep = cleanLink.includes("?") ? "&" : "?";
+  return `${cleanLink}${sep}${utm}${contentTag}&utm_term=autopost`;
 }

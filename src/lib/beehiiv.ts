@@ -1,13 +1,23 @@
 // Real Beehiiv REST client — confirmed live 2026-08-06: `Authorization: Bearer
 // <key>` against api.beehiiv.com/v2 returns real publication + post data.
 
-import { fetchWithTimeout } from "./httpUtil";
+import { fetchWithTimeout, createLimiter } from "./httpUtil";
 
 const BASE = "https://api.beehiiv.com/v2";
 const KEY = process.env.BEEHIIV_API_KEY!;
 
+// ⛔ OPERATOR FIX (2026-08-29, real live incident): see httpUtil.ts's
+// createLimiter comment. Confirmed live in this exact incident — Beehiiv's
+// account-wide API key returned 429 RATE_LIMIT_EXCEEDED over 6,000 times in
+// one window once all 41 pages' repair passes (4 different Beehiiv-touching
+// tiers each) started firing concurrently across all 6 shards. No published
+// Beehiiv concurrency limit was found, so this is a conservative starting
+// bound, not a measured figure — normal spread-through-the-day usage never
+// approached this, only the mass-catchup scenario did.
+const limitBeehiiv = createLimiter(4);
+
 async function beehiivGet<T>(path: string): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, { headers: { Authorization: `Bearer ${KEY}` } }, 20_000);
+  const res = await limitBeehiiv(() => fetchWithTimeout(`${BASE}${path}`, { headers: { Authorization: `Bearer ${KEY}` } }, 20_000));
   if (!res.ok) throw new Error(`Beehiiv ${path} -> ${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -87,4 +97,22 @@ export async function recentPublishedPolls(publicationId: string, limit = 10): P
     `/publications/${publicationId}/polls?limit=${limit}&status=published&order_by=created_at&direction=desc`
   );
   return res.data.filter((p) => p.status === "published");
+}
+
+// ⛔ OPERATOR FIX (2026-08-18, real live incident): "2 editions go out daily,
+// each has a few stories, no relevant news from that also is taken." Every
+// prior newsletter tier (sourceFromNewsletter/sourceFromNewsletterBroad)
+// only ever matched a page's entities against the EDITION's own title/
+// subject line — a multi-story digest ("Rogan Clears Stance on WNBA Trans
+// Debate") whose title has nothing to do with a given page can still
+// contain a real, individually-linked ES article deep inside it that IS a
+// perfect match for that page, and it was never being looked at. Confirmed
+// live: `expand[]=free_web_content` on the posts endpoint returns the full
+// rendered HTML of the edition, including each story's own heading and its
+// real essentiallysports.com article link — this reads that.
+export async function getPostContent(publicationId: string, postId: string): Promise<string | null> {
+  const res = await beehiivGet<{ data: { content?: { free?: { web?: string } } } }>(
+    `/publications/${publicationId}/posts/${postId}?expand[]=free_web_content`
+  );
+  return res.data.content?.free?.web || null;
 }
