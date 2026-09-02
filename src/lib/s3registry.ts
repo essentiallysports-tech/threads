@@ -46,7 +46,31 @@ export async function loadActiveThreadsPages(): Promise<PageConfig[]> {
   // A page is only actually live if it also has a real Postiz integration —
   // mirrors the same guard the old skill file (and the FB pipeline before it)
   // had to add after finding ghost/disconnected registry entries.
-  return pages.filter((p): p is PageConfig => !!p && !!p.threads?.postiz_integration_id);
+  //
+  // ⛔ OPERATOR FIX (2026-08-27): pages with BOTH sport_groups:[] AND
+  // entities:[] are run by a separate, dedicated firehose pipeline
+  // (firehoseWorkflow.ts) that reads its one page directly via getPageById,
+  // bypassing this function entirely — posting a bare headline+link, no AI
+  // caption, no rendered card. This main workflow must never ALSO pick such
+  // a page up: requiresNamedEntity (checks.ts) explicitly exempts
+  // entities.length===0 pages rather than rejecting them, so without this
+  // guard the same account would get both plain firehose posts and this
+  // pipeline's AI-rendered ones, uncoordinated. Confirmed live (2026-08-27):
+  // no OTHER existing page has both fields empty, so this can only ever
+  // exclude a page deliberately built for the firehose pipeline — every
+  // real roster-scoped page keeps working exactly as before.
+  return pages.filter(
+    (p): p is PageConfig => !!p && !!p.threads?.postiz_integration_id && !(p.sport_groups.length === 0 && p.entities.length === 0)
+  );
+}
+
+// ⛔ OPERATOR ADD (2026-08-27, firehose pipeline): direct-by-id lookup,
+// bypassing the index-driven loadActiveThreadsPages() above entirely — used
+// by firehoseActivities.ts to load its one dedicated page. Deliberately does
+// NOT filter on status/sport_groups/entities; the caller owns that decision.
+export async function getPageById(pageId: string): Promise<PageConfig | null> {
+  const raw = await getObject(`${REGISTRY_PREFIX}pages/${pageId}.json`);
+  return raw ? (JSON.parse(raw) as PageConfig) : null;
 }
 
 // Defensive parse — confirmed live (2026-08-05): at least one real
@@ -68,8 +92,16 @@ export async function getPostedLog(pageId: string): Promise<PostedLogEntry[]> {
   if (!raw) return [];
   try {
     return extractPostedLogEntries(JSON.parse(raw));
-  } catch {
-    return []; // malformed JSON — treat as empty rather than crash the whole run
+  } catch (e) {
+    // ⛔ OPERATOR FIX (2026-08-24, real live incident audit): silently
+    // treating a parse failure as "no history" is the highest-severity of
+    // this file's three silent catches — it directly risks duplicate posts
+    // (every already-posted-recently/duplicate-link check reads this) and
+    // skews the 70/30 newsletter-mix math, with no trace anywhere that it
+    // happened. Logging so a real parse failure is at least visible, not
+    // indistinguishable from a genuinely empty/new page.
+    console.error(`getPostedLog: malformed JSON for ${pageId}, treating as empty: ${(e as Error).message}`);
+    return [];
   }
 }
 
@@ -85,9 +117,31 @@ export async function appendPostedLog(pageId: string, entry: PostedLogEntry): Pr
   await putObject(`pool/threads_posted_${pageId}.json`, JSON.stringify(log, null, 2));
 }
 
+// ⛔ OPERATOR FIX (2026-08-16, real live incident): confirmed live — today's
+// pool/t2_stories_{date}_latest.json is NOT a bare array, it's
+// {generated_at, date, version, stories: [...], dropped_below_threshold,
+// top_story_sweep_log}. sourceFromSharedPool called `pool.map(...)` on
+// whatever this returned with zero shape tolerance, so every page's
+// sourceCandidatePoolForPage crashed with a hard TypeError on the very first
+// sourcing tier, every single hourly run, all day — the exact same class of
+// schema drift getPostedLog already had to handle for its own file. Same
+// tolerant extraction here.
+function extractSharedPoolStories(parsed: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(parsed)) return parsed;
+  const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  if (Array.isArray(obj?.stories)) return obj!.stories as Array<Record<string, unknown>>;
+  return [];
+}
+
 export async function getSharedPool(dateISO: string): Promise<Array<Record<string, unknown>>> {
   const raw = await getObject(`pool/t2_stories_${dateISO}_latest.json`);
-  return raw ? JSON.parse(raw) : [];
+  if (!raw) return [];
+  try {
+    return extractSharedPoolStories(JSON.parse(raw));
+  } catch (e) {
+    console.error(`getSharedPool: malformed JSON for ${dateISO}, treating as empty: ${(e as Error).message}`);
+    return [];
+  }
 }
 
 export async function writeDryRunResult(dateISO: string, results: unknown): Promise<void> {
@@ -119,7 +173,8 @@ export async function getAllEvergreenAngles(): Promise<EvergreenAngle[]> {
   try {
     const parsed = JSON.parse(raw) as Record<string, EvergreenAngle[]>;
     return Object.values(parsed).flat();
-  } catch {
+  } catch (e) {
+    console.error(`getAllEvergreenAngles: malformed JSON, treating as empty: ${(e as Error).message}`);
     return [];
   }
 }

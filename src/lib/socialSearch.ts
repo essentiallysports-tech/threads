@@ -14,9 +14,27 @@
 // registered, not just the primary one.
 
 import { Candidate, PageConfig } from "./types";
-import { fetchWithTimeout } from "./httpUtil";
+import { fetchWithTimeout, isCircuitOpen, tripCircuit } from "./httpUtil";
 
 const APIFY_BASE = "https://api.apify.com/v2/acts";
+
+// ⛔ OPERATOR FIX (2026-08-30, real live incident): see httpUtil.ts's
+// circuit-breaker comment. One shared key for both functions below — Twitter
+// and Reddit share ONE Apify account/quota (confirmed live: identical
+// "Monthly usage hard limit exceeded" 403 from both actors simultaneously),
+// so a source-specific breaker would still let the other hammer a dead
+// shared quota. 6 hours is a pragmatic middle ground for a MONTHLY limit:
+// long enough to actually stop the wasted volume (no point re-checking every
+// few minutes for something that won't reset for weeks), short enough that
+// a same-day plan upgrade gets noticed well within a working day, and moot
+// anyway on the next deploy/restart, which always clears this in-memory
+// state for a fresh, cheap re-check.
+const APIFY_QUOTA_KEY = "apify_social_search";
+const APIFY_QUOTA_COOLDOWN_MS = 6 * 3600 * 1000;
+
+function isHardQuotaError(message: string): boolean {
+  return message.includes("platform-feature-disabled") || message.includes("Monthly usage hard limit exceeded");
+}
 
 // ⛔ OPERATOR FIX (2026-08-10, real live incident): a 16:00Z run stalled for
 // 2+ hours and blocked every scheduled fire after it (SKIP overlap policy).
@@ -44,7 +62,22 @@ const APIFY_BASE = "https://api.apify.com/v2/acts";
 // 20-minute run budget. Cut the ceiling hard: when this actor is genuinely
 // degraded/down, failing fast matters far more than giving it more rope,
 // since a healthy run returns in a few seconds either way.
-async function runActorSync<T>(actorId: string, input: Record<string, unknown>, apiKey: string, timeoutSecs = 18): Promise<T[]> {
+// ⛔ OPERATOR FIX (2026-08-14, real live incident): confirmed live — the
+// Apify quota exhaustion (403) that had been masking this got resolved, and
+// the actor is now genuinely TIMED-OUT at 18s on a healthy run (isolated
+// test: same query took ~25s at timeout=45, succeeded every time; failed
+// every time at 18s). Restored to 45s — a currently-slow-but-healthy actor
+// was being killed before it could ever return real results. If this actor
+// degrades/hangs again like 2026-08-12, cut it back down; for now 18s cuts
+// off every real result, not just degraded ones.
+// ⛔ OPERATOR FIX (2026-08-15, real live incident): confirmed live again —
+// 45s was ALSO now cutting off every real result (every sourceFromTwitter/
+// sourceFromReddit call in a real run logged TIMED-OUT). Isolated test: the
+// same query took ~55s at timeout=90, succeeding; failed at both 18s and
+// 45s. Same class of platform-wide slowdown as tonight's Athena/AI-Gateway
+// incidents, not a new code issue — raised again to what real calls
+// actually need right now.
+async function runActorSync<T>(actorId: string, input: Record<string, unknown>, apiKey: string, timeoutSecs = 90): Promise<T[]> {
   // Client-side ceiling set above Apify's own instructed timeout (not equal
   // to it) — this lets Apify's normal "ran out of time, here's a clean
   // TIMED-OUT error" response come back and hit the existing per-query
@@ -111,14 +144,26 @@ const MIN_REDDIT_UPVOTES = 50;
 // never more than 4 (bounds run latency: each is a real Apify actor call),
 // but every one of the 4 is a genuinely different real name/nickname/sport
 // term, not a repeat of the same string.
+//
+// ⛔ OPERATOR FIX (2026-08-23 audit): two structural bugs in the original
+// version, both latent until Twitter/Reddit's external outages clear:
+// (1) the top-priority query joined the first two entity NAMES into one
+// string ("Conor McGregor Max Holloway MMA") — social search reads that as
+// an AND of unrelated tokens and will structurally return few/no results
+// for any 2+-entity page; (2) the broad, reliable sport-only fallback was
+// pushed LAST and the final `.slice(0, 4)` cap filled in insertion order,
+// so for any page with 3+ entities carrying distinct keywords the
+// sport-only query never ran at all, and entities past the first ~3 never
+// got their own query either. Reserves the sport-only slot first, then
+// queries entity names individually instead of joined.
 function queryVariants(page: PageConfig): string[] {
   const sport = page.sport_groups[0] || null;
   const variants: string[] = [];
 
-  const entityNames = page.entities.map((e) => e.name);
-  if (entityNames.length > 0) {
-    const primary = entityNames.slice(0, 2).join(" ");
-    variants.push(sport ? `${primary} ${sport}` : primary);
+  if (sport) variants.push(sport);
+
+  for (const e of page.entities) {
+    variants.push(sport ? `${e.name} ${sport}` : e.name);
   }
 
   // Individual keywords/nicknames ("Intimidator", "The Notorious") carry
@@ -132,8 +177,6 @@ function queryVariants(page: PageConfig): string[] {
       }
     }
   }
-
-  if (sport) variants.push(sport);
 
   return [...new Set(variants)].slice(0, 4);
 }
@@ -150,7 +193,7 @@ function dedupeByKey<C extends { key: string }>(candidates: C[]): C[] {
 export async function sourceFromTwitter(page: PageConfig, dateISO: string): Promise<Candidate[]> {
   const apiKey = process.env.APIFY_API_TOKEN;
   const queries = queryVariants(page);
-  if (!apiKey || queries.length === 0) return [];
+  if (!apiKey || queries.length === 0 || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
 
   const toCandidates = (items: TweetItem[]): Candidate[] =>
     items
@@ -178,7 +221,9 @@ export async function sourceFromTwitter(page: PageConfig, dateISO: string): Prom
       // dropped; sourcing real, already-substantial posts directly is both
       // cheaper and yields more real candidates per call.
       runActorSync<TweetItem>("apidojo~tweet-scraper", { searchTerms: [query], maxItems: 8, sort: "Top" }, apiKey).catch((e) => {
-        console.error(`sourceFromTwitter: query "${query}" failed for ${page.page_id}: ${(e as Error).message}`);
+        const message = (e as Error).message;
+        if (isHardQuotaError(message)) tripCircuit(APIFY_QUOTA_KEY, APIFY_QUOTA_COOLDOWN_MS, `sourceFromTwitter: ${message}`);
+        console.error(`sourceFromTwitter: query "${query}" failed for ${page.page_id}: ${message}`);
         return [] as TweetItem[];
       })
     )
@@ -189,7 +234,7 @@ export async function sourceFromTwitter(page: PageConfig, dateISO: string): Prom
 export async function sourceFromReddit(page: PageConfig, dateISO: string): Promise<Candidate[]> {
   const apiKey = process.env.APIFY_API_TOKEN;
   const queries = queryVariants(page);
-  if (!apiKey || queries.length === 0) return [];
+  if (!apiKey || queries.length === 0 || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
 
   const toCandidates = (items: RedditPostItem[]): Candidate[] =>
     items
@@ -216,7 +261,9 @@ export async function sourceFromReddit(page: PageConfig, dateISO: string): Promi
         { searches: [query], maxItems: 8, sort: "top", type: "posts" },
         apiKey
       ).catch((e) => {
-        console.error(`sourceFromReddit: query "${query}" failed for ${page.page_id}: ${(e as Error).message}`);
+        const message = (e as Error).message;
+        if (isHardQuotaError(message)) tripCircuit(APIFY_QUOTA_KEY, APIFY_QUOTA_COOLDOWN_MS, `sourceFromReddit: ${message}`);
+        console.error(`sourceFromReddit: query "${query}" failed for ${page.page_id}: ${message}`);
         return [] as RedditPostItem[];
       })
     )

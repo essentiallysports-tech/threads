@@ -32,7 +32,73 @@ const ENGAGEMENT_BAIT_PATTERNS = [
   /\bfollow\s+for\s+more\b/i,
 ];
 
-const REFUSAL_PATTERNS = [/^i\s+(cannot|can't|won't)\b/i, /\bas an ai\b/i, /\bi'm not able to\b/i];
+// ⛔ OPERATOR FIX (2026-08-19, real live incident, severe): confirmed live —
+// a real post on New York Yankees Community went out with the MODEL'S OWN
+// REFUSAL TEXT as the caption: "The headline and facts don't give me enough
+// actual information to write a substantive post... I can't responsibly
+// write a post that would require me to invent what the news actually is.
+// If you have the real story... I'm happy to write it." The refusal clause
+// ("I can't responsibly write...") sits mid-paragraph after explanatory
+// text, not at the very start of the response — the old `^i\s+(cannot|
+// can't|won't)\b` pattern is ANCHORED to the string's start, so it can only
+// ever catch a refusal that's the model's very FIRST words, missing the
+// far more common real shape where the model explains itself before
+// declining. Removed the anchor and added the actual phrases seen in this
+// live failure plus adjacent ones, so any refusal/meta-commentary anywhere
+// in the response is caught, not just a refusal that opens the message.
+const REFUSAL_PATTERNS = [
+  /\bi\s+(cannot|can't|won't)\b/i,
+  /\bas an ai\b/i,
+  /\bi'm not able to\b/i,
+  /\bdoesn't give me enough\b/i,
+  /\bdon't have enough (information|detail)/i,
+  /\bnot enough (information|detail|context) to\b/i,
+  /\bi can'?t responsibly\b/i,
+  /\bwithout inventing\b/i,
+  /\binvent what the news\b/i,
+  /\bplaceholder headline\b/i,
+  /\bhappy to write (it|one|that|this)\b/i,
+  /\bif you have (the|a) real (story|headline|details?|facts)\b/i,
+  /\bno actual story detail\b/i,
+  // ⛔ OPERATOR FIX (2026-08-19, real live incident — a refusal shaped as "this
+  // input isn't real content, give me real content" got scheduled live on
+  // essentiallysportsmedia and had to be emergency-deleted from Postiz before
+  // publish): "The headline and details you've given me are just generic site
+  // navigation text ('NFL News on Sports Illustrated - Scores, Analysis,
+  // Videos'), not an actual story with facts I can write about. There's no
+  // event, player, game, or detail here to cover. If you have a real headline
+  // or story facts, I'm ready to write it, but I need actual content to work
+  // with, not just a page title." matched NONE of the existing patterns — it
+  // never says "cannot"/"as an AI"/"not enough information". The common shape
+  // across this and the earlier caught refusals is the model explaining WHY
+  // it won't write rather than just writing, so match that shape generically
+  // instead of this exact wording (which will phrase differently next time).
+  /\bnot an actual story\b/i,
+  /\bjust generic\b/i,
+  /\bi need actual (content|details?|facts|information)\b/i,
+  /\bheadline (and|or) details? you'?ve given me\b/i,
+  /\bnot just a page title\b/i,
+  /\bnothing (here |)to (write|cover) (about|here)?\b/i,
+  // ⛔ OPERATOR FIX (2026-08-24, real live incident, SEVERE — confirmed
+  // shipped live on Dallas Cowboys Community, 2026-08-17): "I'm not seeing
+  // enough concrete facts in what you've provided to write a substantive
+  // post. The headline and additional detail both just say 'Dak Prescott -
+  // Wikipedia', not an actual news event." matched NONE of the existing
+  // patterns — "not seeing enough" isn't "doesn't give me enough" or
+  // "don't have enough", and "concrete facts" isn't in the
+  // information/detail/context alternation. This is the THIRD distinct
+  // real wording of the same underlying refusal shape (Yankees, then
+  // essentiallysportsmedia, now this) — the model keeps finding new phrasing
+  // for "I'm explaining why I won't write this" faster than exact-phrase
+  // patterns can be added reactively. Added both the exact phrases from
+  // this incident AND two more generic meta-commentary tells (a real sports
+  // caption never uses these phrases naturally, regardless of story).
+  /\bnot seeing enough\b/i,
+  /\bconcrete facts\b/i,
+  /\bwhat you'?ve provided\b/i,
+  /\bwrite a substantive post\b/i,
+  /\bboth just say\b/i,
+];
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -167,6 +233,35 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     ``,
     `Before writing: if the headline's grammar leaves it unclear WHO did an action or WHO an injury/quote/event actually happened to (e.g. an unclear pronoun or an unattributed gerund clause), do not guess — resolve it using the background context above if it's given, and if it's still genuinely unclear, write around that specific detail rather than risk assigning it to the wrong person. Getting a real event backwards (who got hurt, who said what to whom) is a worse error than leaving a detail out.`,
     ``,
+    // ⛔ OPERATOR FIX (2026-08-19, real live incident): "we can create at
+    // least 100 posts from [the same 65 relevant ES articles] presenting
+    // them from different angles/narratives." sourceFromEsArticles now
+    // emits a second candidate per article carrying one of these angles —
+    // this is what actually makes it a DIFFERENT post rather than a
+    // reworded duplicate of whatever angle the base candidate already used.
+    candidate.angle
+      ? `ANGLE FOR THIS SPECIFIC POST: ${
+          candidate.angle === "stat"
+            ? "Lead with the sharpest concrete number/stat in the facts above (a record, a streak, a comparison figure) as the hook — this post's whole angle is the number, not a general recap."
+            : candidate.angle === "debate"
+            ? "Frame this as a genuine fan debate — what's the real disagreement or split reaction this story would cause among fans? Lead with that tension, not a neutral recap."
+            : candidate.angle === "comparison"
+            ? "Frame this against a real, relevant point of comparison implied by the facts (a rival, a past season, a similar past event) — the hook is how this stacks up, not the event in isolation."
+            : "Frame this around why it actually matters beyond the moment itself — the real longer-term stake or consequence implied by the facts, not just what happened."
+        } This is a real ES article that may already have another post covering it from a different angle elsewhere — this one must read as genuinely distinct, not a reworded copy, so commit fully to this specific angle rather than defaulting back to a generic recap.`
+      : null,
+    ``,
+    // ⛔ OPERATOR FIX (2026-08-13, real live incident): a real WNBA post
+    // wrote "Project B dropped new eligibility rules... the entire pipeline
+    // into the W" — "Project B" is the internal name of a specific WNBA/
+    // WNBPA CBA proposal, not an independent organization capable of
+    // "dropping" anything on its own. Framing a named internal program/
+    // proposal/initiative as the one taking the action, instead of the real
+    // organization behind it, misattributes agency — same category of error
+    // as getting an injury/quote backwards above, just at the organization
+    // level instead of the person level.
+    `Before writing: if the facts reference a named internal program, proposal, framework, or initiative (e.g. a labeled CBA proposal, a codenamed policy) that belongs to a real organization (a league, team, union), attribute the actual action to that real organization — write "the WNBA is proposing..." or "under the WNBA's [name] framework...", never "[name] dropped new rules" as if the codenamed proposal itself is the one acting. A named internal program is a label for a policy, not a separate entity that can do anything on its own.`,
+    ``,
     // ⛔ OPERATOR FIX (2026-08-13, real live incident): a real post opened
     // "This one's tricky because the headline is pure WNBA but our page is
     // Lakers through and through... not our lane... we're staying in our
@@ -195,20 +290,87 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // actual separate, specific detail (a real quote, a distinct number,
     // a named follow-up) worth holding back — never invent one just to
     // justify a cliffhanger.
-    `Before structuring this: does the story have a genuine SECOND beat — a specific quote, number, or detail in the facts above that is meaningfully separate from the main event and worth holding back for the reply? Only answer yes if that detail is REALLY there in the facts, not something you'd need to invent. Most stories are a single complete event with nothing distinct left over — for those, use STRUCTURE A. Only use STRUCTURE B when there's a real, specific, separate detail to hold back.`,
+    // ⛔ OPERATOR REVERSAL (2026-08-22, real data): the 2026-08-12 change
+    // above assumed real manual posts on these same pages are "self-
+    // contained, nothing withheld." Direct evidence from actual manual
+    // SocialPilot posts on a live comparable account (Ohio State) shows the
+    // opposite — nearly every manual post with a real article link ends on
+    // an explicit open question ("What did he say?" / "What happened?" /
+    // "How did it get to this point?") immediately before the link, never
+    // answering it in the caption itself. A caption that already tells the
+    // whole story removes the only reason left to tap the reply. Operator's
+    // call: for any post pointing at a real specific article (not a generic
+    // newsletter subscribe link, where there's no specific payoff to
+    // withhold in the first place), make STRUCTURE B the default — hold
+    // back one real detail — and reserve STRUCTURE A for the rare story
+    // that's genuinely one atomic fact with nothing else in the given facts
+    // to separate out. Subscribe-context posts are unaffected: there's no
+    // single specific article being teased, so withholding doesn't apply —
+    // STRUCTURE A stays the only option there, same as before.
+    candidate.linkContext === "subscribe"
+      ? `This post points to our newsletter, not one specific article — there's no single held-back fact to tease. Always use STRUCTURE A below.`
+      : `Before structuring this: does the story have ANY specific quote, number, or detail in the facts above that isn't the single headline fact itself? If there is even one such detail, hold it back and use STRUCTURE B — this is the default for a story with a real article link, because a caption that already answers the story gives the reader no reason left to open the link. Only use STRUCTURE A when the facts are genuinely one atomic fact with nothing else given to separate out.`,
     ``,
-    `STRUCTURE A — COMPLETE POST (the default; use this unless the facts genuinely support Structure B):`,
-    `1. HOOK (1 line) — a genuine angle on the story, not a flat restatement of the headline. Doesn't need to be dramatic (not every story is), but it should give the reader something the headline alone doesn't — the stakes, the "why this matters" angle, or the specific human detail. Examples of the right register: "No one expected her to say that in front of the cameras." / "This is the kind of stat line that quietly changes a season."`,
+    `STRUCTURE A — COMPLETE POST (${candidate.linkContext === "subscribe" ? "use this" : "use only for a single atomic fact with no separable detail"}):`,
+    // ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): confirmed
+    // live via a 197-post sample — 39% of real hooks contain "just", 17%
+    // strictly match "[Name] just [past-tense verb]" ("Wagner just put
+    // Scottie...", "Harden just hit...", "Campbell just put Goff..."),
+    // "said the quiet part out loud" recurred 8x across 4 pages, "hits
+    // different" 12x across 9 pages — none of these phrases are even IN
+    // the two examples below, confirming this is the base model's
+    // unconstrained default reflex, not something the (too-thin) examples
+    // caused. Same root problem as the cliffhanger beat (already fixed):
+    // this beat had NO anti-repetition rule at all. Added one plus banned
+    // the exact recurring phrases.
+    `1. HOOK (1 line) — a genuine angle on the story, not a flat restatement of the headline. Doesn't need to be dramatic (not every story is), but it should give the reader something the headline alone doesn't — the stakes, the "why this matters" angle, or the specific human detail.`,
+    `   HARD RULE: never open with "[Name] just [verb]" — that shape alone accounts for a large share of this account network's recent hooks and is an obvious tell. Also never use "said the quiet part out loud" or "hits different" — both are already overused network-wide. Vary the OPENING WORD/shape every time: sometimes lead with the stakes, sometimes a scene, sometimes a real number, sometimes a direct claim — never the same recognizable skeleton twice in a row.`,
     `2. THE FULL STORY (2-3 short paragraphs, conversational, NOT a copied or lightly-reworded headline) — tell the WHOLE story using everything genuinely available in the given facts, including the specific detail/quote/number if there is one. Nothing held back. First part: what actually happened. Second part: why it matters / the real context or consequence. Write it the way you'd actually tell a friend the news — direct, complete, no artificial suspense.`,
-    `3. CLOSING LINE (1 short line) — a genuine editorial reaction to what you just told them: an opinion, an observation, or a real open question the story raises (not one you're pretending to withhold — a real one). This is NOT a cliffhanger; the story is already told. Examples of the right register: "Respect between champions speaks louder than any rivalry." / "Some legacies are measured by impossible standards." Then close with a short, honest CTA line pointing at the reply${
+    // ⛔ OPERATOR FIX (2026-08-24): confirmed live — a real post closed "Some
+    // legacies set impossible standards," a near-verbatim lift of this
+    // line's own second example. Same too-few-examples cause as the
+    // cliffhanger beat's already-fixed bug.
+    `3. CLOSING LINE (1 short line) — a genuine editorial reaction to what you just told them: an opinion, an observation, or a real open question the story raises (not one you're pretending to withhold — a real one). This is NOT a cliffhanger; the story is already told. Never write a close paraphrase of "[Something] speaks/sets/measures [an abstraction] standards" — that exact shape has already leaked into real output. Vary the shape: sometimes a plain opinion, sometimes a real question, sometimes just letting the fact stand with no commentary at all. Then close with a short, honest CTA line pointing at the reply${
       candidate.linkContext === "subscribe" ? " (our newsletter, not this exact story — see the honesty rule below)" : ""
     }.`,
     ``,
-    `STRUCTURE B — TWO-PART (only when the facts genuinely contain a real, separate detail worth holding back):`,
+    `STRUCTURE B — TWO-PART (${candidate.linkContext === "subscribe" ? "not used for subscribe-context posts" : "the default for a story with a real article link — use this whenever there's any separable detail"}):`,
     `1. HOOK (1 line) — same bar as Structure A.`,
     `2. THE STORY (1-2 short paragraphs) — the core of what happened, everything EXCEPT that one specific held-back detail.`,
-    `3. CLIFFHANGER + REPLY HOOK (1-2 lines) — tease the ONE real, specific detail you're deliberately not explaining yet, then ${replyForcingInstruction}. Give nothing away in the tease itself, and never invent a tease for a detail that isn't real. Examples of the right register: "But what he said right after is the part nobody's talking about yet." / "And there's one number in this that changes the whole read."`,
-    `4. CTA (1 short line) — point at the link in the reply, tied to what's specifically waiting there.`,
+    // ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): confirmed
+    // live across the ENTIRE network — pulled every real post published in
+    // one day and nearly all of them used the identical "But/And [the
+    // detail]? That's the part that [verb phrase]" skeleton, just with
+    // different words swapped in ("...that hits different" / "...that's
+    // getting everyone fired up" / "...that reframes this whole matchup").
+    // Root cause: this instruction's own two examples both shared that
+    // exact skeleton ("But what he said right after IS THE PART nobody's
+    // talking about yet" / "And there's one number... THAT CHANGES the
+    // whole read") — with only one real shape demonstrated, the model
+    // treated it as THE template rather than as one example among many, and
+    // reproduced it near-verbatim across dozens of unrelated pages and
+    // subjects in the same run. A reader who sees more than one of these
+    // (any real follower) immediately recognizes the formula, which reads
+    // as obviously AI-generated — directly costing the trust that both
+    // likes and click-through depend on. Real manual posts never repeat one
+    // fixed sentence shape this way (confirmed via direct comparison this
+    // session). Six structurally DIFFERENT examples below, not six wordings
+    // of one shape — a flat statement, a question, a fragment, a direct
+    // address, an understatement, a blunt CTA-only close — specifically so
+    // there's no single skeleton left to converge on.
+    `3. CLIFFHANGER + REPLY HOOK (1-2 lines) — tease the ONE real, specific detail you're deliberately not explaining yet, then ${replyForcingInstruction}. Give nothing away in the tease itself, and never invent a tease for a detail that isn't real.`,
+    `   HARD RULE: never write this beat as "[the detail]? That's the part that [reaction]" or any close paraphrase of that shape — that exact skeleton has already been used across most of this account network's recent posts and reads as an obvious template the moment a reader sees two of them. Pick a genuinely different sentence shape each time. Examples showing DIFFERENT shapes, not different wordings of one shape:`,
+    `   - Flat statement: "He didn't stop there."`,
+    `   - Real question: "So what actually changed his mind?"`,
+    `   - Trailing fragment: "Except that's not where it ends."`,
+    `   - Direct address: "You're not ready for what he said next."`,
+    `   - Understatement: "There's a number in here most people are going to miss."`,
+    `   - Skip the tease line entirely and let the CTA below do the work: go straight from the story to "Full story's in the reply."`,
+    // ⛔ OPERATOR FIX (2026-08-24): same convergence problem as the
+    // cliffhanger beat above — real network output showed "Full story in
+    // the reply" / "Full breakdown in the reply [below/👇]" repeated almost
+    // verbatim across nearly every post. Same fix: explicit variety.
+    `4. CTA (1 short line) — point at the link in the reply, tied to what's specifically waiting there. Vary the phrasing every time — do not default to "Full story/breakdown in the reply." Rotate through genuinely different phrasings, e.g.: "It's in the reply." / "Reply's got the rest." / "Tap the reply for the actual answer." / "Details are one tap away." / or skip a separate CTA line entirely when the cliffhanger line above already makes it obvious to check the reply.`,
     ``,
     candidate.linkContext === "subscribe"
       ? // ⛔ OPERATOR FIX (2026-08-11): "the CTA is just subscribe for more...

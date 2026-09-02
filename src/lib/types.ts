@@ -25,6 +25,15 @@ export interface ThreadsConfig {
   posting_window_start?: string;
   posting_window_end?: string;
   utm_string?: string;
+  // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
+  // appended on every post ALONGSIDE the existing per-story dynamic hashtag
+  // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):
+  // manual posts on this page's own account use a consistent branded set on
+  // every post, which our per-story-only hashtag never repeats — no
+  // accumulating brand/community signal across posts. Optional and empty by
+  // default; only populate with hashtags actually confirmed from real fan
+  // usage for that page, never invented.
+  branded_hashtags?: string[];
 }
 
 export interface PageConfig {
@@ -83,6 +92,20 @@ export interface Candidate {
   // never going to mention this specific story, and checking it there was a
   // real regression that tanked fill-rate the moment link resolution shipped.
   sourceLink?: string;
+  // ⛔ OPERATOR FIX (2026-08-19, real live incident): "if say 80 ES articles
+  // and 65 are relevant to our pages... we can directly create at least 100
+  // posts from them." A page used to get exactly ONE candidate per real ES
+  // article — once posted, that article's key went into postedLog and every
+  // future candidate sharing it was filtered out for good (see sourcing.ts's
+  // postedKeys check), so real article volume was structurally capped at
+  // 1 post/article regardless of how much daily budget was left unfilled.
+  // sourceFromEsArticles now emits multiple candidates per real article,
+  // each with a distinct `key` (so dedup treats them as separate posts) and
+  // a different `angle` — the SAME real facts/link, told from a genuinely
+  // different narrative framing (stat-led, debate/reaction, comparison,
+  // "why it matters"). Optional — undefined means "no specific angle,
+  // default framing," the prior behavior.
+  angle?: "stat" | "debate" | "comparison" | "significance";
 }
 
 export interface PostedLogEntry {
@@ -107,9 +130,40 @@ export interface PostedLogEntry {
   // dominantNarrativeCheck.
   entity?: string;
   sportGroup?: string;
+  // ⛔ OPERATOR FIX (2026-08-14, real live incident): the render pipeline has
+  // always computed a real card_url (renderCard's own return value, used to
+  // actually build the Postiz post) but never once saved it here — the
+  // dashboard's "No image" on 100% of posts wasn't a display bug, this
+  // field simply never existed in any real entry to display. Postiz's own
+  // API carries no card/media field either (types/dashboard.ts's
+  // PostizPost), so this is the only place a real value can come from.
+  card_url?: string | null;
+  // ⛔ OPERATOR FIX (2026-08-29, real live incident): confirmed live — the
+  // same source photo (e.g. one Deion Sanders shot) used across many
+  // consecutive posts on one page despite ES-MCP returning several real
+  // alternatives, because nothing anywhere recorded which raw reference
+  // photo a past post actually used. `card_url` is the final AI-rendered
+  // output (a different image every time even when the source repeats), so
+  // it can never answer "have I used THIS photo before." This is the raw
+  // ES-MCP candidate URL passed to OpenArt as `reference_photo_url` — read
+  // back by activities/index.ts's recentlyUsedPhotoUrls() to skip repeats.
+  source_photo_url?: string | null;
+  // ⛔ OPERATOR FIX (2026-08-18, real live incident): "hardcoded filters
+  // list... must include this today's date and what date the source
+  // article is from." A 3-month-old ESPN article got posted as breaking
+  // news and there was no way to audit it after the fact — the posted log
+  // never recorded which sourcing tier a post came from or what its real
+  // source publish date was, only `posted_at` (when WE posted it). Both are
+  // now recorded on every entry so any future incident can be diagnosed
+  // from the log alone, without a manual curl/JSON-LD check.
+  source?: Candidate["source"];
+  source_published_at?: string;
 }
 
-export type TemplateId = "hero" | "standard_editorial" | "dramatic_news" | "comparison" | "quote";
+// Kept in sync with renderSpec.ts's own TemplateId (duplicated here rather
+// than imported — pre-existing split in this codebase, not introduced by
+// this change; TypeScript catches drift between the two at compile time).
+export type TemplateId = "hero" | "standard_editorial" | "dramatic_news" | "comparison" | "quote" | "retro";
 
 export interface PageRunResult {
   page_id: string;

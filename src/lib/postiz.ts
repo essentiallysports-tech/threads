@@ -94,14 +94,27 @@ export async function scheduleThreadsPost(
     body: JSON.stringify({
       type: "schedule",
       date: postTimeUtc.toISOString(),
-      // ⛔ LEARNING PORTED (2026-08-08, ES_Threads_Automation_Playbook.md
-      // Section 9): "Always use Postiz shortLink:true... Never use TinyURL"
-      // — the old CCR/Postiz-J routine's own hard rule, ported here since it
-      // applies to every account's reply link, not just the 7 it originally
-      // covered. This pipeline never calls TinyURL directly either way (the
-      // reply link is built by caption.ts's buildReplyLink), so the only
-      // action needed is letting Postiz do its own shortening.
-      shortLink: true,
+      // ⛔ OPERATOR FIX (2026-08-15, real live incident, severe): confirmed
+      // live — Postiz's shortLink feature shortens every reply link through
+      // tinyurl.com internally, and that shortening step silently DROPS
+      // utm_term (and likely other params) from the destination it
+      // redirects to. Verified by resolving a real live shortlink: our own
+      // buildReplyLink always builds the full, correct URL (confirmed via
+      // the posted-log's own reply_url field, which has utm_term=autopost
+      // every time) — but the live tinyurl redirect landed on
+      // "...?utm_source=threads&utm_medium=cfb_fan_page_osu" with
+      // utm_term=autopost missing entirely. Since utm_term=autopost is the
+      // ONLY signal this whole pipeline's dashboards/GA4 queries use to
+      // separate autopost-driven clicks from anything else under the same
+      // medium, this was silently zeroing out "autopost sessions" for every
+      // page using shortLink — even pages with large real reach (Ohio
+      // State Wireline: 563,934 views/7d, 0 attributed autopost sessions).
+      // The 2026-08-08 "always use shortLink" rule predates the
+      // utm_term=autopost signal (added 2026-08-12) — it was never
+      // validated against this need. Turning it off restores the full,
+      // untruncated URL end-to-end; Threads auto-links a long raw URL in
+      // reply text regardless, so this costs only cosmetic link length.
+      shortLink: false,
       tags: [],
       posts: [
         {
@@ -110,6 +123,35 @@ export async function scheduleThreadsPost(
             { content: mainPostHtml, image },
             { content: replyLinkHtml, image: [] },
           ],
+          settings: { __type: "threads" },
+        },
+      ],
+    }),
+  });
+  return { id: extractPostId(json) };
+}
+
+// ⛔ OPERATOR ADD (2026-08-27, "sports news daily" firehose page): unlike
+// scheduleThreadsPost, which ALWAYS builds a 2-item value[] (main post +
+// reply), this page posts the article link directly IN the main post body —
+// an explicit operator choice, not the reply-link pattern every other page
+// uses. scheduleThreadsPost has no way to omit the second value[] item
+// (passing an empty replyLinkHtml would still create a real, empty-content
+// reply post — untested and almost certainly wrong), so this is a genuinely
+// separate function, not a parameter tweak. Same schema/auth/shortLink-off
+// reasoning as scheduleThreadsPost above, just a single-item posts[].value[].
+export async function scheduleSinglePostThreads(integrationId: string, postHtml: string, postTimeUtc: Date): Promise<{ id: string }> {
+  const json = await postizFetch<ScheduleResponseCandidate>("/posts", {
+    method: "POST",
+    body: JSON.stringify({
+      type: "schedule",
+      date: postTimeUtc.toISOString(),
+      shortLink: false,
+      tags: [],
+      posts: [
+        {
+          integration: { id: integrationId },
+          value: [{ content: postHtml, image: [] }],
           settings: { __type: "threads" },
         },
       ],

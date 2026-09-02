@@ -21,6 +21,84 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
   }
 }
 
+// ⛔ OPERATOR FIX (2026-08-29, real live incident): a multi-day OpenArt outage
+// left every page simultaneously below its 5/day floor, so on recovery all 6
+// shards ran repair passes for every page at once — same shape of problem as
+// esMcp.ts's own 2026-08-23 incident (documented there: ~27 pages concurrent
+// caused "operation was aborted" storms on that ONE shared, static-token
+// endpoint), just far larger this time (41+ pages, all repair-passing at
+// once instead of one entity-cap change). That fix only added timeout +
+// retry, which helps transient blips but not a SUSTAINED overload — retrying
+// into an already-saturated endpoint just adds more load on top of the exact
+// pressure causing the failures (confirmed live: Beehiiv 429 RATE_LIMIT_EXCEEDED
+// 6,000+ times, ES-MCP aborts across nearly every page, in the same window).
+// A per-process concurrency limiter is the standard complementary fix for
+// sustained overload: it doesn't reduce total work, it just bounds how many
+// requests to ONE shared dependency are in flight at once, queuing the rest
+// instead of firing them all simultaneously and having most get rejected or
+// time out. Deliberately per-dependency (each caller creates its own
+// limiter instance) since Beehiiv and ES-MCP have different real capacities
+// — a single shared limit would either starve one or under-protect the other.
+export function createLimiter(maxConcurrent: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  function release() {
+    active--;
+    const next = queue.shift();
+    if (next) {
+      active++;
+      next();
+    }
+  }
+
+  return function withLimit<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const run = () => {
+        fn().then(resolve, reject).finally(release);
+      };
+      if (active < maxConcurrent) {
+        active++;
+        run();
+      } else {
+        queue.push(run);
+      }
+    });
+  };
+}
+
+// ⛔ OPERATOR FIX (2026-08-30, real live incident): confirmed live — Apify's
+// account-wide "Monthly usage hard limit exceeded" (403,
+// platform-feature-disabled) took out sourceFromTwitter AND sourceFromReddit
+// simultaneously (1,292 failed calls each in one day, identical error), and
+// Tavily hit an analogous per-plan usage-limit exhaustion the same week
+// (sourceFromEvergreenBank). Both are HARD, non-transient vendor quota
+// exhaustions — unlike a timeout or a 5xx, retrying does not help and won't
+// until the vendor's own billing cycle resets, so every single page/repair-
+// pass kept re-attempting a call that was never going to succeed, wasting a
+// real (if individually small) network round-trip thousands of times a day
+// with no visible signal beyond scattered per-call error logs. A circuit
+// breaker keyed by vendor/quota-scope (not per-actor — Twitter and Reddit
+// share ONE Apify account, so either one tripping protects both) skips the
+// call entirely once this exact signal is seen, logs ONCE when it trips
+// (not on every subsequent skip), and self-clears on the next worker
+// restart — cheap to re-discover if a plan upgrade actually fixed it,
+// no permanent state to remember to revert.
+const circuitBreakers = new Map<string, number>(); // key -> cooldown-until epoch ms
+
+export function isCircuitOpen(key: string): boolean {
+  const until = circuitBreakers.get(key);
+  return until !== undefined && Date.now() < until;
+}
+
+export function tripCircuit(key: string, cooldownMs: number, reason: string): void {
+  const alreadyTripped = isCircuitOpen(key);
+  circuitBreakers.set(key, Date.now() + cooldownMs);
+  if (!alreadyTripped) {
+    console.error(`CIRCUIT_BREAKER_TRIPPED: "${key}" disabled for ${Math.round(cooldownMs / 60_000)}min — ${reason}`);
+  }
+}
+
 // Bounded-concurrency map, used where a fan-out would otherwise open an
 // unbounded number of simultaneous remote calls.
 //
