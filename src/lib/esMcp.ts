@@ -60,6 +60,15 @@ async function callTool(name: string, args: Record<string, unknown>, attempts = 
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             Accept: "application/json, text/event-stream",
+            // ⛔ OPERATOR FIX (2026-09-03): declares this worker to es-mcp's
+            // MCP_SERVICE_CONSUMERS allowlist (utilities/caller.ts) so its
+            // calls get their own service:es-threads daily $ budget bucket
+            // (MCP_SERVICE_DAILY_BUDGET_USD, see cost.ts) instead of sharing
+            // the undifferentiated server-wide pool with every other
+            // consumer. Harmless if es-mcp hasn't onboarded "es-threads" into
+            // that allowlist yet — an unrecognized name is documented there
+            // to degrade to the shared bucket, not to error.
+            "x-mcp-consumer": "es-threads",
           },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
         },
