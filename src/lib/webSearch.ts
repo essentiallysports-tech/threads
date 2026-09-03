@@ -40,6 +40,83 @@ if (!process.env.AI_GATEWAY_API_KEY && process.env.VERCEL_AI_GATEWAY_KEY) {
 const GROK_MODEL = "xai/grok-4.20-non-reasoning";
 const CLAUDE_MODEL = "anthropic/claude-sonnet-4-5";
 
+// ⛔ OPERATOR FIX (2026-09-03): "wire it into websearch" — the internal
+// web-search-microservice (Serper/Brave-backed, its own $30/day budget
+// ceiling, see its own repo) replaces this file's direct
+// generateText()+tools.webSearch() calls as the PRIMARY path for both
+// sourcing tiers below. Root cause this swap targets: every sourceFromWebSearch/
+// sourceFromEvergreenWebSearch call here pays for a full agentic tool-use
+// round trip (the model decides to search, calls the tool, reads results,
+// then writes JSON) through Vercel's marked-up AI Gateway — priced like an
+// LLM conversation for what is structurally just "give me 8 ranked URLs,"
+// which a real search API answers directly, for a fraction of the cost, with
+// no JSON-parsing fragility (stripCodeFence exists because Grok/Claude don't
+// reliably return clean JSON; a search API just returns JSON). Old path kept
+// as a real fallback, never deleted: if WEB_SEARCH_MICROSERVICE_URL is unset,
+// unreachable, or itself returns nothing, sourcing falls through to the exact
+// same Claude-then-Grok chain that ran before this change — same "a
+// fallback tier's outage should never zero out a page" posture as everywhere
+// else in this file, just with a cheaper tier now in front of it.
+const WEB_SEARCH_MICROSERVICE_URL = process.env.WEB_SEARCH_MICROSERVICE_URL?.replace(/\/+$/, "");
+const WEB_SEARCH_MICROSERVICE_API_KEY = process.env.WEB_SEARCH_MICROSERVICE_API_KEY;
+// Own limiter, same reasoning as limitAiGateway below and esMcp.ts/Beehiiv's
+// own limiters — every shared dependency this project has added without one
+// from day one has gone on to cause a real concurrent-overload incident
+// (5,697 "Claude search failed" in one window being the most severe). This
+// service ships with its own server-side Budget + circuit breakers, but
+// bounding client-side concurrency costs nothing and avoids repeating that
+// pattern a fourth time.
+const limitMicroservice = createLimiter(10);
+
+interface MicroserviceResultItem {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  published_at?: string | null;
+}
+
+// Returns null on "couldn't get a real answer" (unconfigured, network error,
+// non-2xx, bad shape) so the caller can tell that apart from "asked
+// successfully, genuinely found nothing" ([]) — null falls through to the
+// old provider chain below; [] is trusted the same way an empty Claude result
+// already falls through to Grok, see webSearch() below.
+async function microserviceWebSearch(query: string, maxResults: number): Promise<SearchResult[] | null> {
+  if (!WEB_SEARCH_MICROSERVICE_URL || !WEB_SEARCH_MICROSERVICE_API_KEY) return null;
+
+  try {
+    const res = await limitMicroservice(() =>
+      fetchWithTimeout(
+        `${WEB_SEARCH_MICROSERVICE_URL}/search`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": WEB_SEARCH_MICROSERVICE_API_KEY },
+          body: JSON.stringify({ query, count: Math.max(1, Math.min(maxResults, 20)) }),
+        },
+        15_000
+      )
+    );
+    if (!res.ok) {
+      console.error(`microserviceWebSearch: HTTP ${res.status} for "${query}"`);
+      return null;
+    }
+    const data = (await res.json()) as { results?: MicroserviceResultItem[] };
+    if (!Array.isArray(data.results)) return null;
+
+    return data.results
+      .filter((r): r is Required<Pick<MicroserviceResultItem, "title" | "url">> & MicroserviceResultItem => Boolean(r.title && r.url))
+      .slice(0, maxResults)
+      .map((r) => ({
+        title: r.title,
+        url: r.url,
+        content: "", // matches the old provider chain's own behavior — see searchResultsToCandidates
+        published_date: r.published_at || undefined,
+      }));
+  } catch (e) {
+    console.error(`microserviceWebSearch: failed for "${query}": ${(e as Error).message}`);
+    return null;
+  }
+}
+
 export interface SearchResult {
   title: string;
   url: string;
@@ -315,6 +392,9 @@ export async function claudeWebSearch(query: string, maxResults = 8, evergreen =
 // Grok is kept as a fallback attempt in case Claude itself degrades, so a
 // single provider outage can no longer zero out this entire sourcing tier.
 export async function webSearch(query: string, maxResults = 8, evergreen = false): Promise<SearchResult[]> {
+  const microserviceResults = await microserviceWebSearch(query, maxResults);
+  if (microserviceResults !== null && microserviceResults.length > 0) return microserviceResults;
+
   const claudeResults = await claudeWebSearch(query, maxResults, evergreen).catch((e) => {
     console.error(`webSearch: Claude search failed for "${query}": ${(e as Error).message}`);
     return [] as SearchResult[];
@@ -395,7 +475,66 @@ export interface FactCheckResult {
   reason: string;
 }
 
+// ⛔ OPERATOR FIX (2026-09-03): same microservice-first swap as webSearch()
+// above, via the microservice's own /research endpoint (search + extract +
+// direct Anthropic API synthesis — no Vercel Gateway hop). Confidence note,
+// unlike sourceFromWebSearch's swap above: /research's HTTP response only
+// ever carries a free-form `answer` string (no verified:boolean field in its
+// schema — that schema is internal to the microservice's own rerank/llm.py),
+// so the verdict here is recovered by asking the model to lead its answer
+// with a fixed "VERIFIED:"/"NOT VERIFIED:" marker and parsing that — a
+// genuinely softer contract than a real structured field. Guarded the same
+// way as every other best-effort parse in this file: an unparseable answer
+// returns null (not a guessed verdict), which falls through to the old
+// Claude/Grok path below exactly like a network failure would.
+async function microserviceFactCheck(candidate: Candidate): Promise<FactCheckResult | null> {
+  if (!WEB_SEARCH_MICROSERVICE_URL || !WEB_SEARCH_MICROSERVICE_API_KEY) return null;
+
+  try {
+    const res = await limitMicroservice(() =>
+      fetchWithTimeout(
+        `${WEB_SEARCH_MICROSERVICE_URL}/research`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": WEB_SEARCH_MICROSERVICE_API_KEY },
+          body: JSON.stringify({
+            query: candidate.headline,
+            count: 5,
+            instruction:
+              'Start your answer with exactly "VERIFIED:" or "NOT VERIFIED:" as the first word, followed by one short reason — based on whether this is a REAL, CURRENT, ACCURATELY-ATTRIBUTED claim, not outdated, not fabricated, not a misattribution, not a stale story presented as new.',
+          }),
+        },
+        30_000
+      )
+    );
+    // 503 covers both "ENABLE_LLM_LAYER=false" and "no provider configured" —
+    // a deployment choice on the microservice's side, not a real failure here.
+    if (res.status === 503) return null;
+    if (!res.ok) {
+      console.error(`microserviceFactCheck: HTTP ${res.status} for "${candidate.headline}"`);
+      return null;
+    }
+    const data = (await res.json()) as { answer?: string };
+    const answer = (data.answer || "").trim();
+    const match = answer.match(/^(NOT VERIFIED|VERIFIED)\s*:?\s*(.*)$/is);
+    if (!match) {
+      console.error(`microserviceFactCheck: unparseable verdict for "${candidate.headline}": "${answer.slice(0, 120)}"`);
+      return null;
+    }
+    return {
+      verified: match[1].toUpperCase() === "VERIFIED",
+      reason: match[2].trim().slice(0, 200) || answer.slice(0, 200),
+    };
+  } catch (e) {
+    console.error(`microserviceFactCheck: failed for "${candidate.headline}": ${(e as Error).message}`);
+    return null;
+  }
+}
+
 export async function factCheckClaim(candidate: Candidate): Promise<FactCheckResult> {
+  const microserviceResult = await microserviceFactCheck(candidate);
+  if (microserviceResult !== null) return microserviceResult;
+
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return { verified: true, reason: "no_gateway_key_skip" };
 
   const prompt = [
