@@ -14,9 +14,119 @@
 // registered, not just the primary one.
 
 import { Candidate, PageConfig } from "./types";
-import { fetchWithTimeout, isCircuitOpen, tripCircuit } from "./httpUtil";
+import { fetchWithTimeout, isCircuitOpen, tripCircuit, createLimiter } from "./httpUtil";
 
 const APIFY_BASE = "https://api.apify.com/v2/acts";
+
+// ⛔ OPERATOR FIX (2026-09-04): "wire the twitter/reddit pipeline" — same
+// microservice-first swap as webSearch.ts, via its new /social_search
+// endpoint (twitterapi.io/redditapis.com — flat, no-minimum resellers,
+// deliberately not Apify; see that endpoint's own module docstrings for the
+// real ~$1,000/month reason Apify was rejected). Root cause this targets:
+// Apify's real bill for this org runs far above its headline per-item price
+// once platform/compute/storage overhead is counted, the same class of
+// problem already fixed for web_search/evergreen_search this session.
+//
+// Deliberately NOT the same empty-falls-through-to-next-tier semantics as
+// webSearch.ts's own swap: there, Claude's own internal convention already
+// treated an empty result as "try the next provider," so falling through to
+// Grok on empty just preserved existing behavior. Here, Apify is a genuinely
+// different vendor with its own real per-call cost — falling through to it
+// every time the cheap tier legitimately finds nothing would double-spend on
+// most queries (most "is there real chatter about X" questions legitimately
+// have nothing worth posting) and defeat much of the point of this swap.
+// Apify only fires when the microservice is provably unreachable/
+// unconfigured (every query in this tier returned null, not just empty) —
+// see the reachable/microserviceDown handling in candidatesFromMicroservice
+// below.
+const WEB_SEARCH_MICROSERVICE_URL = process.env.WEB_SEARCH_MICROSERVICE_URL?.replace(/\/+$/, "");
+const WEB_SEARCH_MICROSERVICE_API_KEY = process.env.WEB_SEARCH_MICROSERVICE_API_KEY;
+const limitMicroserviceSocial = createLimiter(10);
+
+interface MicroserviceResultItem {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  published_at?: string | null;
+  // Reddit's real post score, or a tweet's like count when the provider
+  // reports one (best-effort on the Twitter side — see twitter_api.py's own
+  // confidence note). None means "not reported," not zero — never treated as
+  // passing the floor below.
+  score?: number | null;
+}
+
+// Returns null on "couldn't get a real answer" (unconfigured, network error,
+// non-2xx, bad shape) — distinct from a real, possibly-empty result array —
+// so the caller can tell an outage apart from "asked successfully, nothing
+// cleared the bar."
+async function microserviceSocialSearch(
+  platform: "twitter" | "reddit",
+  query: string,
+  count: number
+): Promise<MicroserviceResultItem[] | null> {
+  if (!WEB_SEARCH_MICROSERVICE_URL || !WEB_SEARCH_MICROSERVICE_API_KEY) return null;
+
+  try {
+    const res = await limitMicroserviceSocial(() =>
+      fetchWithTimeout(
+        `${WEB_SEARCH_MICROSERVICE_URL}/social_search`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": WEB_SEARCH_MICROSERVICE_API_KEY },
+          body: JSON.stringify({ platform, query, count }),
+        },
+        20_000
+      )
+    );
+    // 503 covers "this platform isn't configured server-side" — not a real failure.
+    if (res.status === 503) return null;
+    if (!res.ok) {
+      console.error(`microserviceSocialSearch: HTTP ${res.status} for ${platform} "${query}"`);
+      return null;
+    }
+    const data = (await res.json()) as { results?: MicroserviceResultItem[] };
+    return Array.isArray(data.results) ? data.results : null;
+  } catch (e) {
+    console.error(`microserviceSocialSearch: failed for ${platform} "${query}": ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Shared candidate-builder for both platforms via the microservice. Returns
+ * null when the tier is genuinely unreachable (every query failed/
+ * unconfigured) so the caller falls through to Apify; returns a real
+ * (possibly empty) array otherwise — see the module header for why empty
+ * does NOT also trigger the Apify fallback here.
+ */
+async function candidatesFromMicroservice(
+  platform: "twitter" | "reddit",
+  queries: string[],
+  minScore: number,
+  dateISO: string
+): Promise<Candidate[] | null> {
+  const perQuery = await Promise.all(queries.map((q) => microserviceSocialSearch(platform, q, 8)));
+  const reachable = perQuery.some((r) => r !== null);
+  if (!reachable) return null;
+
+  const items = perQuery.filter((r): r is MicroserviceResultItem[] => r !== null).flat();
+  const candidates = items
+    .filter((r) => r.title && r.url)
+    // Same hard engagement floor as the Apify path below — a result with no
+    // reported score is treated as failing it, never as passing.
+    .filter((r) => (r.score ?? -1) >= minScore)
+    .map((r): Candidate => ({
+      source: "social_search",
+      key: r.url!,
+      subject: r.title!,
+      headline: r.title!.slice(0, 200),
+      link: r.url!,
+      publishedAt: r.published_at || `${dateISO}T12:00:00Z`,
+      rawText: r.snippet,
+    }));
+
+  return dedupeByKey(candidates);
+}
 
 // ⛔ OPERATOR FIX (2026-08-30, real live incident): see httpUtil.ts's
 // circuit-breaker comment. One shared key for both functions below — Twitter
@@ -191,9 +301,14 @@ function dedupeByKey<C extends { key: string }>(candidates: C[]): C[] {
 }
 
 export async function sourceFromTwitter(page: PageConfig, dateISO: string): Promise<Candidate[]> {
-  const apiKey = process.env.APIFY_API_TOKEN;
   const queries = queryVariants(page);
-  if (!apiKey || queries.length === 0 || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
+  if (queries.length === 0) return [];
+
+  const viaMicroservice = await candidatesFromMicroservice("twitter", queries, MIN_TWEET_LIKES, dateISO);
+  if (viaMicroservice !== null) return viaMicroservice;
+
+  const apiKey = process.env.APIFY_API_TOKEN;
+  if (!apiKey || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
 
   const toCandidates = (items: TweetItem[]): Candidate[] =>
     items
@@ -232,9 +347,14 @@ export async function sourceFromTwitter(page: PageConfig, dateISO: string): Prom
 }
 
 export async function sourceFromReddit(page: PageConfig, dateISO: string): Promise<Candidate[]> {
-  const apiKey = process.env.APIFY_API_TOKEN;
   const queries = queryVariants(page);
-  if (!apiKey || queries.length === 0 || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
+  if (queries.length === 0) return [];
+
+  const viaMicroservice = await candidatesFromMicroservice("reddit", queries, MIN_REDDIT_UPVOTES, dateISO);
+  if (viaMicroservice !== null) return viaMicroservice;
+
+  const apiKey = process.env.APIFY_API_TOKEN;
+  if (!apiKey || isCircuitOpen(APIFY_QUOTA_KEY)) return [];
 
   const toCandidates = (items: RedditPostItem[]): Candidate[] =>
     items
