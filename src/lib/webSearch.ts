@@ -38,7 +38,7 @@ if (!process.env.AI_GATEWAY_API_KEY && process.env.VERCEL_AI_GATEWAY_KEY) {
 }
 
 const GROK_MODEL = "xai/grok-4.20-non-reasoning";
-const CLAUDE_MODEL = "anthropic/claude-sonnet-4-5";
+const CLAUDE_MODEL = "anthropic/claude-haiku-4-5";
 
 // ⛔ OPERATOR FIX (2026-09-03): "wire it into websearch" — the internal
 // web-search-microservice (Serper/Brave-backed, its own $30/day budget

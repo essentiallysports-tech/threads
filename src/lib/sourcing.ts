@@ -680,7 +680,7 @@ function sharesRealTopic(headlineA: string, headlineB: string, excludeTerms: str
 // is worse than falling through to the newsletter subscribe fallback,
 // which is always safe because it never claims to be this exact story.
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const SAME_STORY_MODEL = "anthropic/claude-sonnet-4-5";
+const SAME_STORY_MODEL = "anthropic/claude-haiku-4-5";
 
 async function isSameRealStory(headlineA: string, headlineB: string): Promise<boolean> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;

@@ -1131,7 +1131,7 @@ export interface DuplicateStoryCheckResult {
 }
 
 const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
+const AI_GATEWAY_MODEL = "anthropic/claude-haiku-4-5";
 // ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
 // fine to repost once real time has passed, but the cutoff should match the
 // 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter
