@@ -25,7 +25,7 @@
 import { fetchWithTimeout } from "./httpUtil";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-sonnet-4-5";
+const MODEL = "anthropic/claude-haiku-4-5";
 
 export interface CardTextQCResult {
   pass: boolean;
@@ -91,5 +91,81 @@ export async function verifyCardText(
   } catch (e) {
     console.error(`verifyCardText: request failed: ${(e as Error).message}`);
     return { pass: true, reason: null }; // network failure — don't block posting over it
+  }
+}
+
+// ⛔ OPERATOR FIX (2026-09-08, real live incident, user-reported "half of
+// the images are absurd"): a Kobe Bryant story rendered with a source
+// photo of two unrelated men in suits walking past barricades — plausibly
+// an old memorial/press-event wire photo whose caption happened to mention
+// "Kobe Bryant" for some unrelated reason. Root cause traced to
+// esDirect.ts's metadataMatchesSubject: the ONLY subject-correctness check
+// in this pipeline is "does the candidate's title+caption TEXT contain the
+// searched name" — pure substring matching, zero verification the photo's
+// actual pixels depict that person. This gap became load-bearing on
+// 2026-08-29 when Cloudinary's face-detection-based rejection was removed
+// from the render path (see activities/index.ts's own comment on that
+// change) — before that, a wrong-subject photo had a second, independent
+// filter; after it, a caption coincidence sails straight through to
+// OpenArt, which is explicitly instructed to preserve the reference photo
+// "as-is." This is a REAL vision check on the CANDIDATE photo itself,
+// before it's ever accepted as reference_photo_url — same gateway/model as
+// verifyCardText above, one more call in the same family, not a new
+// dependency. Deliberately narrow ("could plausibly be this person," not a
+// strict face-match the model can't reliably do either) — the goal is
+// catching the "obviously unrelated scene" failure this incident is,  not
+// building unreliable facial recognition.
+const PHOTO_SUBJECT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const photoSubjectCache = new Map<string, { at: number; value: Promise<boolean> }>();
+
+export async function verifyPhotoSubject(imageUrl: string, subjectName: string): Promise<boolean> {
+  const cacheKey = `${imageUrl}::${subjectName.toLowerCase()}`;
+  const hit = photoSubjectCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < PHOTO_SUBJECT_CACHE_TTL_MS) return hit.value;
+
+  const value = verifyPhotoSubjectUncached(imageUrl, subjectName);
+  photoSubjectCache.set(cacheKey, { at: Date.now(), value });
+  value.catch(() => {
+    const current = photoSubjectCache.get(cacheKey);
+    if (current && current.value === value) photoSubjectCache.delete(cacheKey);
+  });
+  return value;
+}
+
+async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string): Promise<boolean> {
+  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
+  if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
+
+  const prompt = [
+    `This photo was found by searching a sports media library for "${subjectName}".`,
+    `Look at it and answer: does it actually, plausibly depict ${subjectName} — a recognizable photo of them (portrait, action shot, court/field/press-conference appearance), or clearly their jersey/memorabilia in a relevant context?`,
+    `Reply FAIL if it instead shows unrelated people, a generic crowd/press/memorial scene with no clear visual connection to ${subjectName}, or anything else that just happens to be captioned with this name without the photo actually being "about" them.`,
+    `Reply with EXACTLY one line: "PASS" or "FAIL: <short reason>". When genuinely uncertain, answer PASS — this check exists to catch obviously wrong/unrelated photos, not to make a strict facial-identity call you can't reliably make.`,
+  ].join("\n");
+
+  try {
+    const res = await fetchWithTimeout(
+      GATEWAY_URL,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageUrl } }] }],
+          max_tokens: 60,
+        }),
+      },
+      20_000
+    );
+    if (!res.ok) {
+      console.error(`verifyPhotoSubject: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      return true; // verification infra failure — don't block posting over it
+    }
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = (json.choices?.[0]?.message?.content || "").trim();
+    return /^PASS/i.test(content);
+  } catch (e) {
+    console.error(`verifyPhotoSubject: request failed: ${(e as Error).message}`);
+    return true; // network failure — don't block posting over it
   }
 }

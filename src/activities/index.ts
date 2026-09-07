@@ -35,7 +35,7 @@ import { searchImages, metadataMatchesSubject } from "../lib/esDirect";
 import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
 import { RenderSpec } from "../lib/renderSpec";
-import { verifyCardText } from "../lib/cardTextQC";
+import { verifyCardText, verifyPhotoSubject } from "../lib/cardTextQC";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
@@ -168,6 +168,26 @@ const DANGLING_MODIFIERS = new Set([
   "exclusive", "breaking", "first", "last", "top", "worst", "best",
 ]);
 
+// ⛔ OPERATOR FIX (2026-09-08, real live incident): a real card rendered
+// "NBA Rival Reveals How Kobe Bryant" — cut from "...How Kobe Bryant Took
+// Care of His Family After [a wildfire]." Every word in the truncated
+// output is fine on its own ("Bryant" is nobody's dangling modifier or
+// stopword), so neither check above ever fired, but the sentence as a
+// whole dangles: "How Kobe Bryant" opens a clause that needs its own verb
+// ("...took care of...") to mean anything, and the cut landed before it.
+// TRAILING_STOPWORDS/DANGLING_MODIFIERS only ever inspect the LAST word —
+// neither has a concept of an EARLIER word committing the sentence to a
+// predicate that hasn't arrived yet. Distinct failure mode from both: this
+// is common specifically because these words read as completely natural
+// mid-headline ("Reveals How", "Explains Why", "Shows What") right up
+// until a fixed word-count cut lands a few words after one.
+const CLAUSE_OPENERS = new Set(["how", "why", "what", "when", "where", "which", "who", "whether"]);
+// Extra words this pipeline gives a clause to reach its own verb/predicate
+// before applying the normal last-word check — long enough for the common
+// "how/why/what SUBJECT VERB..." shape, bounded so this still respects
+// hardCeiling rather than always maxing it out.
+const CLAUSE_RESOLUTION_ALLOWANCE = 3;
+
 function stripLabelPrefix(headline: string): string {
   const match = headline.match(LABEL_PREFIX_RE);
   return match ? headline.slice(match[0].length) : headline;
@@ -180,7 +200,12 @@ function stripLabelPrefix(headline: string): string {
 function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: number): string {
   const words = text.trim().split(/\s+/);
   if (words.length <= maxWords) return text.trim();
-  let end = maxWords;
+
+  const opensUnresolvedClause = words
+    .slice(0, maxWords)
+    .some((w) => CLAUSE_OPENERS.has(w.replace(/[^a-zA-Z'-]/g, "").toLowerCase()));
+  let end = opensUnresolvedClause ? Math.min(maxWords + CLAUSE_RESOLUTION_ALLOWANCE, hardCeiling) : maxWords;
+
   while (end < words.length && end < hardCeiling) {
     const last = words[end - 1].replace(/[^a-zA-Z'-]/g, "").toLowerCase();
     const endsInPunctuation = /[:;,]$/.test(words[end - 1]);
@@ -474,12 +499,26 @@ function recentlyUsedPhotoUrls(postedLog: PostedLogEntry[]): Set<string> {
   );
 }
 
-async function pickReachableUrl(candidateUrls: string[], recentlyUsed: Set<string> = new Set()): Promise<string | null> {
+// ⛔ OPERATOR FIX (2026-09-08, real live incident, "half of the images are
+// absurd"): optional `verifySubject` runs a real vision check (see
+// cardTextQC.ts's verifyPhotoSubject) on each candidate IN RANKED ORDER,
+// same loop as the existing HEAD check — stops at the first one that
+// passes both, so the common case costs one vision call, not one per
+// candidate. A candidate that fails is treated exactly like an unreachable
+// one (skip, try the next); URLs in the recently-used fallback pool have
+// therefore already passed subject verification too, so that fallback
+// never reaches for an unverified image either.
+async function pickReachableUrl(
+  candidateUrls: string[],
+  recentlyUsed: Set<string> = new Set(),
+  verifySubject?: (url: string) => Promise<boolean>
+): Promise<string | null> {
   const reachableButRecentlyUsed: string[] = [];
   for (const url of candidateUrls) {
     try {
       const head = await fetchWithTimeout(url, { method: "HEAD" }, 10_000);
       if (!head.ok) continue;
+      if (verifySubject && !(await verifySubject(url))) continue;
       if (!recentlyUsed.has(url)) return url;
       reachableButRecentlyUsed.push(url);
     } catch {
@@ -517,7 +556,14 @@ async function searchAndPick(term: string, recentlyUsed: Set<string>, sportHint?
   const teamCheck = expectedTeamKeywords?.length ? { sportGroup: sportHint, expectedTeamKeywords } : undefined;
   const verified = results.filter((r) => metadataMatchesSubject(r, term, teamCheck));
   if (verified.length === 0) return null; // every candidate's own metadata contradicts the subject we searched for
-  return pickReachableUrl(verified.map((r) => r.url), recentlyUsed);
+  // metadataMatchesSubject is text-only (does the caption mention this name
+  // anywhere) — verifyPhotoSubject is the real check that the photo itself
+  // looks like it's actually about them, not just captioned with their name.
+  return pickReachableUrl(
+    verified.map((r) => r.url),
+    recentlyUsed,
+    (url) => verifyPhotoSubject(url, term)
+  );
 }
 
 // ⛔ OPERATOR FIX (2026-08-07): "MANDATORY TEMPLATE VARIETY — rotate through
