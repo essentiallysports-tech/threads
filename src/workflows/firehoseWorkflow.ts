@@ -16,7 +16,7 @@ const { filterPostable, buildFirehosePostText } = proxyLocalActivities<typeof ac
   retry: { maximumAttempts: 3 },
 });
 
-const { loadFirehosePage, loadFirehosePostedLog, recordFirehosePosted } = proxyActivities<typeof activities>({
+const { loadFirehosePage, loadFirehosePostedLog, recordFirehosePosted, getMainPipelinePostedCountToday } = proxyActivities<typeof activities>({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 3 },
 });
@@ -98,6 +98,24 @@ const STAGGER_MS = 3 * 60 * 1000;
 // maximize.
 const DEFAULT_MAX_POSTS_PER_RUN = 10;
 
+// ⛔ OPERATOR FIX (2026-09-07, real live directive): "make sure sports news
+// daily doesn't take all the posting volume, it should at max take 20% of
+// the total volume." DEFAULT_MAX_POSTS_PER_RUN above caps against Postiz's
+// rate limit — it has no idea what the REST of the fleet posted today, so
+// on a day the main pipeline underperforms (today: zero, from the WP
+// search= incident) p80 alone can end up as 100% of real volume with that
+// cap doing nothing to stop it. This caps p80's OWN today-so-far count
+// against the main pipeline's real today-so-far count (not the aspirational
+// ~250/day target), solved for "how many more can p80 post this run without
+// its running total exceeding 20% of (p80 + everyone else)":
+//   firehoseTotal <= 0.2 * (firehoseTotal + mainTotal)
+//   => additionalAllowed <= 0.25 * mainTotal - firehosePostedSoFar
+// Deliberately NOT floored above zero by some minimum — if the main
+// pipeline posted zero today, p80 posting anything at all would BE 100% of
+// today's volume, which is exactly the failure mode this exists to prevent,
+// not an edge case to special-case around.
+const MAIN_PIPELINE_SHARE_TARGET = 0.2;
+
 export async function firehoseWorkflow(opts: FirehoseRunOptions): Promise<FirehoseItemResult[]> {
   const dateISO = opts.dateISO || new Date(workflowInfo().startTime).toISOString().slice(0, 10);
   const page = await loadFirehosePage(opts.pageId);
@@ -106,18 +124,34 @@ export async function firehoseWorkflow(opts: FirehoseRunOptions): Promise<Fireho
   const checked = await filterPostable(pool, postedLog);
 
   const postable = checked.filter((c) => c.reason === null).map((c) => c.candidate);
-  const effectiveCap = opts.maxPostsThisRun ?? DEFAULT_MAX_POSTS_PER_RUN;
+
+  const firehosePostedToday = postedLog.filter((e) => e.posted_at?.startsWith(dateISO)).length;
+  const mainPipelinePostedToday = await getMainPipelinePostedCountToday(dateISO, opts.pageId);
+  const maxByFleetShare = Math.max(
+    0,
+    Math.floor((MAIN_PIPELINE_SHARE_TARGET / (1 - MAIN_PIPELINE_SHARE_TARGET)) * mainPipelinePostedToday) - firehosePostedToday
+  );
+
+  const effectiveCap = Math.min(opts.maxPostsThisRun ?? DEFAULT_MAX_POSTS_PER_RUN, maxByFleetShare);
   const toProcess = postable.slice(0, effectiveCap);
 
-  log.info("FIREHOSE_RUN_START", { pageId: opts.pageId, sourced: pool.length, postable: postable.length, toProcess: toProcess.length });
+  log.info("FIREHOSE_RUN_START", {
+    pageId: opts.pageId,
+    sourced: pool.length,
+    postable: postable.length,
+    firehosePostedToday,
+    mainPipelinePostedToday,
+    maxByFleetShare,
+    toProcess: toProcess.length,
+  });
 
   const results: FirehoseItemResult[] = [];
   let index = 0;
   for (const candidate of toProcess) {
     try {
-      const postText = await buildFirehosePostText(candidate, page);
+      const { text: postText, link: resolvedLink } = await buildFirehosePostText(candidate, page);
       if (!opts.livePosting) {
-        results.push({ key: candidate.key, outcome: "dry_run_would_post", headline: candidate.headline, link: candidate.link });
+        results.push({ key: candidate.key, outcome: "dry_run_would_post", headline: candidate.headline, link: resolvedLink });
         continue;
       }
       const postTime = new Date(Date.now() + LEAD_TIME_MS + index * STAGGER_MS);
@@ -127,7 +161,7 @@ export async function firehoseWorkflow(opts: FirehoseRunOptions): Promise<Fireho
         key: candidate.key,
         post_id: posted.id,
         posted_at: new Date().toISOString(),
-        reply_url: candidate.link,
+        reply_url: resolvedLink,
         headline: candidate.headline,
         source: candidate.source,
         source_published_at: candidate.publishedAt,

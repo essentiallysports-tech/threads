@@ -15,7 +15,7 @@ import { buildCaption } from "./caption";
 import { fetchWithTimeout } from "./httpUtil";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-sonnet-4-5";
+const MODEL = "anthropic/claude-haiku-4-5";
 
 // Explicit engagement-bait ban — Meta/Threads demonetize this pattern, and
 // it's a standing operator policy across every ES page, not specific to this

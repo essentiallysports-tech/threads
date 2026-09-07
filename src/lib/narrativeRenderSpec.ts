@@ -19,7 +19,7 @@ import { fetchWithTimeout } from "./httpUtil";
 import { isGenericFramingText } from "./checks";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-sonnet-4-5";
+const MODEL = "anthropic/claude-haiku-4-5";
 
 export interface RenderCopy {
   headline: string;
@@ -295,9 +295,11 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
     ``,
     `Real sports headlines routinely compress grammar — dropping "that", stacking noun phrases, using dense clauses. That kind of density is NORMAL and is NOT what you're checking for; do not flag a headline just for being terse or headline-style. Example of a headline you must call COHERENT despite its density: "Ryan Day Warned of Major OSU Concern If Trouble Strikes Julian Sayin" — dense, but it's ONE connected claim about one situation (a warning, conditional on one thing happening to one person).`,
     ``,
-    `You are ONLY checking for a specific, narrower failure: does the headline splice together TWO SEPARATE, UNRELATED pieces of information with no real logical or grammatical connection between them — e.g. naming two different people/events/topics joined only by a bare comma, with no shared verb or relationship tying them into one claim? Example of what you SHOULD call incoherent: "NFL Stars Defy HC, Tennis Prodigy" — this names an NFL dispute AND a tennis player with nothing connecting the two; it reads as two unrelated fragments jammed together, not one claim.`,
+    `You are checking for TWO specific, narrow failures — nothing else:`,
+    `(1) The headline splices together TWO SEPARATE, UNRELATED pieces of information with no real logical or grammatical connection between them — e.g. naming two different people/events/topics joined only by a bare comma, with no shared verb or relationship tying them into one claim. Example of what you SHOULD call incoherent: "NFL Stars Defy HC, Tennis Prodigy" — this names an NFL dispute AND a tennis player with nothing connecting the two; it reads as two unrelated fragments jammed together, not one claim.`,
+    `(2) The headline opens a question/relative clause with a word like "how," "why," "what," "which," "who," "when," "where," or "whether" and is cut off before that clause reaches any verb or resolution. Example: "NBA Rival Reveals How Kobe Bryant" — this names who the clause is about and stops right there, never saying what he actually did; a reader is left holding an opened-but-unanswered question, not a claim. This is different from ordinary headline-style compression (a dense but COMPLETE claim is fine) — it's specifically a clause that was opened and then abandoned before its own predicate.`,
     ``,
-    `Answer false ONLY for that specific splice-of-two-unrelated-things failure, or if the text is so garbled it doesn't parse as English at all. When in doubt, answer true — a dense-but-connected real headline must never be rejected for being merely terse.`,
+    `Answer false ONLY for one of those two specific failures, or if the text is so garbled it doesn't parse as English at all. When in doubt, answer true — a dense-but-connected real headline must never be rejected for being merely terse.`,
     `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
   ].join("\n");
   try {

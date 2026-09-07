@@ -1,6 +1,14 @@
 import { PageConfig, Candidate, PostedLogEntry } from "./types";
 import { latestConfirmedPost, recentConfirmedPosts, recentPublishedPolls } from "./beehiiv";
-import { isFreshEnough, entityOrSportMatch, isEsOwnedLink, isTestMarkerContent, isFlatStatDump, realRegisteredEntityMatches } from "./checks";
+import {
+  isFreshEnough,
+  entityOrSportMatch,
+  isEsOwnedLink,
+  isTestMarkerContent,
+  isFlatStatDump,
+  realRegisteredEntityMatches,
+  computeNationalStoryScore,
+} from "./checks";
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
@@ -672,7 +680,7 @@ function sharesRealTopic(headlineA: string, headlineB: string, excludeTerms: str
 // is worse than falling through to the newsletter subscribe fallback,
 // which is always safe because it never claims to be this exact story.
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const SAME_STORY_MODEL = "anthropic/claude-sonnet-4-5";
+const SAME_STORY_MODEL = "anthropic/claude-haiku-4-5";
 
 async function isSameRealStory(headlineA: string, headlineB: string): Promise<boolean> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
@@ -1071,16 +1079,48 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // requiresNamedEntity — it must survive the cap ahead of generic
   // same-sport noise, not just whatever happened to publish most recently.
   const hasRealEntityMatch = (c: Candidate): number => (realRegisteredEntityMatches(c, page).length > 0 ? 1 : 0);
-  unposted = unposted.sort((a, b) => {
-    const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
-    if (entityDiff !== 0) return entityDiff;
-    const rankDiff = tierRank(b) - tierRank(a);
-    if (rankDiff !== 0) return rankDiff;
-    const aFlat = isFlatStatDump(a) ? 0 : 1;
-    const bFlat = isFlatStatDump(b) ? 0 : 1;
-    if (aFlat !== bFlat) return bFlat - aFlat;
-    return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
-  });
+
+  // ⛔ OPERATOR FIX (2026-09-07): "how do you determine biggest?" — see
+  // computeNationalStoryScore in checks.ts for the full reasoning. Only
+  // page_type "national" branches onto the new score: every other page
+  // type's cascade below is tuned against real, cited incidents (the
+  // Lions/Cowboys/Ravens same-story crowd-out on 2026-08-19, the
+  // women's-MMA gender mismatch on 2026-08-12) that a generic
+  // content-pattern score has no way to know about, so those stay on the
+  // existing logic untouched. `national_threshold` is used as a soft sort
+  // boundary here — same as every other signal in this file — never a hard
+  // filter, so a national page can't drop to zero candidates just because
+  // none of them clear it on a given run.
+  if (page.page_type === "national") {
+    unposted = unposted.sort((a, b) => {
+      const aScore = computeNationalStoryScore(a).total;
+      const bScore = computeNationalStoryScore(b).total;
+      const aAbove = aScore >= page.national_threshold ? 1 : 0;
+      const bAbove = bScore >= page.national_threshold ? 1 : 0;
+      if (aAbove !== bAbove) return bAbove - aAbove;
+      return bScore - aScore;
+    });
+    const winner = unposted[0];
+    if (winner) {
+      const s = computeNationalStoryScore(winner);
+      console.error(
+        `sourceCandidatePoolForPage: national story score for ${page.page_id} winner key=${winner.key} ` +
+          `total=${s.total}/100 (threshold=${page.national_threshold}) breaking=${s.breakingNews} ` +
+          `source=${s.sourceTier} pattern=${s.contentPattern}(${s.matchedPattern ?? "none"}) narrative=${s.narrativeRichness}`
+      );
+    }
+  } else {
+    unposted = unposted.sort((a, b) => {
+      const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
+      if (entityDiff !== 0) return entityDiff;
+      const rankDiff = tierRank(b) - tierRank(a);
+      if (rankDiff !== 0) return rankDiff;
+      const aFlat = isFlatStatDump(a) ? 0 : 1;
+      const bFlat = isFlatStatDump(b) ? 0 : 1;
+      if (aFlat !== bFlat) return bFlat - aFlat;
+      return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+    });
+  }
 
   // ⛔ OPERATOR FIX (2026-08-13): this candidate is spliced in AFTER
   // `unposted` above already went through resolveExternalLink — without

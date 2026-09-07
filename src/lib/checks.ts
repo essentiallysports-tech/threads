@@ -691,6 +691,79 @@ export function isBareQuotedFragment(candidate: Candidate): boolean {
   return withoutQuotes.length < 15;
 }
 
+// ⛔ OPERATOR FIX (2026-09-07): "how do you determine biggest?" — asked
+// directly about p44's own page_theme ("Biggest cross-sport storylines of
+// the week"), which turned out to be aspirational copy: national_threshold
+// was declared on every page config but never read by any code path, and
+// the only ranking a "national" page's candidates ever got was the same
+// generic tierRank/recency cascade every other page type uses (see
+// sourcing.ts's unposted.sort). That cascade has no way to prefer a real
+// breaking trade/retirement over a slow-news-day web_search hit once both
+// are fresh es_article-tier candidates. This scores national-page
+// candidates against three real, checkable signals the internal LIC
+// (Link-in-Comments) content playbook gives for "highest chance to work":
+// how fresh the story is (its Tier 1 cutoff is "published within 1 hour"
+// for breaking news, Tier 2 is "prior 24h"), how real/reported the source
+// is (an ES article or poll vs. an unverified web/social hit), and whether
+// the headline matches one of the playbook's proven content patterns (a
+// major announcement, a head-to-head rivalry, or a quote/bold-claim hook).
+// It deliberately does NOT try to detect cross-sport "biggest" by weighing
+// which athlete is more famous — this pipeline has no real fame/traction
+// data source (no trends API, no social-velocity feed) to compare across
+// sports, and a national page's own `entities` field is just one generic
+// placeholder, not a real roster to match against. Faking that signal
+// would repeat the exact overclaim this function exists to fix.
+// `national_threshold` on PageConfig (55 for p44) is scaled to this
+// score's 0-100 range so it finally does something real: sourcing.ts uses
+// it as a soft sort boundary, same as every other signal in that cascade —
+// never a hard filter, so a page can't drop to zero candidates just
+// because none of them clear it on a given run.
+export interface StoryScoreBreakdown {
+  total: number;
+  breakingNews: number;
+  sourceTier: number;
+  contentPattern: number;
+  narrativeRichness: number;
+  matchedPattern: string | null;
+}
+
+const MAJOR_ANNOUNCEMENT_RE =
+  /\b(retir\w*|fired|traded|trades|signs?|signed|suspend\w*|banned|dies|died|passes away|arrested|stripped|resigns?)\b/i;
+const RIVALRY_RE = /\b(vs\.?|versus|beats?|def\.|upsets?)\b/i;
+const QUOTE_DRIVEN_RE = /["“”]|\b(says|claims?|slams?|blasts?|reacts?|responds?|fires back)\b/i;
+
+export function computeNationalStoryScore(candidate: Candidate): StoryScoreBreakdown {
+  const ageHours = (Date.now() - new Date(candidate.publishedAt).getTime()) / (1000 * 60 * 60);
+  const breakingNews = ageHours <= 1 ? 35 : ageHours <= 24 ? 20 : 8;
+
+  const sourceTier = candidate.source === "es_article" ? 25 : candidate.source === "beehiiv_poll" ? 18 : 10;
+
+  const text = `${candidate.headline} ${candidate.subject}`;
+  let contentPattern = 5;
+  let matchedPattern: string | null = null;
+  if (MAJOR_ANNOUNCEMENT_RE.test(text)) {
+    contentPattern = 25;
+    matchedPattern = "major_announcement";
+  } else if (RIVALRY_RE.test(text)) {
+    contentPattern = 18;
+    matchedPattern = "rivalry";
+  } else if (QUOTE_DRIVEN_RE.test(text)) {
+    contentPattern = 15;
+    matchedPattern = "quote_driven";
+  }
+
+  const narrativeRichness = isFlatStatDump(candidate) ? 0 : 15;
+
+  return {
+    total: breakingNews + sourceTier + contentPattern + narrativeRichness,
+    breakingNews,
+    sourceTier,
+    contentPattern,
+    narrativeRichness,
+    matchedPattern,
+  };
+}
+
 // ⛔ OPERATOR FIX (2026-08-18, real live incident): "if you see from a
 // consumer POV what value are they adding, why would somebody click on a
 // link below." Confirmed live: Boxing Bulletin and Baltimore Ravens Community
@@ -1058,7 +1131,7 @@ export interface DuplicateStoryCheckResult {
 }
 
 const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
+const AI_GATEWAY_MODEL = "anthropic/claude-haiku-4-5";
 // ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
 // fine to repost once real time has passed, but the cutoff should match the
 // 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter

@@ -35,8 +35,46 @@ const WP_MAX_PER_PAGE = 100; // WordPress's own hard ceiling on this param
 // calls that ever went without one (ES-MCP itself, Apify, the AI Gateway)
 // has gone on to cause a real concurrent-overload incident this session.
 // Built in from day one here instead of waiting for the same lesson again.
-const limitWpApi = createLimiter(8);
+//
+// ⛔ OPERATOR FIX (2026-09-07, real live incident, severe): 8 concurrent WP
+// calls was sized for "how many requests is polite," not "how expensive is
+// each one" — every one of them was, until today, a full unindexed
+// LIKE '%term%' scan across title+excerpt+content on a ~657k-row posts
+// table (see queryRecentArticles/queryArticlesByEntity below for the real
+// fix). Confirmed via direct origin monitoring during the incident: ~65 of
+// these requests/min (1,761 over 32 minutes) drove Aurora CPU 28% -> 98%
+// and php-fpm DB sessions 38 -> 275. The real fix is making each call cheap
+// (indexed tags=/categories=, never search=, against /wp/v2/posts) — this
+// lower limit is defense in depth on top of that, not a substitute for it.
+const limitWpApi = createLimiter(2);
 const limitTypesense = createLimiter(6);
+
+// ⛔ OPERATOR FIX (2026-09-07, same incident): once an origin starts
+// failing, this pipeline's many concurrent callers each independently
+// retrying (the old fetchWpPosts behavior) or continuing to fire at full
+// rate only deepens the hole — the exact opposite of what a struggling
+// database needs. Trips after a few consecutive failures across ANY call
+// to the WP origin (posts, tags, or categories — one struggling MySQL
+// instance behind all of them) and goes quiet for a cooldown window; every
+// call during that window fails fast with zero network request.
+const CIRCUIT_FAILURE_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+let circuitConsecutiveFailures = 0;
+let circuitOpenUntil = 0;
+
+function circuitIsOpen(): boolean {
+  return Date.now() < circuitOpenUntil;
+}
+function circuitRecordSuccess(): void {
+  circuitConsecutiveFailures = 0;
+}
+function circuitRecordFailure(): void {
+  circuitConsecutiveFailures++;
+  if (circuitConsecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+    circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+    console.error(`esDirect: WP circuit breaker OPEN for ${CIRCUIT_COOLDOWN_MS / 1000}s after ${circuitConsecutiveFailures} consecutive failures`);
+  }
+}
 
 // ── Images — direct Typesense ────────────────────────────────────────────
 
@@ -248,21 +286,25 @@ function stripHtml(html: string | undefined): string {
 // retry with a short backoff on a transient failure — same shape as
 // esMcp.ts's own callTool, for the same reason: one bad response on a
 // shared endpoint shouldn't cost a whole sourcing tier for the run.
-async function fetchWpPosts(params: URLSearchParams, attempts = 2): Promise<WpPost[]> {
-  let lastError: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const res = await limitWpApi(() =>
-        fetchWithTimeout(`${WP_POSTS_URL}?${params}`, {}, 15_000)
-      );
-      if (!res.ok) throw new Error(`WP posts -> ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      return (await res.json()) as WpPost[];
-    } catch (e) {
-      lastError = e;
-      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
-    }
+// ⛔ OPERATOR FIX (2026-09-07, real live incident, severe): the retry loop
+// this replaced re-issued the SAME expensive query into an origin that had
+// just told us (via a 5xx or timeout) it was already struggling — with 6-8
+// concurrent callers each doing their own retry, that doubled load at
+// exactly the moment the database could least afford it. Single attempt
+// only now; the circuit breaker (not a retry) is what protects a
+// struggling origin from this pipeline.
+async function fetchWpPosts(params: URLSearchParams): Promise<WpPost[]> {
+  if (circuitIsOpen()) throw new Error("WP circuit breaker open — skipping request, origin recently failing repeatedly");
+  try {
+    const res = await limitWpApi(() => fetchWithTimeout(`${WP_POSTS_URL}?${params}`, {}, 15_000));
+    if (!res.ok) throw new Error(`WP posts -> ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const json = (await res.json()) as WpPost[];
+    circuitRecordSuccess();
+    return json;
+  } catch (e) {
+    circuitRecordFailure();
+    throw e;
   }
-  throw lastError;
 }
 
 function toArticleResults(posts: WpPost[]): EsArticleResult[] {
@@ -320,9 +362,64 @@ async function cachedArticleQuery(args: Record<string, unknown>, run: () => Prom
   return value;
 }
 
-// sport=null means no search term at all — WordPress's own default
+// ⛔ OPERATOR FIX (2026-09-07, real live incident, severe): resolves the
+// sport/entity name to its WordPress tag or category id first, then filters
+// posts by that numeric id — an indexed term-relationship join, not a
+// table scan. `search=` against /wp/v2/tags or /wp/v2/categories is cheap
+// (confirmed live, ~1.2s) because those tables are orders of magnitude
+// smaller than posts (~657k rows). Tag/category ids are effectively
+// permanent once WordPress assigns them, so this is cached far longer than
+// article content itself — no reason to re-resolve "Lamar Jackson" -> 20837
+// every 15 minutes just because the article cache TTL is that short.
+const TAXONOMY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const taxonomyIdCache = new Map<string, { at: number; id: number | null }>();
+
+interface WpTerm {
+  id: number;
+  name: string;
+  count: number;
+}
+
+// Prefers an exact case-insensitive name match (confirmed live: searching
+// "Lamar Jackson" also returns an unrelated "Broncos Lamar Jackson" tag
+// with count=2 alongside the real one at count=2155) — falls back to the
+// highest-post-count term when nothing matches exactly, since a real,
+// actively-used tag/category will always dwarf a mistagged one-off.
+function pickBestTerm(terms: WpTerm[], query: string): number | null {
+  if (terms.length === 0) return null;
+  const exact = terms.find((t) => t.name.toLowerCase() === query.toLowerCase());
+  return exact ? exact.id : terms.reduce((best, t) => (t.count > best.count ? t : best)).id;
+}
+
+async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Promise<number | null> {
+  const cacheKey = `${kind}:${name.toLowerCase()}`;
+  const hit = taxonomyIdCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < TAXONOMY_CACHE_TTL_MS) return hit.id;
+  if (circuitIsOpen()) return null;
+
+  try {
+    const params = new URLSearchParams({ search: name, _fields: "id,name,count", per_page: "20" });
+    const res = await limitWpApi(() =>
+      fetchWithTimeout(`https://staging.essentiallysports.com/wp-json/wp/v2/${kind}?${params}`, {}, 10_000)
+    );
+    if (!res.ok) throw new Error(`WP ${kind} -> ${res.status}`);
+    const terms = (await res.json()) as WpTerm[];
+    const id = pickBestTerm(terms, name);
+    taxonomyIdCache.set(cacheKey, { at: Date.now(), id });
+    circuitRecordSuccess();
+    return id;
+  } catch (e) {
+    circuitRecordFailure();
+    console.error(`resolveTaxonomyId: ${kind} lookup failed for "${name}": ${(e as Error).message}`);
+    return null;
+  }
+}
+
+// sport=null means no filter at all — WordPress's own default
 // (chronological, newest first) over the date window, matching
-// query_articles's original "no sport filter" behavior.
+// query_articles's original "no sport filter" behavior. sport given now
+// resolves to a WP category id instead of an unindexed search= scan — see
+// resolveTaxonomyId above.
 export async function queryRecentArticles(sport: string | null, dateISO: string, limit = 20, dateStart?: string): Promise<EsArticleResult[]> {
   const args = { kind: "recent", sport, dateISO, limit, dateStart };
   return cachedArticleQuery(args, async () => {
@@ -334,23 +431,39 @@ export async function queryRecentArticles(sport: string | null, dateISO: string,
       after: `${dateStart || dateISO}T00:00:00`,
       before: `${dateISO}T23:59:59`,
     });
-    if (sport) params.set("search", sport);
+    if (sport) {
+      const categoryId = await resolveTaxonomyId("categories", sport);
+      if (categoryId === null) {
+        console.error(`queryRecentArticles: no WP category found for sport="${sport}" — returning no results rather than an unindexed search= scan`);
+        return [];
+      }
+      params.set("categories", String(categoryId));
+    }
     return toArticleResults(await fetchWpPosts(params));
   });
 }
 
-// Real query_articles `entity` filter equivalent — WordPress's own
-// full-text search across title/content, same "same subject, different
-// exact wording" tolerance the original had.
+// Real query_articles `entity` filter equivalent. Resolves to a WP tag id
+// instead of an unindexed search= scan — see resolveTaxonomyId above. A
+// real trade-off versus the old full-text search: an entity with no
+// dedicated WP tag returns no results here instead of a text-matched one,
+// which is the deliberate, necessary cost of never again full-table-scanning
+// 657k posts on every call — not a bug to silently work around by falling
+// back to search=.
 export async function queryArticlesByEntity(entity: string, dateStart: string, dateEnd: string, limit = 20): Promise<EsArticleResult[]> {
   const args = { kind: "entity", entity, dateStart, dateEnd, limit };
   return cachedArticleQuery(args, async () => {
+    const tagId = await resolveTaxonomyId("tags", entity);
+    if (tagId === null) {
+      console.error(`queryArticlesByEntity: no WP tag found for entity="${entity}" — returning no results rather than an unindexed search= scan`);
+      return [];
+    }
     const params = new URLSearchParams({
       _fields: FIELDS,
       per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
       orderby: "date",
       order: "desc",
-      search: entity,
+      tags: String(tagId),
       after: `${dateStart}T00:00:00`,
       before: `${dateEnd}T23:59:59`,
     });
