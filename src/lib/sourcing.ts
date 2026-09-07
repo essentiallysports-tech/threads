@@ -4,7 +4,6 @@ import { isFreshEnough, entityOrSportMatch, isEsOwnedLink, isTestMarkerContent, 
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
-import { sourceFromTwitter, sourceFromReddit } from "./socialSearch";
 import { fetchWithTimeout } from "./httpUtil";
 import { getPostContent } from "./beehiiv";
 
@@ -949,16 +948,22 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       ? safeCandidates.filter((c) => realRegisteredEntityMatches(c, page).length > 0).length
       : safeCandidates.length;
 
+  // ⛔ OPERATOR FIX (2026-09-07): "the goal is to get more and more article
+  // clicks, so more and more posts would be made from the ES articles only —
+  // for now keep twitter and reddit as dormant, and wherever ES articles
+  // aren't there websearch can be used." Twitter/Reddit deliberately not
+  // called here — es_article already sorts ahead of every other tier (see
+  // this file's 2026-08-10 fix below), and the real traffic goal is driving
+  // clicks to ES's own articles, not surfacing social content that links
+  // nowhere ES-owned until resolveExternalLink reattaches it. web_search
+  // stays active as the gap-filler for pages whose safe tiers (es_article
+  // included) genuinely come up short. Dormant, not removed, unlike Apify:
+  // sourceFromTwitter/sourceFromReddit in socialSearch.ts are untouched and
+  // fully working — re-enable by adding them back to the Promise.all below.
   let riskyCandidates: Candidate[] = [];
   if (genuinelyRelevantCount < MIN_SAFE_CANDIDATES) {
-    const [webCandidates, twitterCandidates, redditCandidates] = await Promise.all([
-      sourceFromWebSearch(page, dateISO),
-      sourceFromTwitter(page, dateISO),
-      sourceFromReddit(page, dateISO),
-    ]);
-    riskyCandidates = [...webCandidates, ...twitterCandidates, ...redditCandidates].filter(
-      (c) => !postedKeys.has(c.key) && entityOrSportMatch(c, page)
-    );
+    const webCandidates = await sourceFromWebSearch(page, dateISO);
+    riskyCandidates = webCandidates.filter((c) => !postedKeys.has(c.key) && entityOrSportMatch(c, page));
   }
 
   // ⛔ OPERATOR FIX (2026-08-27, real live incident, editorial complaint):
