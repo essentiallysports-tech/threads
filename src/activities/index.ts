@@ -31,7 +31,7 @@ import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
 import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI, isCoherentHeadlineViaAI, factsFor } from "../lib/narrativeRenderSpec";
 import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
-import { searchImages, metadataMatchesSubject } from "../lib/esMcp";
+import { searchImages, metadataMatchesSubject } from "../lib/esDirect";
 import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
 import { RenderSpec } from "../lib/renderSpec";

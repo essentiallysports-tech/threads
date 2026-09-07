@@ -2,7 +2,7 @@ import { PageConfig, Candidate, PostedLogEntry } from "./types";
 import { latestConfirmedPost, recentConfirmedPosts, recentPublishedPolls } from "./beehiiv";
 import { isFreshEnough, entityOrSportMatch, isEsOwnedLink, isTestMarkerContent, isFlatStatDump, realRegisteredEntityMatches } from "./checks";
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle } from "./s3registry";
-import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esMcp";
+import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
 import { sourceFromTwitter, sourceFromReddit } from "./socialSearch";
 import { fetchWithTimeout } from "./httpUtil";
