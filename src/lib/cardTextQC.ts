@@ -174,3 +174,68 @@ async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string)
     return true; // network failure — don't block posting over it
   }
 }
+
+// ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): the generic/logo
+// fallback path (renderCard, when searchTerms is empty — no real depictable
+// person for this story) called pickReachableUrl with no verifySubject
+// callback at all, unlike searchAndPick's normal path just above — the one
+// content category with zero visual verification. Can't reuse
+// verifyPhotoSubject as-is: its prompt is written entirely for "is this a
+// recognizable photo of a PERSON," which would ~always FAIL a genuine team/
+// league logo (correctly rejecting itself). Separate prompt, same fail-open
+// policy and caching shape.
+const genericPhotoSubjectCache = new Map<string, { at: number; value: Promise<boolean> }>();
+
+export async function verifyGenericPhotoSubject(imageUrl: string, subjectName: string): Promise<boolean> {
+  const cacheKey = `${imageUrl}::${subjectName.toLowerCase()}`;
+  const hit = genericPhotoSubjectCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < PHOTO_SUBJECT_CACHE_TTL_MS) return hit.value;
+
+  const value = verifyGenericPhotoSubjectUncached(imageUrl, subjectName);
+  genericPhotoSubjectCache.set(cacheKey, { at: Date.now(), value });
+  value.catch(() => {
+    const current = genericPhotoSubjectCache.get(cacheKey);
+    if (current && current.value === value) genericPhotoSubjectCache.delete(cacheKey);
+  });
+  return value;
+}
+
+async function verifyGenericPhotoSubjectUncached(imageUrl: string, subjectName: string): Promise<boolean> {
+  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
+  if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
+  if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
+
+  const prompt = [
+    `This photo was found by searching a sports media library for "${subjectName} logo".`,
+    `Look at it and answer: does it actually, plausibly show a genuine logo, crest, uniform/jersey, mascot, or venue associated with "${subjectName}" — generic sport/team imagery, NOT a photo of a specific identifiable person?`,
+    `Reply FAIL if it instead shows a different team/league's logo or branding, an unrelated scene, or anything else that just happens to be captioned with this name without actually depicting it.`,
+    `Reply with EXACTLY one line: "PASS" or "FAIL: <short reason>". When genuinely uncertain, answer PASS — this check exists to catch obviously wrong/mismatched logos or imagery, not to make a strict call you can't reliably make.`,
+  ].join("\n");
+
+  try {
+    const res = await fetchWithTimeout(
+      GATEWAY_URL,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageUrl } }] }],
+          max_tokens: 60,
+        }),
+      },
+      20_000
+    );
+    if (!res.ok) {
+      console.error(`verifyGenericPhotoSubject: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      return true; // verification infra failure — don't block posting over it
+    }
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
+    const content = (json.choices?.[0]?.message?.content || "").trim();
+    return /^PASS/i.test(content);
+  } catch (e) {
+    console.error(`verifyGenericPhotoSubject: request failed: ${(e as Error).message}`);
+    return true; // network failure — don't block posting over it
+  }
+}

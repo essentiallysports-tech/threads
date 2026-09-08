@@ -206,8 +206,15 @@ export function matchedSportGroup(candidate: Candidate, page: PageConfig): strin
 // isPlausibleName's stopword filter still does the real work of rejecting
 // bad pairs ("Bold Ian" would still be tried, but so would "Ian Garry" —
 // letting the real name win when the adjective-led pair doesn't clear it).
-const PROPER_NOUN_RE_2 = /\b([A-Z][a-z']+)(?=\s+([A-Z][a-z']+)\b)/g;
-const PROPER_NOUN_RE_3 = /\b([A-Z][a-z']+(?:\s+[A-Z][a-z']+){2})\b/g;
+// ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): the character class only
+// matched a straight apostrophe (') — ES's real headlines use a curly
+// apostrophe (’), so "O’Connell" never matched as one word at all; it split
+// into "O" (too short to match, dropped) and "Connell", which then paired
+// with an unrelated adjacent word ("Connell Spent" from "Kevin O’Connell
+// Spent Weeks..."). Adding ’ to the class is a pure expansion — it can only
+// let a real name match correctly, never break an existing correct match.
+const PROPER_NOUN_RE_2 = /\b([A-Z][a-z'’]+)(?=\s+([A-Z][a-z'’]+)\b)/g;
+const PROPER_NOUN_RE_3 = /\b([A-Z][a-z'’]+(?:\s+[A-Z][a-z'’]+){2})\b/g;
 const PROPER_NOUN_LEAD_STOPWORDS = new Set(["the", "a", "an", "is", "was", "how", "why", "what", "when"]);
 
 // ⛔ FIX (2026-08-10, real live incident): "5x NBA Champion Dies at 86" (a
@@ -304,7 +311,17 @@ const NON_NAME_WORDS = new Set([
   "to", "of", "in", "for", "with", "and", "or", "on", "at", "by", "from",
   "as", "into", "onto", "over", "under", "after", "before", "despite",
   "amid", "amidst", "without", "within", "about", "against", "toward",
-  "towards", "per", "via",
+  "towards", "per", "via", "behind",
+  // ⛔ OPERATOR FIX (2026-09-08, real live incident, comprehensive audit):
+  // "NFL Legend Demands LSU Players Rally Behind Jayden Daniels" extracted
+  // "Rally Behind" — "legend"/"players" already filtered, but neither
+  // "rally" (a common headline verb, same class as "targets"/"chases"
+  // above) nor "behind" (a preposition, same durable class as "to"/"of"
+  // above) was covered, so the pair survived and won as the first match
+  // ahead of the real name "Jayden Daniels" later in the same headline.
+  // Reproduced live: the resulting photo search for "Rally Behind" matched
+  // an unrelated 2019 Dakar Rally motorsport photo.
+  "rally", "rallies", "rallying",
   // ⛔ OPERATOR FIX (2026-08-13, real live incident): "Who Wins an MMA
   // Fight Between Max Holloway and Usman Nurmagomedov?" extracted "Fight
   // Between" — "who"/"wins"/"an" already filtered, "MMA" doesn't match the
@@ -752,7 +769,15 @@ const RIVALRY_RE = /\b(vs\.?|versus|beats?|def\.|upsets?)\b/i;
 const QUOTE_DRIVEN_RE = /["“”]|\b(says|claims?|slams?|blasts?|reacts?|responds?|fires back)\b/i;
 
 export function computeNationalStoryScore(candidate: Candidate): StoryScoreBreakdown {
-  const ageHours = (Date.now() - new Date(candidate.publishedAt).getTime()) / (1000 * 60 * 60);
+  // ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): evergreen_search
+  // deliberately stamps publishedAt as "now" (see classifyCaptionAgeTone's
+  // own comment on sourceFromEsEvergreenArticles) — left unguarded here,
+  // every evergreen candidate computed ageHours ~= 0 and scored the MAXIMUM
+  // breakingNews tier (35/35), the exact overclaim this function exists to
+  // prevent, on a page whose entire premise is "how fresh is this really."
+  // Floored at the same tier as confirmed 24h+ content — we have zero real
+  // signal it's fresh, so it gets none of that credit.
+  const ageHours = candidate.source === "evergreen_search" ? Infinity : (Date.now() - new Date(candidate.publishedAt).getTime()) / (1000 * 60 * 60);
   const breakingNews = ageHours <= 1 ? 35 : ageHours <= 24 ? 20 : 8;
 
   const sourceTier = candidate.source === "es_article" ? 25 : candidate.source === "beehiiv_poll" ? 18 : 10;
@@ -1270,7 +1295,29 @@ export function requiresNamedEntity(candidate: Candidate, page: PageConfig, matc
   // counts. A same-sport regex/AI guess that happens to be a real name is
   // still the wrong gender division for this page's actual premise.
   if (isWomensOnlyPage(page)) {
-    return realRegisteredEntityMatches(candidate, page).length === 0;
+    const matches = realRegisteredEntityMatches(candidate, page);
+    if (matches.length === 0) return true;
+    // ⛔ OPERATOR FIX (2026-09-08, real live incident, comprehensive audit):
+    // a real registered woman mentioned ANYWHERE isn't enough on its own —
+    // confirmed live, "UFC 330 Payouts: How Much Are Islam Makhachev, Ian
+    // Garry, Mackenzie Dern, and Others Expected to Earn?" posted on
+    // Fearless Female Fighters because Dern (a real p55 entity) is named
+    // third in a male-led payout roundup. Reject when 2+ OTHER apparent
+    // real names appear in the headline BEFORE our registered entity's own
+    // first mention — the same "buried behind other subjects, not the
+    // actual topic" shape as the 2026-08-31 McGregor/Khabib fix below,
+    // adapted for a multi-entity roster page (no single flagship to
+    // require) instead of a single-athlete one.
+    // Same headline-first ordering as realRegisteredEntityMatches's own
+    // orderingHaystack (which decided matches[0] is "first") — subject-first
+    // would make positions here inconsistent with what "first" meant above.
+    const text = `${candidate.headline} ${candidate.subject}`;
+    const matchPos = firstOccurrenceIndex(text.toLowerCase(), matches[0]);
+    const otherNamesBefore = [...text.slice(0, matchPos).matchAll(PROPER_NOUN_RE_2)]
+      .map(matchedText)
+      .filter(isPlausibleName)
+      .filter((n) => !matches.some((m) => n.toLowerCase().includes(m.toLowerCase())));
+    return otherNamesBefore.length >= 2;
   }
   // ⛔ OPERATOR FIX (2026-08-31, real live incident): a single-athlete fan
   // page (page_type "entity") registers its subject's real rivals/peers as
@@ -1600,10 +1647,17 @@ export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
   // Aashish, not as if it just happened). Trusting that fake timestamp here
   // would do the opposite of this tier's own purpose: every evergreen
   // candidate would read as "current" and become breaking-news-eligible.
-  // We don't know the TRUE age (could be weeks or years old), so "standard"
-  // (plain news tone, no urgency, no false immediacy) is the only always-
-  // correct answer — "retro" would overclaim an age we can't confirm.
-  if (candidate.source === "evergreen_search") return "standard";
+  // ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): this used to return
+  // "standard" here, reasoning "we don't know the TRUE age, so retro would
+  // overclaim." That predates (or was never reconciled with) the SAME-DAY
+  // 2026-08-31 "retro" template addition (narrativeRenderSpec.ts), whose own
+  // description explicitly names "an evergreen archive piece of unconfirmed
+  // age" as exactly what retro/throwback framing is FOR — unconfirmed age is
+  // the retro template's own stated use case, not a reason to avoid it. Net
+  // effect of the old logic: the retro template had structurally never fired
+  // across 2,327 real posts, and genuinely old evergreen content was being
+  // captioned/rendered as if it were plain current news.
+  if (candidate.source === "evergreen_search") return "retro";
   const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
   if (ageMs <= BREAKING_ELIGIBLE_MAX_HOURS * 3600 * 1000) return "current";
   if (ageMs >= RETRO_TONE_MIN_DAYS * 24 * 3600 * 1000) return "retro";
@@ -1688,9 +1742,25 @@ function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig)
   // exemption. Extending the same check (must actually name a registered
   // legend, not just any current story) to all three keyword-matched tiers.
   if (candidate.source === "es_article" || candidate.source === "web_search" || candidate.source === "social_search") {
-    const text = `${candidate.headline} ${candidate.subject || ""}`.toLowerCase();
-    const mentionsRegisteredLegend = page.entities.some((e) => e.keywords.some((k) => text.includes(k.toLowerCase())));
-    if (mentionsRegisteredLegend) return false;
+    const text = `${candidate.headline} ${candidate.subject || ""}`;
+    const lower = text.toLowerCase();
+    const matchedKeywords = page.entities.flatMap((e) => e.keywords).filter((k) => lower.includes(k.toLowerCase()));
+    if (matchedKeywords.length > 0) {
+      // ⛔ OPERATOR FIX (2026-09-08, real live incident, comprehensive audit):
+      // a Kobe Bryant retrospective page posted a 100%-current Jonathan
+      // Kuminga/Timberwolves trade story because it invoked Kobe's name
+      // rhetorically in passing — exactly the "merely REFERENCES a legend in
+      // passing... shouldn't count" failure mode the 2026-08-24 fix above
+      // already named as out of scope, but a bare substring check can't
+      // actually tell "genuinely about" from "mentions": it only ever
+      // checked presence, never role. Require the legend's own keyword to be
+      // the text's leading proper name — no other apparent name appears
+      // before it — same centrality technique as isWomensOnlyPage's fix.
+      const earliestKeyword = matchedKeywords.reduce((a, b) => (firstOccurrenceIndex(lower, a) <= firstOccurrenceIndex(lower, b) ? a : b));
+      const matchPos = firstOccurrenceIndex(lower, earliestKeyword);
+      const otherNamesBefore = [...text.slice(0, matchPos).matchAll(PROPER_NOUN_RE_2)].map(matchedText).filter(isPlausibleName);
+      if (otherNamesBefore.length === 0) return false;
+    }
   }
   const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
   return ageMs < RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000;

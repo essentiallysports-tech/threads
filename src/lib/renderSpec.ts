@@ -51,11 +51,26 @@ export function promptViolations(prompt: string): string[] {
 // names are legitimate for broad relevance matching (that's what they're
 // FOR), never for "is this a two-person story" or "whose photo do I
 // search for."
+// ⛔ OPERATOR FIX (2026-09-08, real live incident, comprehensive audit): "wwe"
+// was missing here — p70/p79 both register WWE itself as a page "entity",
+// so realRegisteredEntityMatches treated ANY headline mentioning "WWE" as a
+// guaranteed-real match, skipping AI entity extraction entirely and
+// searching photos for the literal query "WWE" — which returns real photos
+// of Fandango, Paige, Kane, Ali, Sheamus etc. (any wrestler whose caption
+// happens to say "WWE"), not the actual named subject. Confirmed live via
+// real posted-log incidents: a Brock Rechsteiner story posted Fandango's
+// photo, a CM Punk story posted Paige's, a Volkanovski story posted a
+// wrestler named Ali's. Worse: on a real Cody Rhodes story, "WWE" appeared
+// earlier in the sentence than "Cody Rhodes" and won by first-occurrence
+// order, discarding the CORRECTLY matched real subject. Same root class as
+// the 2026-08-12 PGA/LPGA incident this set already exists to prevent —
+// just an incomplete list, not a different bug.
 export const CATEGORY_PLACEHOLDERS = new Set([
   "nascar", "nfl", "nba", "mlb", "nhl", "ufc", "mma", "wnba", "f1", "golf",
   "tennis", "boxing", "pickleball", "football", "basketball", "baseball",
   "sports", "celebrities", "sports celebrities", "athletes", "legends",
   "pga", "lpga", "pga tour", "lpga tour", "atp", "wta", "atp tour", "wta tour",
+  "wwe",
 ]);
 
 export function isCategoryPlaceholder(subject: string): boolean {

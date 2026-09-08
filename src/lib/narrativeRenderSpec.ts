@@ -16,8 +16,9 @@
 import { Candidate, PageConfig } from "./types";
 import { TemplateId } from "./renderSpec";
 import { fetchWithTimeout } from "./httpUtil";
-import { isGenericFramingText } from "./checks";
+import { isGenericFramingText, classifyCaptionAgeTone } from "./checks";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { truncateAtWordBoundary } from "./headlineTruncation";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -97,10 +98,20 @@ function buildPrompt(
   fallback: RenderCopy,
   retryNote?: string
 ): string {
+  // ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): chooseTemplate
+  // (activities/index.ts) checks genuineComparison BEFORE ageTone === "retro"
+  // — a genuinely old evergreen/180+-day story that also reads as a two-
+  // person comparison gets the comparison/quote layout, not "retro", and so
+  // never sees LAYOUT_DESCRIPTIONS.retro's "never framed as if it just
+  // happened" instruction. Stated directly here too, unconditionally, so
+  // this prompt doesn't depend on which layout happened to be chosen.
   const facts = [
     `Headline: ${stripHtml(candidate.headline)}`,
     candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
     athleteNames.length > 0 ? `Named people/teams in this story: ${athleteNames.join(", ")}` : null,
+    classifyCaptionAgeTone(candidate) === "retro"
+      ? `Timing: this is a genuinely OLD story (evergreen archive content of unconfirmed age, or confirmed 6+ months old) being resurfaced as callback/banter content — write the headline with retrospective "on this day"/"remember when" framing, NEVER present-tense urgency or as if this just happened.`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -164,26 +175,26 @@ function violates(parsed: any, athleteNames: string[], kicker: string): string |
   return null;
 }
 
-const TRAILING_STOPWORDS = new Set([
-  "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "by",
-  "for", "with", "from", "as", "is", "are", "was", "were", "his", "her",
-  "its", "that", "this", "into", "over", "under", "after", "before",
-  "amid", "during", "about", "vs", "vs.",
-]);
-
-// Same word-boundary safety net shortHeadline already applies to the
-// deterministic path — a headline that came back a little long from the AI
-// still never gets cut into a dangling article/preposition.
-function capHeadlineLength(headline: string, maxWords = 6, hardCeiling = 10): string {
+// Same word-boundary safety net shortHeadline (activities/index.ts) already
+// applies to the deterministic path — a headline that came back a little
+// long from the AI still never gets cut into a dangling article/
+// preposition/modifier/modal/possessive, or an unresolved clause.
+// ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): this used to be its own,
+// separate, much weaker reimplementation (TRAILING_STOPWORDS only — none of
+// shortHeadline's later fixes ever ported over), even though this is a
+// genuinely live path: any AI-authored headline over hardCeiling words that
+// passes the structural + coherence checks below reaches this, not just a
+// rare fallback case. Now shares the one real implementation instead of
+// maintaining a second copy that can silently drift again.
+function capHeadlineLength(headline: string, maxWords = 6, hardCeiling = 10, knownNames: string[] = []): string {
+  // Preserves the original gate exactly: an AI-authored headline up to
+  // hardCeiling words passes through completely untouched (the AI was
+  // already asked for an appropriate length) — only a genuine outlier past
+  // that gets truncated at all, at which point it now gets the SAME
+  // safety-net truncateAtWordBoundary applies elsewhere, not a weaker copy.
   const words = headline.trim().split(/\s+/);
   if (words.length <= hardCeiling) return headline.trim();
-  let end = maxWords;
-  while (end < words.length && end < hardCeiling) {
-    const last = words[end - 1].replace(/[^a-zA-Z']/g, "").toLowerCase();
-    if (!TRAILING_STOPWORDS.has(last)) break;
-    end++;
-  }
-  return words.slice(0, end).join(" ").replace(/[:;,]+$/, "");
+  return truncateAtWordBoundary(headline, maxWords, hardCeiling, knownNames);
 }
 
 function buildLayoutPrompt(candidate: Candidate, eligible: TemplateId[], usedTodayCounts: Record<string, number>): string {
@@ -350,7 +361,7 @@ export async function buildNarrativeRenderCopy(
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
-        const headline = capHeadlineLength(parsed.headline);
+        const headline = capHeadlineLength(parsed.headline, 6, 10, athleteNames);
         // Structural checks (violates()) can't catch a headline that reads
         // as two unrelated facts stitched together — this is a semantic
         // judgment, made fresh, independent of whatever reasoning produced
