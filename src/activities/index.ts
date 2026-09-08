@@ -37,6 +37,7 @@ import { renderCardViaAi } from "../lib/renderChain";
 import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText, verifyPhotoSubject, verifyGenericPhotoSubject } from "../lib/cardTextQC";
 import { truncateAtWordBoundary } from "../lib/headlineTruncation";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "../lib/aiGatewayBudget";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
@@ -326,7 +327,20 @@ export async function checkDuplicateStory(
   primaryEntityName: string | null,
   postedLog: PostedLogEntry[]
 ): Promise<DuplicateStoryCheckResult> {
-  return duplicateStoryCheck(candidate, primaryEntityName, postedLog);
+  // ⛔ OPERATOR FIX (2026-09-08, real live incident): this is the one AI-
+  // gateway-calling function checks.ts can never wire the budget breaker
+  // into directly (importing aiGatewayBudget.ts there caused today's
+  // earlier workflow-bundling crash) — it was left completely unprotected
+  // and unrecorded when that import got reverted. Confirmed live: this
+  // pipeline's own S3-tracked spend showed $0.61/580 calls for the day
+  // while the real Vercel bill was $18 — this function's calls, invisible
+  // to both the tracker AND the budget cap, account for the gap. Gated and
+  // recorded here instead, one layer up, exactly as checks.ts's own header
+  // comment says to.
+  if (await isDailyBudgetExceeded()) return { pass: true, reason: null };
+  const result = await duplicateStoryCheck(candidate, primaryEntityName, postedLog);
+  recordGatewaySpend(result.costUsd);
+  return result;
 }
 
 export interface LinkVerification {
