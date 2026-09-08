@@ -14,6 +14,7 @@ import { Candidate, PageConfig } from "./types";
 import { buildCaption } from "./caption";
 import { fetchWithTimeout } from "./httpUtil";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { classifyCaptionAgeTone } from "./checks";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -213,6 +214,15 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
         ? "a real poll our own newsletter already asked its readers — the headline IS the real question, don't invent a result or outcome, frame this as inviting Threads readers to weigh in the same way"
         : "a news story"
     }`,
+    // ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): classifyCaptionAgeTone
+    // was already computed elsewhere (activities/index.ts's chooseTemplate,
+    // to pick the card's VISUAL layout) but never reached either text prompt
+    // — the caption could read with full present-tense urgency about a story
+    // the visual template was simultaneously rendering as a sepia "remember
+    // when" callback. Same signal, now threaded into the words too.
+    classifyCaptionAgeTone(candidate) === "retro"
+      ? `Timing: this is a genuinely OLD story — either evergreen archive content of unconfirmed age, or confirmed 6+ months old — being resurfaced as callback/banter content. Write it that way ("remember when", "on this day", "throwback to...") — NEVER present-tense urgency or as if this just happened.`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");

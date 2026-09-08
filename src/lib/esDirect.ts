@@ -161,6 +161,18 @@ export async function searchImages(query: string, type: "agency" | "custom" | "a
 const GENERIC_METADATA_RE = /^(getty images?|action images?|icon sportswire|imagn|reuters|ap photo|usa today|zuma press)$/i;
 const STOPWORD_TOKENS = new Set(["the", "and", "of", "for", "vs", "news"]);
 
+// ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): this only ever had MLB
+// and NBA — a structural no-op for every other page's photo-metadata check
+// (hasConflictingTeamMention returns false immediately when sportGroup has
+// no entry here). NFL and NHL are the two other major fixed-roster pro
+// leagues this pipeline covers; added for the same protection MLB/NBA
+// already had. Individual/limited-roster sports (Golf, MMA, Boxing, Tennis,
+// NASCAR, WWE, F1) have no "team" concept this check can apply to — their
+// photo-subject-conflict risk is a person-identity question, already
+// covered separately by verifyPhotoSubject's AI vision check, not this
+// text-based team-name check. College football (100+ FBS programs) is a
+// meaningfully larger, differently-shaped list and deliberately left as a
+// follow-up rather than hand-typed here without a source to verify against.
 const TEAM_NAMES_BY_SPORT: Record<string, string[]> = {
   MLB: [
     "yankees", "mets", "red sox", "dodgers", "phillies", "cubs", "braves", "astros",
@@ -173,6 +185,19 @@ const TEAM_NAMES_BY_SPORT: Record<string, string[]> = {
     "76ers", "sixers", "nuggets", "suns", "mavericks", "clippers", "grizzlies",
     "pelicans", "kings", "spurs", "thunder", "trail blazers", "blazers", "jazz",
     "timberwolves", "rockets", "hawks", "hornets", "magic", "pistons", "pacers", "raptors", "wizards", "cavaliers",
+  ],
+  NFL: [
+    "cardinals", "falcons", "ravens", "bills", "panthers", "bears", "bengals", "browns",
+    "cowboys", "broncos", "lions", "packers", "texans", "colts", "jaguars", "chiefs",
+    "raiders", "chargers", "rams", "dolphins", "vikings", "patriots", "saints", "giants",
+    "jets", "eagles", "steelers", "49ers", "niners", "seahawks", "buccaneers", "bucs", "titans", "commanders",
+  ],
+  NHL: [
+    "ducks", "bruins", "sabres", "flames", "hurricanes", "blackhawks", "avalanche",
+    "blue jackets", "stars", "red wings", "oilers", "panthers", "kings", "wild",
+    "canadiens", "predators", "devils", "islanders", "rangers", "senators", "flyers",
+    "penguins", "sharks", "kraken", "blues", "lightning", "maple leafs", "canucks",
+    "golden knights", "capitals", "jets", "coyotes", "utah hockey club", "mammoth",
   ],
 };
 
