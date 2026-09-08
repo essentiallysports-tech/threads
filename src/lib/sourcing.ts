@@ -14,6 +14,7 @@ import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./e
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
 import { fetchWithTimeout } from "./httpUtil";
 import { getPostContent } from "./beehiiv";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 // ⛔ OPERATOR FIX (2026-08-23, real live incident): today's removal of the
 // artificial 5-entity cap on sourceFromEsEvergreenArticles (a real coverage
@@ -685,6 +686,7 @@ const SAME_STORY_MODEL = "anthropic/claude-haiku-4-5";
 async function isSameRealStory(headlineA: string, headlineB: string): Promise<boolean> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return false;
+  if (await isDailyBudgetExceeded()) return false; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
   const prompt = [
     `Are these two headlines reporting on the EXACT SAME specific real-world event, not just the same person/team/topic in general?`,
     `Headline A: ${headlineA}`,
@@ -708,7 +710,8 @@ async function isSameRealStory(headlineA: string, headlineB: string): Promise<bo
       20_000
     );
     if (!res.ok) return false;
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return false;
     const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();

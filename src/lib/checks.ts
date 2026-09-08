@@ -6,6 +6,7 @@
 import { Candidate, PageConfig, PostedLogEntry } from "./types";
 import { fetchWithTimeout } from "./httpUtil";
 import { isCategoryPlaceholder } from "./renderSpec";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 // ⛔ OPERATOR FIX (2026-08-08, real live incident): a post's reply linked to
 // a random x.com tweet URL instead of ES's own content — "only ES article
@@ -1145,6 +1146,7 @@ async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines:
   // specific check must never cost the whole run's volume; a real link/
   // dedup incident is worse than an occasional missed semantic duplicate.
   if (!apiKey) return { duplicate: false };
+  if (await isDailyBudgetExceeded()) return { duplicate: false }; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
   const prompt = [
     `A sports fan page is about to post this NEW headline:`,
     `"${candidateHeadline}"`,
@@ -1171,7 +1173,8 @@ async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines:
       30_000
     );
     if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("AI gateway returned no text content");
     const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
