@@ -197,7 +197,34 @@ function stripLabelPrefix(headline: string): string {
 // extends word-by-word past maxWords (up to a hard ceiling) until it lands
 // on a real content word, or exhausts the headline. A slightly longer,
 // coherent line beats a shorter, broken one.
-function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: number): string {
+// ⛔ OPERATOR FIX (2026-09-08, real live incident): "Ryan Day Confirms Real
+// Reason Jeremiah" — cut right after "Jeremiah", leaving the first half of
+// "Jeremiah Smith" stranded with no surname. Not a clause-opener case (no
+// how/why/what involved) and not a dangling modifier/stopword either —
+// "Jeremiah" is a perfectly normal word to end on by every check above.
+// This is a DIFFERENT failure shape: severing a multi-word proper name in
+// half. A hardcoded list of first names would be the same whack-a-mole as
+// TRAILING_STOPWORDS/DANGLING_MODIFIERS/CLAUSE_OPENERS before it — instead,
+// this uses the REAL names the story is actually about (athleteNames,
+// already resolved by the time shortHeadline is called) to check whether
+// the cut lands mid-name, and if so extends exactly far enough to finish
+// THAT specific name (which may be more than 2 words, e.g. "Kyle Van
+// Noy") — grounded in this candidate's own real data, not a guessed list.
+function extensionToCompleteSplitName(words: string[], cutIndex: number, knownNames: string[]): number {
+  const endsWith = words.slice(0, cutIndex).join(" ").toLowerCase();
+  for (const name of knownNames) {
+    const nameWords = name.trim().split(/\s+/);
+    if (nameWords.length < 2) continue;
+    for (let k = 1; k < nameWords.length; k++) {
+      if (endsWith.endsWith(nameWords.slice(0, k).join(" ").toLowerCase())) {
+        return nameWords.length - k;
+      }
+    }
+  }
+  return 0;
+}
+
+function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: number, knownNames: string[] = []): string {
   const words = text.trim().split(/\s+/);
   if (words.length <= maxWords) return text.trim();
 
@@ -212,10 +239,14 @@ function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: num
     if (!TRAILING_STOPWORDS.has(last) && !DANGLING_MODIFIERS.has(last) && !endsInPunctuation) break;
     end++;
   }
+
+  const nameExtension = extensionToCompleteSplitName(words, end, knownNames);
+  if (nameExtension > 0) end = Math.min(end + nameExtension, hardCeiling, words.length);
+
   return words.slice(0, end).join(" ").replace(/[:;,]+$/, "");
 }
 
-function shortHeadline(headline: string, maxWords = 6): string {
+function shortHeadline(headline: string, maxWords = 6, knownNames: string[] = []): string {
   const quoted = extractQuotedPhrase(headline);
   if (quoted) return quoted; // complete quote, never truncated — a cut quote is worse than a longer one
 
@@ -229,7 +260,7 @@ function shortHeadline(headline: string, maxWords = 6): string {
     return clauseParts[0].trim();
   }
 
-  return truncateAtWordBoundary(withoutLabel, maxWords, maxWords + 6);
+  return truncateAtWordBoundary(withoutLabel, maxWords, maxWords + 6, knownNames);
 }
 
 // ⛔ OPERATOR FIX (2026-08-07, same incidents): `accent` was the last word of
@@ -874,7 +905,7 @@ export async function renderCard(
       // accent/kicker at all — only quote_text/quote_attribution, which stay
       // deterministic (extracted verbatim, never AI-paraphrased). Only the
       // comparison layout's copy is worth a real reasoning pass.
-      const comparisonHeadline = shortHeadline(candidate.headline);
+      const comparisonHeadline = shortHeadline(candidate.headline, 6, athleteNames);
       const copy = isQuote
         ? { headline: comparisonHeadline, accent: chooseAccentWord(comparisonHeadline), kicker, story_type: "quote exchange" }
         : await buildNarrativeRenderCopy(candidate, page, athleteNames, "comparison", {
@@ -960,7 +991,7 @@ export async function renderCard(
   // never a layout-dependent story-category label.
   const singleLayout: TemplateId = template === "comparison" || template === "quote" ? "standard_editorial" : template;
   const singleAccentHex = isTradeStory && singleLayout !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
-  const singleHeadline = shortHeadline(candidate.headline);
+  const singleHeadline = shortHeadline(candidate.headline, 6, athleteNames);
   const singleCopy = await buildNarrativeRenderCopy(candidate, page, athleteNames, singleLayout, {
     headline: singleHeadline,
     accent: chooseAccentWord(singleHeadline),
