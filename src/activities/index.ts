@@ -224,6 +224,16 @@ function extensionToCompleteSplitName(words: string[], cutIndex: number, knownNa
   return 0;
 }
 
+// ⛔ OPERATOR FIX (2026-09-08, real live incident): "...Silence on Tyson
+// Fury's" — the name-completion fix above correctly extended the cut from
+// "Tyson" to finish the name "Tyson Fury", but "Fury's" is a POSSESSIVE,
+// which demands a following noun ("Fury's Trilogy Callout") exactly the
+// same way a dangling modifier demands one — completing the NAME isn't the
+// same as completing the GRAMMAR built on top of it. A possessive ending
+// is unconditionally incomplete, no name list or clause-word list needed —
+// simpler and more general than either of the two fixes before it.
+const POSSESSIVE_RE = /['’]s$/;
+
 function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: number, knownNames: string[] = []): string {
   const words = text.trim().split(/\s+/);
   if (words.length <= maxWords) return text.trim();
@@ -236,12 +246,23 @@ function truncateAtWordBoundary(text: string, maxWords: number, hardCeiling: num
   while (end < words.length && end < hardCeiling) {
     const last = words[end - 1].replace(/[^a-zA-Z'-]/g, "").toLowerCase();
     const endsInPunctuation = /[:;,]$/.test(words[end - 1]);
-    if (!TRAILING_STOPWORDS.has(last) && !DANGLING_MODIFIERS.has(last) && !endsInPunctuation) break;
+    const endsInPossessive = POSSESSIVE_RE.test(words[end - 1]);
+    if (!TRAILING_STOPWORDS.has(last) && !DANGLING_MODIFIERS.has(last) && !endsInPunctuation && !endsInPossessive) break;
     end++;
   }
 
   const nameExtension = extensionToCompleteSplitName(words, end, knownNames);
   if (nameExtension > 0) end = Math.min(end + nameExtension, hardCeiling, words.length);
+
+  // Completing a split name can itself land on a possessive form of that
+  // SAME name ("Tyson" -> "Tyson Fury's") — one more bounded pass to catch
+  // that, and any stopword it might in turn expose.
+  while (end < words.length && end < hardCeiling) {
+    const last = words[end - 1].replace(/[^a-zA-Z'-]/g, "").toLowerCase();
+    const endsInPossessive = POSSESSIVE_RE.test(words[end - 1]);
+    if (!TRAILING_STOPWORDS.has(last) && !DANGLING_MODIFIERS.has(last) && !endsInPossessive) break;
+    end++;
+  }
 
   return words.slice(0, end).join(" ").replace(/[:;,]+$/, "");
 }
