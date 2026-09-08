@@ -2,11 +2,29 @@
 // exists instead of the old prose skill file. Every function here is a pure
 // function or a real HTTP call; nothing here is "ask the model to remember
 // to check this."
+//
+// ⛔ OPERATOR FIX (2026-09-08, real live incident, severe): dailyRunWorkflow.ts
+// imports this file DIRECTLY (not type-only, unlike its activities import) —
+// matchedEntityNames/matchedSportGroup run inside the workflow itself. That
+// means Temporal's own workflow-bundler (webpack, into an isolated VM
+// sandbox with no `document`/browser globals) pulls in EVERYTHING this file
+// imports, transitively. Adding `import { isDailyBudgetExceeded } from
+// "./aiGatewayBudget"` here (since reverted) dragged aiGatewayBudget.ts's
+// own `s3registry.ts` -> `@aws-sdk/client-s3` import into that bundle,
+// which resolved to an AWS SDK submodule expecting a browser environment
+// ("@smithy/core"'s event-streams browser build) — crashed the ENTIRE
+// worker on every single startup ("Automatic publicPath is not supported
+// in this browser"), not a per-candidate failure. NEVER import anything
+// here that itself imports fetchWithTimeout's siblings-with-real-I/O
+// (s3registry.ts, aiGatewayBudget.ts, any AWS/API-client-holding module)
+// at module scope — fetchWithTimeout itself is fine only because httpUtil.ts
+// has no such transitive dependency. If this file ever needs a budget
+// check again, gate it one layer up in activities/index.ts instead, which
+// is never bundled this way.
 
 import { Candidate, PageConfig, PostedLogEntry } from "./types";
 import { fetchWithTimeout } from "./httpUtil";
 import { isCategoryPlaceholder } from "./renderSpec";
-import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 // ⛔ OPERATOR FIX (2026-08-08, real live incident): a post's reply linked to
 // a random x.com tweet URL instead of ES's own content — "only ES article
@@ -1146,7 +1164,6 @@ async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines:
   // specific check must never cost the whole run's volume; a real link/
   // dedup incident is worse than an occasional missed semantic duplicate.
   if (!apiKey) return { duplicate: false };
-  if (await isDailyBudgetExceeded()) return { duplicate: false }; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
   const prompt = [
     `A sports fan page is about to post this NEW headline:`,
     `"${candidateHeadline}"`,
@@ -1173,8 +1190,7 @@ async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines:
       30_000
     );
     if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("AI gateway returned no text content");
     const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
