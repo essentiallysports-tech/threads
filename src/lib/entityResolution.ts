@@ -23,6 +23,7 @@
 
 import { Candidate, PageConfig } from "./types";
 import { fetchWithTimeout } from "./httpUtil";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -55,6 +56,7 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
 export async function extractEntityViaAI(candidate: Candidate, page: PageConfig): Promise<string | null | undefined> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return undefined;
+  if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const facts = [
     `Headline: ${candidate.headline}`,
@@ -96,7 +98,8 @@ export async function extractEntityViaAI(candidate: Candidate, page: PageConfig)
       console.error(`extractEntityViaAI: gateway ${res.status} for ${page.page_id}: ${(await res.text()).slice(0, 300)}`);
       return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
     }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return undefined;
 
@@ -134,6 +137,7 @@ export async function extractEntityViaAI(candidate: Candidate, page: PageConfig)
 export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfig, maxEntities = 2): Promise<string[] | undefined> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return undefined;
+  if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const facts = [
     `Headline: ${candidate.headline}`,
@@ -178,7 +182,8 @@ export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfi
       console.error(`extractEntitiesViaAI: gateway ${res.status} for ${page.page_id}: ${(await res.text()).slice(0, 300)}`);
       return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
     }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return undefined;
 

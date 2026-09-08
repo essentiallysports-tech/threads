@@ -12,7 +12,11 @@ const s3 = new S3Client({
 const BUCKET = process.env.S3_BUCKET || "essentiallysports-images-v2prod";
 const REGISTRY_PREFIX = "config/page-registry/";
 
-async function getObject(key: string): Promise<string | null> {
+// Exported for aiGatewayBudget.ts (real, cross-process spend tracking needs
+// the same durable store everything else here already uses) — every other
+// caller in this file keeps using its own domain-specific wrapper below,
+// never these two raw primitives directly.
+export async function getObject(key: string): Promise<string | null> {
   try {
     const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
     return await res.Body!.transformToString();
@@ -22,7 +26,7 @@ async function getObject(key: string): Promise<string | null> {
   }
 }
 
-async function putObject(key: string, body: string): Promise<void> {
+export async function putObject(key: string, body: string): Promise<void> {
   await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: body, ContentType: "application/json" }));
 }
 

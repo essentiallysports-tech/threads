@@ -13,6 +13,7 @@
 import { Candidate, PageConfig } from "./types";
 import { buildCaption } from "./caption";
 import { fetchWithTimeout } from "./httpUtil";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -138,6 +139,7 @@ function violatesPolicy(text: string, charLimit: number): string | null {
 }
 
 async function callGateway(prompt: string, apiKey: string): Promise<string> {
+  if (await isDailyBudgetExceeded()) throw new Error("AI gateway daily budget exceeded — see aiGatewayBudget.ts");
   const res = await fetchWithTimeout(
     GATEWAY_URL,
     {
@@ -153,7 +155,8 @@ async function callGateway(prompt: string, apiKey: string): Promise<string> {
     45_000
   );
   if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+  recordGatewaySpend(json.usage?.cost);
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
   return stripEmDashes(stripWrappingQuotesAndMarkdown(content));

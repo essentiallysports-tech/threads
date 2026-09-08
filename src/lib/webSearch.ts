@@ -14,6 +14,7 @@ import { xai } from "@ai-sdk/xai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { Candidate, PageConfig } from "./types";
 import { fetchWithTimeout, createLimiter } from "./httpUtil";
+import { isDailyBudgetExceeded } from "./aiGatewayBudget";
 
 // ⛔ OPERATOR FIX (2026-08-29, real live incident): see httpUtil.ts's
 // createLimiter comment for the full incident context. This file already
@@ -144,6 +145,7 @@ const ENTITY_BATCH_SIZE = 3;
 
 export async function sourceFromWebSearch(page: PageConfig, dateISO: string): Promise<Candidate[]> {
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return [];
+  if (await isDailyBudgetExceeded()) return []; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const entityNames = page.entities.map((e) => e.name);
   const sportTerm = page.sport_groups[0] ? ` ${page.sport_groups[0]}` : "";
@@ -219,6 +221,7 @@ const EVERGREEN_ANGLE_QUERIES = [
 
 export async function sourceFromEvergreenWebSearch(page: PageConfig, dateISO: string): Promise<Candidate[]> {
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return [];
+  if (await isDailyBudgetExceeded()) return []; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const entityNames = page.entities.map((e) => e.name);
   if (entityNames.length === 0) return [];
@@ -374,11 +377,13 @@ async function runSearchTool(model: string, tools: any, query: string, maxResult
 
 export async function grokWebSearch(query: string, maxResults = 8, evergreen = false): Promise<SearchResult[]> {
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return [];
+  if (await isDailyBudgetExceeded()) return [];
   return runSearchTool(GROK_MODEL, { web_search: xai.tools.webSearch({}) }, query, maxResults, evergreen);
 }
 
 export async function claudeWebSearch(query: string, maxResults = 8, evergreen = false): Promise<SearchResult[]> {
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return [];
+  if (await isDailyBudgetExceeded()) return [];
   return runSearchTool(CLAUDE_MODEL, { web_search: anthropic.tools.webSearch_20250305({}) }, query, maxResults, evergreen);
 }
 
@@ -536,6 +541,7 @@ export async function factCheckClaim(candidate: Candidate): Promise<FactCheckRes
   if (microserviceResult !== null) return microserviceResult;
 
   if (!process.env.VERCEL_AI_GATEWAY_KEY) return { verified: true, reason: "no_gateway_key_skip" };
+  if (await isDailyBudgetExceeded()) return { verified: true, reason: "daily_ai_budget_exceeded_skip" };
 
   const prompt = [
     `Fact-check this sports headline using live web search: "${candidate.headline}"`,

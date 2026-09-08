@@ -23,6 +23,7 @@
 // checks) rather than a second, separate API round-trip.
 
 import { fetchWithTimeout } from "./httpUtil";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -41,6 +42,7 @@ export async function verifyCardText(
 ): Promise<CardTextQCResult> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return { pass: true, reason: null }; // can't verify without a key — a missing check shouldn't block every post
+  if (await isDailyBudgetExceeded()) return { pass: true, reason: null }; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
     `Look at this sports infographic card image. The text it was SUPPOSED to render is:`,
@@ -84,7 +86,8 @@ export async function verifyCardText(
       console.error(`verifyCardText: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
       return { pass: true, reason: null }; // verification infra failure — don't block posting over it
     }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = (json.choices?.[0]?.message?.content || "").trim();
     if (/^PASS/i.test(content)) return { pass: true, reason: null };
     return { pass: false, reason: content.slice(0, 200) || "FAIL: no reason given" };
@@ -135,6 +138,7 @@ export async function verifyPhotoSubject(imageUrl: string, subjectName: string):
 async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string): Promise<boolean> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
+  if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
     `This photo was found by searching a sports media library for "${subjectName}".`,
@@ -161,7 +165,8 @@ async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string)
       console.error(`verifyPhotoSubject: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
       return true; // verification infra failure — don't block posting over it
     }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    recordGatewaySpend(json.usage?.cost);
     const content = (json.choices?.[0]?.message?.content || "").trim();
     return /^PASS/i.test(content);
   } catch (e) {

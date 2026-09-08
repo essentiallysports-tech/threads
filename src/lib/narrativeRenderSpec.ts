@@ -17,6 +17,7 @@ import { Candidate, PageConfig } from "./types";
 import { TemplateId } from "./renderSpec";
 import { fetchWithTimeout } from "./httpUtil";
 import { isGenericFramingText } from "./checks";
+import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const MODEL = "anthropic/claude-haiku-4-5";
@@ -55,6 +56,13 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
 }
 
 async function callGateway(prompt: string, apiKey: string): Promise<string> {
+  // ⛔ OPERATOR FIX (2026-09-08, real live incident): checked here once,
+  // covers all four callers of this shared helper — see aiGatewayBudget.ts.
+  // Throwing (rather than returning a sentinel) means every existing
+  // caller's own catch block already handles this exactly like any other
+  // gateway failure, falling back to its own deterministic default with no
+  // per-call-site change needed.
+  if (await isDailyBudgetExceeded()) throw new Error("AI gateway daily budget exceeded — see aiGatewayBudget.ts");
   const res = await fetchWithTimeout(
     GATEWAY_URL,
     {
@@ -70,7 +78,8 @@ async function callGateway(prompt: string, apiKey: string): Promise<string> {
     45_000
   );
   if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+  recordGatewaySpend(json.usage?.cost);
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
   return stripWrappingQuotesAndMarkdown(content);
