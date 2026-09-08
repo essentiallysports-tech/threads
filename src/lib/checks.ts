@@ -1172,6 +1172,7 @@ export function dominantNarrativeCheck(
 export interface DuplicateStoryCheckResult {
   pass: boolean;
   reason: string | null;
+  costUsd?: number;
 }
 
 const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
@@ -1182,7 +1183,7 @@ const AI_GATEWAY_MODEL = "anthropic/claude-haiku-4-5";
 // than it.
 const DUPLICATE_STORY_WINDOW_HOURS = 72;
 
-async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string }> {
+async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   // Fail OPEN, same policy as every other AI-judgment gate in this pipeline
   // (isCoherentHeadlineViaAI, factCheckClaim) — an infra hiccup on this
@@ -1215,12 +1216,20 @@ async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines:
       30_000
     );
     if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("AI gateway returned no text content");
     const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
     const parsed = JSON.parse(cleaned);
-    return { duplicate: parsed?.duplicate === true, matched: parsed?.matched };
+    // ⛔ OPERATOR NOTE (2026-09-08): this is the one AI-gateway-calling
+    // function in this file that can never call recordGatewaySpend/
+    // isDailyBudgetExceeded directly — importing aiGatewayBudget.ts here
+    // is what caused today's earlier workflow-bundling crash (see this
+    // file's own header comment). costUsd is plain data (just reading a
+    // JSON field, no unsafe import needed) — the caller (activities/
+    // index.ts's checkDuplicateStory, activity-side, safe to import
+    // anything) does the actual budget-check-before/record-spend-after.
+    return { duplicate: parsed?.duplicate === true, matched: parsed?.matched, costUsd: json.usage?.cost };
   } catch (e) {
     console.error(`isDuplicateStoryViaAI: failed, treating as not-duplicate: ${(e as Error).message}`);
     return { duplicate: false };
@@ -1244,9 +1253,13 @@ export async function duplicateStoryCheck(
     recentSameEntity.map((p) => p.headline!)
   );
   if (result.duplicate) {
-    return { pass: false, reason: `DUPLICATE_STORY_SAME_EVENT:${primaryEntityName}${result.matched ? `:${result.matched}`.slice(0, 100) : ""}` };
+    return {
+      pass: false,
+      reason: `DUPLICATE_STORY_SAME_EVENT:${primaryEntityName}${result.matched ? `:${result.matched}`.slice(0, 100) : ""}`,
+      costUsd: result.costUsd,
+    };
   }
-  return { pass: true, reason: null };
+  return { pass: true, reason: null, costUsd: result.costUsd };
 }
 
 // ⛔ OPERATOR FIX (2026-08-07): "vague things should never go out, it must
