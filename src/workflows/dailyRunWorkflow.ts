@@ -829,6 +829,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
       .sort((a, b) => a.postedTodayCount - b.postedTodayCount);
     if (eligible.length === 0) break; // every remaining page is genuinely exhausted — nothing left to repair
 
+    const postedBeforePass = totalPostedThisRun();
     await mapWithConcurrency(eligible, PAGE_CONCURRENCY, async (state) => {
       // Only the real, run-wide safety valves stop a DISPATCHED page from
       // getting its attempt — never the shard-wide MIN_POSTS_PER_RUN total,
@@ -847,6 +848,24 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         state.attemptFailures.push(`SOURCING_ERROR:${(e as Error).message?.slice(0, 200)}`);
       }
     });
+
+    // ⛔ OPERATOR FIX (2026-09-08, real live incident): a repair pass that
+    // adds zero new posts across EVERY eligible page is strong evidence
+    // there's genuinely nothing more to find right now, not a transient
+    // blip worth retrying — sourceCandidatePool's own web-search/evergreen
+    // tiers make real, billed AI-gateway calls on every single invocation
+    // regardless of whether anything usable comes back, so re-running the
+    // SAME full sourcing pipeline for the SAME exhausted pages up to
+    // MAX_REPAIR_PASSES (5) times, every hourly run, is pure repeated spend
+    // with no chance of a different outcome. Confirmed live: 73 runs hit
+    // repairPassesUsed:5 in well under a day right after the AI Gateway key
+    // was fixed (it had been silently free while that key was broken) —
+    // the exact same floor-chasing pattern the 2026-08-31 cost incident
+    // diagnosed and flagged as needing this circuit-breaker, never built
+    // until now. Same principle as this pipeline's own "don't force it"
+    // rule for content relevance: a pass finding nothing is a correct
+    // signal to stop, not a reason to try again hoping for luck.
+    if (totalPostedThisRun() === postedBeforePass) break;
   }
 
   for (const state of states) {
