@@ -679,8 +679,21 @@ const NON_ENGLISH_DIACRITIC_RE = /[áéíóúñüàèìòùâêîôûçäöëï�
 // is enough to reject, no threshold needed.
 const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿]/;
 
+// ⛔ OPERATOR FIX (2026-09-09, real live incident): sourceFromEsArticles (and
+// other tiers) set subject/headline/rawText to the SAME title string for a
+// plain es_article candidate — concatenating all three below counted every
+// diacritic in that one title up to 3x, so a single legitimate accented word
+// ("fiancée") alone crossed the >=2 threshold and got a fully English
+// candidate wrongly rejected as non-English content. Confirmed live: two
+// clearly-English Cowboys stories ("...estranged fiancée...") dropped this
+// way in one run, on a page that otherwise had real content to post.
+// Deduping to the distinct text fields first restores the ">=2 DISTINCT
+// accented mentions" intent this threshold was designed around (see the
+// comment above NON_ENGLISH_DIACRITIC_RE) without weakening it for sources
+// where subject/headline/rawText genuinely differ.
 export function isNonEnglishContent(candidate: Candidate): boolean {
-  const text = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`;
+  const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
+  const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
   const matches = text.match(NON_ENGLISH_DIACRITIC_RE);
   return (matches?.length || 0) >= 2;
