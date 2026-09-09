@@ -183,3 +183,37 @@ export async function getAllEvergreenAngles(): Promise<EvergreenAngle[]> {
   }
 }
 
+// ⛔ OPERATOR FIX (2026-09-09, real live incident, p37 "Purple & Gold
+// Pride"): confirmed live via pm2 logs — the exact same candidate (a Jeanie
+// Buss story, key stable across runs since es_article keys are the URL slug,
+// see sourceFromEsArticles) kept getting re-sourced and re-attempted EVERY
+// single hourly run, failing every time for the same structural reasons
+// (wrong reference photo — a male player instead of Jeanie Buss — safety-
+// rejected by OpenArt/OpenAI, or an incoherent headline). 49 distinct
+// OpenArt historyIds, all this one story, across the retained log —
+// sourceCandidatePoolForPage has no memory of a candidate that has already
+// proven it can't render, so it just keeps costing real wall-clock and
+// image-gen credits forever. This durable per-page counter lets renderCard
+// (activities/index.ts) record a failure each time a candidate's render/QC
+// chain comes back empty, and sourceCandidatePoolForPage (sourcing.ts)
+// exclude a candidate once it's failed too many times — see
+// RENDER_FAILURE_EXCLUDE_THRESHOLD there for why a single bad run still
+// gets retried.
+export async function getRenderFailureCounts(pageId: string): Promise<Record<string, number>> {
+  const raw = await getObject(`pool/render_failures_${pageId}.json`);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, number>) : {};
+  } catch (e) {
+    console.error(`getRenderFailureCounts: malformed JSON for ${pageId}, treating as empty: ${(e as Error).message}`);
+    return {};
+  }
+}
+
+export async function recordRenderFailure(pageId: string, candidateKey: string): Promise<void> {
+  const counts = await getRenderFailureCounts(pageId);
+  counts[candidateKey] = (counts[candidateKey] || 0) + 1;
+  await putObject(`pool/render_failures_${pageId}.json`, JSON.stringify(counts, null, 2));
+}
+

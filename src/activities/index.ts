@@ -4,7 +4,7 @@
 // is wrapped here and invoked from the workflow via proxyActivities.
 
 import { PageConfig, Candidate, PostedLogEntry, PageRunResult, TemplateId } from "../lib/types";
-import { loadActiveThreadsPages, getPostedLog, appendPostedLog, writeDryRunResult } from "../lib/s3registry";
+import { loadActiveThreadsPages, getPostedLog, appendPostedLog, writeDryRunResult, recordRenderFailure } from "../lib/s3registry";
 import { sourceFromNewsletter, sourceFromSharedPool, shouldSourceFromNewsletter, sourceCandidatePoolForPage } from "../lib/sourcing";
 import { factCheckClaim } from "../lib/webSearch";
 import {
@@ -706,7 +706,7 @@ async function renderAndVerifyText(spec: RenderSpec, pageId: string): Promise<st
 // lean on) — a simple consecutive-capitalized-words heuristic pulls that
 // out directly from the text actually being posted about, which is a far
 // better search term than the page's own static theme description.
-export async function renderCard(
+async function renderCardInner(
   candidate: Candidate,
   page: PageConfig,
   athleteNames: string[],
@@ -975,6 +975,34 @@ export async function renderCard(
   const cardUrl = await renderAndVerifyText(spec, page.page_id);
   if (!cardUrl) return { cardUrl: null, template: null, resolvedEntity: null };
   return { cardUrl, template: singleLayout, resolvedEntity: searchTerms[0] || null, sourcePhotoUrl: photo || genericPhoto || null };
+}
+
+// ⛔ OPERATOR FIX (2026-09-09, real live incident, p37 "Purple & Gold
+// Pride"): thin wrapper around renderCardInner (the real logic, unchanged)
+// so every terminal "couldn't make a card for this candidate" verdict —
+// wrong/missing photo, safety-rejected render, incoherent headline, all of
+// renderCardInner's several internal `return { cardUrl: null, ... }` points
+// — gets recorded in ONE place, keyed by the candidate's own stable key,
+// instead of instrumenting each internal return site separately.
+// sourceCandidatePoolForPage (sourcing.ts) reads this same counter to stop
+// re-surfacing a candidate that has already proven it can't render. A
+// thrown exception (a transient AWS/network blip) deliberately does NOT
+// count — only a clean, considered null verdict from the function itself
+// does, so a random hiccup can't get a genuinely postable story excluded.
+export async function renderCard(
+  candidate: Candidate,
+  page: PageConfig,
+  athleteNames: string[],
+  postedLog: PostedLogEntry[],
+  dateISO: string
+): Promise<RenderCardResult> {
+  const result = await renderCardInner(candidate, page, athleteNames, postedLog, dateISO);
+  if (!result.cardUrl) {
+    await recordRenderFailure(page.page_id, candidate.key).catch((e) =>
+      console.error(`renderCard: recordRenderFailure failed for ${page.page_id}/${candidate.key}: ${(e as Error).message}`)
+    );
+  }
+  return result;
 }
 
 export async function postToThreads(
