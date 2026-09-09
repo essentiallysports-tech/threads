@@ -21,6 +21,7 @@ import {
   matchedSportGroup,
   matchedEntityNames,
   realRegisteredEntityMatches,
+  hasUnaccountedOtherName,
   extractSimilarPlayerName,
   extractNameFromArticle,
   isGenericFramingText,
@@ -728,7 +729,17 @@ async function renderCardInner(
   // there's no guaranteed-real match, regardless of what the regex fallback
   // guessed — matching the actual operator directive.
   const realMatches = realRegisteredEntityMatches(candidate, page, { includeRawText: false });
-  const hasRealEntityMatch = realMatches.length > 0;
+  // ⛔ OPERATOR FIX (2026-09-10, real live incident): a real registered hit
+  // used to be trusted unconditionally here — see hasUnaccountedOtherName's
+  // own comment (checks.ts) for the two live wrong-photo incidents (Jimmie
+  // Johnson posted with Dale Earnhardt's photo; a LeBron James contract
+  // story posted with Kobe Bryant's photo) this closes. When some OTHER
+  // plausible name in the headline isn't covered by our match, the
+  // registered hit isn't confidently the real photo subject — fall through
+  // to extractEntitiesViaAI below exactly as if there'd been no real match
+  // at all, the same tool already trusted to pick the right entity when
+  // regex alone can't.
+  const hasRealEntityMatch = realMatches.length > 0 && !hasUnaccountedOtherName(candidate, realMatches);
   // ⛔ OPERATOR ARCHITECTURE CHANGE (2026-08-11): "deterministic code isn't
   // able to choose which entity to pick from... claude has full context so
   // that can easily pick up what entity is needed." Tried BEFORE the regex

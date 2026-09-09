@@ -523,6 +523,49 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   return matched;
 }
 
+// ⛔ OPERATOR FIX (2026-09-10, real live incident): renderCard (activities/
+// index.ts) skips its AI-based entity extraction entirely whenever
+// realRegisteredEntityMatches finds ANY real registered hit — but a
+// registered legend/team can appear in a headline as a comparison point or
+// acting party while a DIFFERENT, non-registered, more specific name is the
+// story's real subject and the only sensible photo. Confirmed live twice in
+// one night: p46 (Vintage NASCAR Vault — registers Petty/Earnhardt/Allison/
+// Pearson/Yarborough, NOT Jimmie Johnson) posted "Why Does Jimmie Johnson
+// Keep Coming Back to the Daytona 500? To Partly Prove to Dale Earnhardt
+// Jr. He Still Can" with a photo of Dale EARNHARDT (via the registered
+// match) — Jimmie Johnson is who the story is actually about. p37 (Purple &
+// Gold Pride) posted "Insider Explains Why Lakers Are Yet to Offer LeBron
+// James Contract" with a photo of KOBE BRYANT, because the registered match
+// was the generic team name "Lakers" rather than the headline's real,
+// specific, photographable subject. Neither is the earlier-fixed "buried
+// behind other subjects" shape above (checked by POSITION) — Earnhardt
+// trails Jimmie Johnson in the sentence, but Lakers LEADS LeBron James — so
+// this checks for ANY other plausible name anywhere in the headline that
+// our match doesn't already cover, not just names appearing before it. When
+// one exists, the registered hit isn't confidently the right photo subject
+// on its own; the caller should consult extractEntitiesViaAI (built exactly
+// for this judgment call, see its own 2026-08-11 comment) instead of
+// trusting the regex match blind.
+//
+// Reuses extractSimilarPlayerName's own single best-guess rather than
+// re-scanning every proper-noun-shaped pair in the headline: a raw
+// PROPER_NOUN_RE_2 scan also matches ordinary title-case word pairs with no
+// name in them at all ("Car Sells", "Record Price" in "Dale Earnhardt's
+// Iconic Number 3 Car Sells for Record Price at Auction"), which would have
+// flagged that single-subject Earnhardt story as ambiguous too and sent
+// every candidate through an unnecessary extra AI call. extractSimilarPlayerName
+// already carries the stopword/lead-word filtering built up across this
+// project's several "regex guessed a fake name" incidents, so it stays
+// silent on a genuinely single-subject headline even when it can't name the
+// SPECIFIC competing name correctly (e.g. "Insider Explains" for the LeBron
+// James/Kobe incident below) — a wrong guess still correctly signals "don't
+// trust the registered match blind," which is all this needs it for.
+export function hasUnaccountedOtherName(candidate: Candidate, matchedNames: string[]): boolean {
+  const guess = extractSimilarPlayerName(candidate);
+  if (!guess) return false;
+  return !matchedNames.some((m) => guess.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(guess.toLowerCase()));
+}
+
 export function matchedEntityNames(candidate: Candidate, page: PageConfig, opts: { includeRawText?: boolean } = {}): string[] {
   // ⛔ OPERATOR REVERSAL (2026-08-15, real live incident, severe): the
   // 2026-08-10 "same-sport, different real player" fallback below (removed)
