@@ -9,7 +9,7 @@ import {
   realRegisteredEntityMatches,
   computeNationalStoryScore,
 } from "./checks";
-import { getSharedPool, getAllEvergreenAngles, EvergreenAngle } from "./s3registry";
+import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
 import { fetchWithTimeout } from "./httpUtil";
@@ -1184,5 +1184,24 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // never the common one, and it directly bounds per-page payload size
   // regardless of how many tiers or angle-variants run in the future.
   const MAX_CANDIDATES_PER_PAGE = 20;
-  return deduped.slice(0, MAX_CANDIDATES_PER_PAGE);
+
+  // ⛔ OPERATOR FIX (2026-09-09, real live incident, p37 "Purple & Gold
+  // Pride"): a candidate whose render has already failed repeatedly (wrong
+  // photo, safety-rejected image, incoherent headline) has a STABLE key
+  // (es_article keys are the URL slug — see pickAngle above) so it comes
+  // right back in this same pool every single hourly run, forever, with
+  // nothing about it having changed. 3 strikes tolerates a real transient
+  // blip (a one-off OpenArt hiccup) without giving up on a genuinely postable
+  // story, while stopping the indefinite retry loop confirmed live (49
+  // distinct OpenArt attempts, all the same story) that was burning real
+  // wall-clock and image-gen credits every run. See recordRenderFailure
+  // (activities/index.ts's renderCard wrapper) for where this gets written.
+  const RENDER_FAILURE_EXCLUDE_THRESHOLD = 3;
+  const renderFailureCounts = await getRenderFailureCounts(page.page_id).catch((e) => {
+    console.error(`sourceCandidatePoolForPage: getRenderFailureCounts failed for ${page.page_id}: ${(e as Error).message}`);
+    return {} as Record<string, number>;
+  });
+  const renderable = deduped.filter((c) => (renderFailureCounts[c.key] || 0) < RENDER_FAILURE_EXCLUDE_THRESHOLD);
+
+  return renderable.slice(0, MAX_CANDIDATES_PER_PAGE);
 }

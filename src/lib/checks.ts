@@ -1345,11 +1345,30 @@ export function requiresNamedEntity(candidate: Candidate, page: PageConfig, matc
   // single "flagship" to prefer over teammates, so this only tightens
   // page_type "entity" (one-athlete) pages, and only requires the match
   // include the page's OWN highest-weight entity, not exclusively it.
+  // ⛔ OPERATOR FIX (2026-09-09, real live incident): the flagship
+  // requirement above was built for a TRUE single-athlete page (p54: McGregor
+  // weight 40 vs Islam weight 10, a 4x gap — one real subject, others
+  // registered only for crossover context) — but page_type "entity" also
+  // covers genuinely multi-person roster/vault pages that just aren't
+  // literally labeled "regional" (confirmed live: Vintage NASCAR Vault,
+  // weights 25/22/18/18/17 — Petty, Earnhardt Sr., Allison, Pearson,
+  // Yarborough are co-equal legends, not one flagship plus supporting cast).
+  // A real, on-topic "Bobby Allison's racing legacy" story was rejected
+  // NO_NAMED_ENTITY purely because it didn't ALSO mention Richard Petty
+  // (the highest-weight entry, arbitrarily). The comment above already says
+  // the intent was "a roster has no single flagship to prefer over
+  // teammates" — this just makes the code actually detect that shape instead
+  // of assuming every "entity" page_type is single-athlete-shaped. A clear
+  // weight gap (2x+) is what a true flagship looks like in the two real
+  // incidents on file (p54's 4x vs this page's 1.14x) — anything closer is a
+  // co-equal roster, same as an explicitly "regional" page already is.
   if (page.page_type === "entity") {
-    const maxWeight = Math.max(...page.entities.map((e) => e.weight));
+    const weights = page.entities.map((e) => e.weight).sort((a, b) => b - a);
+    const hasTrueFlagship = weights.length === 1 || weights[0] >= 2 * weights[1];
+    if (!hasTrueFlagship) return matchedNames.length === 0;
     const flagshipKeywords = new Set(
       page.entities
-        .filter((e) => e.weight === maxWeight)
+        .filter((e) => e.weight === weights[0])
         .flatMap((e) => (e.keywords.length > 0 ? e.keywords : [e.name]))
         .map((k) => k.toLowerCase())
     );
