@@ -69,6 +69,38 @@ const WEB_SEARCH_MICROSERVICE_API_KEY = process.env.WEB_SEARCH_MICROSERVICE_API_
 // pattern a fourth time.
 const limitMicroservice = createLimiter(10);
 
+// ⛔ OPERATOR FIX (2026-09-09, cost audit): microserviceWebSearch/
+// microserviceFactCheck treated a 429 exactly like any other failure — an
+// immediate, permanent "no answer" that sends this call down the MUCH more
+// expensive Claude/Grok web-search-grounded AI-gateway fallback path
+// (confirmed live: HTTP 429 on this microservice immediately followed by a
+// real, billed AI-gateway call for the same query). A 429 specifically
+// means "slow down, try again shortly," not "this can never succeed" — one
+// bounded retry, honoring Retry-After when the microservice sends one,
+// recovers a real fraction of these onto the cheap path instead of
+// unconditionally escalating to the costly one, for the exact same
+// verification, not a lower bar. Deliberately just ONE retry (not a full
+// backoff loop) — this only helps a genuine rate-limit blip; a sustained
+// overload needs the concurrency limiter above and callers' own fail-open
+// policy, not this call looping on its own.
+const MICROSERVICE_RETRY_DEFAULT_MS = 1500;
+const MICROSERVICE_RETRY_MAX_MS = 5000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchMicroserviceWithRetry(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const first = await fetchWithTimeout(url, init, timeoutMs);
+  if (first.status !== 429) return first;
+
+  const retryAfterSeconds = Number(first.headers.get("retry-after"));
+  const delayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.min(retryAfterSeconds * 1000, MICROSERVICE_RETRY_MAX_MS) : MICROSERVICE_RETRY_DEFAULT_MS;
+  console.error(`fetchMicroserviceWithRetry: 429 for ${url}, retrying once after ${delayMs}ms`);
+  await sleep(delayMs);
+  return fetchWithTimeout(url, init, timeoutMs);
+}
+
 interface MicroserviceResultItem {
   title?: string;
   url?: string;
@@ -86,7 +118,7 @@ async function microserviceWebSearch(query: string, maxResults: number): Promise
 
   try {
     const res = await limitMicroservice(() =>
-      fetchWithTimeout(
+      fetchMicroserviceWithRetry(
         `${WEB_SEARCH_MICROSERVICE_URL}/search`,
         {
           method: "POST",
@@ -497,7 +529,7 @@ async function microserviceFactCheck(candidate: Candidate): Promise<FactCheckRes
 
   try {
     const res = await limitMicroservice(() =>
-      fetchWithTimeout(
+      fetchMicroserviceWithRetry(
         `${WEB_SEARCH_MICROSERVICE_URL}/research`,
         {
           method: "POST",
