@@ -26,7 +26,12 @@
 // acceptable trade for not adding a new shared-lock dependency.
 import { getObject, putObject } from "./s3registry";
 
-const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 8);
+// ⛔ OPERATOR FIX (2026-09-09): raised 8 -> 9 per explicit operator target
+// ("costs to be kept under 10$ a day") — the external Vercel-side cap this
+// margin sits below is $10 (see this file's own header comment); $9 keeps
+// a $1 margin instead of $2, trading a little safety margin for a little
+// more real fill-rate/quality-check budget per day.
+const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 9);
 const SPEND_KEY_PREFIX = "pool/ai_gateway_spend_";
 const REFRESH_INTERVAL_MS = 60_000; // re-check S3 (for the OTHER worker process's spend) at most once/minute — every call re-fetching would be its own waste
 
