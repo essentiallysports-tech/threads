@@ -523,6 +523,49 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   return matched;
 }
 
+// ⛔ OPERATOR FIX (2026-09-10, real live incident): renderCard (activities/
+// index.ts) skips its AI-based entity extraction entirely whenever
+// realRegisteredEntityMatches finds ANY real registered hit — but a
+// registered legend/team can appear in a headline as a comparison point or
+// acting party while a DIFFERENT, non-registered, more specific name is the
+// story's real subject and the only sensible photo. Confirmed live twice in
+// one night: p46 (Vintage NASCAR Vault — registers Petty/Earnhardt/Allison/
+// Pearson/Yarborough, NOT Jimmie Johnson) posted "Why Does Jimmie Johnson
+// Keep Coming Back to the Daytona 500? To Partly Prove to Dale Earnhardt
+// Jr. He Still Can" with a photo of Dale EARNHARDT (via the registered
+// match) — Jimmie Johnson is who the story is actually about. p37 (Purple &
+// Gold Pride) posted "Insider Explains Why Lakers Are Yet to Offer LeBron
+// James Contract" with a photo of KOBE BRYANT, because the registered match
+// was the generic team name "Lakers" rather than the headline's real,
+// specific, photographable subject. Neither is the earlier-fixed "buried
+// behind other subjects" shape above (checked by POSITION) — Earnhardt
+// trails Jimmie Johnson in the sentence, but Lakers LEADS LeBron James — so
+// this checks for ANY other plausible name anywhere in the headline that
+// our match doesn't already cover, not just names appearing before it. When
+// one exists, the registered hit isn't confidently the right photo subject
+// on its own; the caller should consult extractEntitiesViaAI (built exactly
+// for this judgment call, see its own 2026-08-11 comment) instead of
+// trusting the regex match blind.
+//
+// Reuses extractSimilarPlayerName's own single best-guess rather than
+// re-scanning every proper-noun-shaped pair in the headline: a raw
+// PROPER_NOUN_RE_2 scan also matches ordinary title-case word pairs with no
+// name in them at all ("Car Sells", "Record Price" in "Dale Earnhardt's
+// Iconic Number 3 Car Sells for Record Price at Auction"), which would have
+// flagged that single-subject Earnhardt story as ambiguous too and sent
+// every candidate through an unnecessary extra AI call. extractSimilarPlayerName
+// already carries the stopword/lead-word filtering built up across this
+// project's several "regex guessed a fake name" incidents, so it stays
+// silent on a genuinely single-subject headline even when it can't name the
+// SPECIFIC competing name correctly (e.g. "Insider Explains" for the LeBron
+// James/Kobe incident below) — a wrong guess still correctly signals "don't
+// trust the registered match blind," which is all this needs it for.
+export function hasUnaccountedOtherName(candidate: Candidate, matchedNames: string[]): boolean {
+  const guess = extractSimilarPlayerName(candidate);
+  if (!guess) return false;
+  return !matchedNames.some((m) => guess.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(guess.toLowerCase()));
+}
+
 export function matchedEntityNames(candidate: Candidate, page: PageConfig, opts: { includeRawText?: boolean } = {}): string[] {
   // ⛔ OPERATOR REVERSAL (2026-08-15, real live incident, severe): the
   // 2026-08-10 "same-sport, different real player" fallback below (removed)
@@ -679,8 +722,21 @@ const NON_ENGLISH_DIACRITIC_RE = /[áéíóúñüàèìòùâêîôûçäöëï�
 // is enough to reject, no threshold needed.
 const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿]/;
 
+// ⛔ OPERATOR FIX (2026-09-09, real live incident): sourceFromEsArticles (and
+// other tiers) set subject/headline/rawText to the SAME title string for a
+// plain es_article candidate — concatenating all three below counted every
+// diacritic in that one title up to 3x, so a single legitimate accented word
+// ("fiancée") alone crossed the >=2 threshold and got a fully English
+// candidate wrongly rejected as non-English content. Confirmed live: two
+// clearly-English Cowboys stories ("...estranged fiancée...") dropped this
+// way in one run, on a page that otherwise had real content to post.
+// Deduping to the distinct text fields first restores the ">=2 DISTINCT
+// accented mentions" intent this threshold was designed around (see the
+// comment above NON_ENGLISH_DIACRITIC_RE) without weakening it for sources
+// where subject/headline/rawText genuinely differ.
 export function isNonEnglishContent(candidate: Candidate): boolean {
-  const text = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`;
+  const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
+  const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
   const matches = text.match(NON_ENGLISH_DIACRITIC_RE);
   return (matches?.length || 0) >= 2;
@@ -1142,7 +1198,27 @@ export function dominantNarrativeCheck(
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   const entityCount = last7d.filter((p) => p.entity === primaryEntityName).length;
-  if ((entityCount + 1) / (last7d.length + 1) > 0.25) {
+  // ⛔ OPERATOR FIX (2026-09-09, real live incident): the +1/+1 Laplace
+  // smoothing here was meant to be lenient near the sample-size floor above,
+  // but it does the opposite — at exactly the 4-7 post volumes several real
+  // pages are running at, it turns "genuinely under 25%" into a rejection.
+  // Confirmed live: Dallas Cowboys (p41) had 5 posts in its last 7d window,
+  // 4 different entities at 1-2 posts each — smoothed, EVERY one of them
+  // read as >25% ((1+1)/(5+1)=0.333, (2+1)/(5+1)=0.5), so every fresh,
+  // distinct, real candidate about any of them was rejected. With nothing
+  // posting to grow the denominator, the cap never releases on its own —
+  // a permanent self-reinforcing deadlock, not a transient content drought
+  // (44+ hours with zero posts despite 7+ distinct passing-content
+  // candidates sourced across 3 separate hourly runs). Baltimore Ravens
+  // (p48) showed the same distortion: derrick henry and zay flowers both
+  // legitimately under 25% raw (0.222) but smoothed over it (0.300).
+  // The raw ratio is what the rule's own stated intent ("more than ~25% of
+  // a page's posts") actually means; the >=4-post floor above already
+  // excludes samples too small to trust, so no extra smoothing is needed
+  // on top of it. Genuine dominance (LSU's lane kiffin at a real 40%, ryan
+  // day at a real 75%) stays capped exactly the same under the raw ratio —
+  // only the false positives created by the smoothing go away.
+  if (entityCount / last7d.length > 0.25) {
     return { pass: false, reason: `DOMINANT_NARRATIVE_CAP:${primaryEntityName}` };
   }
   return { pass: true, reason: null };
