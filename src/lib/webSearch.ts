@@ -69,36 +69,48 @@ const WEB_SEARCH_MICROSERVICE_API_KEY = process.env.WEB_SEARCH_MICROSERVICE_API_
 // pattern a fourth time.
 const limitMicroservice = createLimiter(10);
 
-// ⛔ OPERATOR FIX (2026-09-09, cost audit): microserviceWebSearch/
-// microserviceFactCheck treated a 429 exactly like any other failure — an
-// immediate, permanent "no answer" that sends this call down the MUCH more
-// expensive Claude/Grok web-search-grounded AI-gateway fallback path
-// (confirmed live: HTTP 429 on this microservice immediately followed by a
-// real, billed AI-gateway call for the same query). A 429 specifically
-// means "slow down, try again shortly," not "this can never succeed" — one
-// bounded retry, honoring Retry-After when the microservice sends one,
-// recovers a real fraction of these onto the cheap path instead of
-// unconditionally escalating to the costly one, for the exact same
-// verification, not a lower bar. Deliberately just ONE retry (not a full
-// backoff loop) — this only helps a genuine rate-limit blip; a sustained
-// overload needs the concurrency limiter above and callers' own fail-open
-// policy, not this call looping on its own.
+// ⛔ OPERATOR FIX (2026-09-09, cost audit): "It should keep trying the same
+// microservice for websearch, never falls back to AI websearch." webSearch()
+// no longer has ANY Claude/Grok fallback at all (see its own comment below)
+// — a transient microservice failure now has to actually recover via
+// retry, since there's nothing left to fall through to. Retries on ANY
+// non-2xx response or network/timeout error, not just 429 — honors the
+// microservice's own Retry-After on a 429 specifically, otherwise backs
+// off with an increasing fixed delay. Bounded at 4 total attempts so a
+// genuinely sustained outage still gives up in well under a minute rather
+// than blocking a candidate's evaluation indefinitely — "keep trying," not
+// "retry forever."
+const MICROSERVICE_MAX_ATTEMPTS = 4;
 const MICROSERVICE_RETRY_DEFAULT_MS = 1500;
-const MICROSERVICE_RETRY_MAX_MS = 5000;
+const MICROSERVICE_RETRY_MAX_MS = 8000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchMicroserviceWithRetry(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const first = await fetchWithTimeout(url, init, timeoutMs);
-  if (first.status !== 429) return first;
+  for (let attempt = 1; attempt <= MICROSERVICE_MAX_ATTEMPTS; attempt++) {
+    const isLastAttempt = attempt === MICROSERVICE_MAX_ATTEMPTS;
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(url, init, timeoutMs);
+    } catch (e) {
+      if (isLastAttempt) throw e;
+      console.error(`fetchMicroserviceWithRetry: attempt ${attempt}/${MICROSERVICE_MAX_ATTEMPTS} failed for ${url}: ${(e as Error).message} — retrying`);
+      await sleep(MICROSERVICE_RETRY_DEFAULT_MS * attempt);
+      continue;
+    }
+    if (res.ok || isLastAttempt) return res;
 
-  const retryAfterSeconds = Number(first.headers.get("retry-after"));
-  const delayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.min(retryAfterSeconds * 1000, MICROSERVICE_RETRY_MAX_MS) : MICROSERVICE_RETRY_DEFAULT_MS;
-  console.error(`fetchMicroserviceWithRetry: 429 for ${url}, retrying once after ${delayMs}ms`);
-  await sleep(delayMs);
-  return fetchWithTimeout(url, init, timeoutMs);
+    const retryAfterSeconds = Number(res.headers.get("retry-after"));
+    const delayMs =
+      res.status === 429 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? Math.min(retryAfterSeconds * 1000, MICROSERVICE_RETRY_MAX_MS)
+        : MICROSERVICE_RETRY_DEFAULT_MS * attempt;
+    console.error(`fetchMicroserviceWithRetry: HTTP ${res.status} for ${url} (attempt ${attempt}/${MICROSERVICE_MAX_ATTEMPTS}) — retrying after ${delayMs}ms`);
+    await sleep(delayMs);
+  }
+  throw new Error("unreachable"); // loop always returns or throws on isLastAttempt
 }
 
 interface MicroserviceResultItem {
@@ -428,26 +440,20 @@ export async function claudeWebSearch(query: string, maxResults = 8, evergreen =
 // reliably (~13-14s, real sources every time). Claude is now PRIMARY;
 // Grok is kept as a fallback attempt in case Claude itself degrades, so a
 // single provider outage can no longer zero out this entire sourcing tier.
+// ⛔ OPERATOR FIX (2026-09-09, cost audit): "never fall to claude/Grok AI
+// path, it should only search from the Websearch microservice path" — the
+// Claude/Grok AI-gateway fallback below (real, billed, web-search-grounded
+// generateText calls) is the expensive path this whole cost audit has been
+// about; removed entirely rather than retried into. microserviceWebSearch
+// (with its own 429 retry — see fetchMicroserviceWithRetry above) is now
+// the ONLY source: no microservice result means no result, full stop,
+// never an AI-gateway spend to compensate. Note this can reduce sourcing
+// volume for queries the microservice genuinely can't answer that Claude/
+// Grok search previously could — an explicit cost-over-fill-rate tradeoff
+// for THIS function, not a bug.
 export async function webSearch(query: string, maxResults = 8, evergreen = false): Promise<SearchResult[]> {
   const microserviceResults = await microserviceWebSearch(query, maxResults);
-  if (microserviceResults !== null && microserviceResults.length > 0) return microserviceResults;
-
-  const claudeResults = await claudeWebSearch(query, maxResults, evergreen).catch((e) => {
-    console.error(`webSearch: Claude search failed for "${query}": ${(e as Error).message}`);
-    return [] as SearchResult[];
-  });
-  if (claudeResults.length > 0) return claudeResults;
-
-  // Same shared gateway as the Claude attempts above — give it a moment
-  // before piling on with a different model rather than switching providers
-  // with zero gap (see OPERATOR FIX above in runSearchTool). Doubled
-  // 2026-08-24 alongside runSearchTool's own backoff — same sharding-scale
-  // reasoning.
-  await new Promise((r) => setTimeout(r, 4000));
-  return grokWebSearch(query, maxResults, evergreen).catch((e) => {
-    console.error(`webSearch: Grok fallback also failed for "${query}": ${(e as Error).message}`);
-    return [] as SearchResult[];
-  });
+  return microserviceResults ?? [];
 }
 
 // ⛔ OPERATOR FIX (2026-08-18, real live incident): confirmed live — a
