@@ -1155,7 +1155,27 @@ export function dominantNarrativeCheck(
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   const entityCount = last7d.filter((p) => p.entity === primaryEntityName).length;
-  if ((entityCount + 1) / (last7d.length + 1) > 0.25) {
+  // ⛔ OPERATOR FIX (2026-09-09, real live incident): the +1/+1 Laplace
+  // smoothing here was meant to be lenient near the sample-size floor above,
+  // but it does the opposite — at exactly the 4-7 post volumes several real
+  // pages are running at, it turns "genuinely under 25%" into a rejection.
+  // Confirmed live: Dallas Cowboys (p41) had 5 posts in its last 7d window,
+  // 4 different entities at 1-2 posts each — smoothed, EVERY one of them
+  // read as >25% ((1+1)/(5+1)=0.333, (2+1)/(5+1)=0.5), so every fresh,
+  // distinct, real candidate about any of them was rejected. With nothing
+  // posting to grow the denominator, the cap never releases on its own —
+  // a permanent self-reinforcing deadlock, not a transient content drought
+  // (44+ hours with zero posts despite 7+ distinct passing-content
+  // candidates sourced across 3 separate hourly runs). Baltimore Ravens
+  // (p48) showed the same distortion: derrick henry and zay flowers both
+  // legitimately under 25% raw (0.222) but smoothed over it (0.300).
+  // The raw ratio is what the rule's own stated intent ("more than ~25% of
+  // a page's posts") actually means; the >=4-post floor above already
+  // excludes samples too small to trust, so no extra smoothing is needed
+  // on top of it. Genuine dominance (LSU's lane kiffin at a real 40%, ryan
+  // day at a real 75%) stays capped exactly the same under the raw ratio —
+  // only the false positives created by the smoothing go away.
+  if (entityCount / last7d.length > 0.25) {
     return { pass: false, reason: `DOMINANT_NARRATIVE_CAP:${primaryEntityName}` };
   }
   return { pass: true, reason: null };
