@@ -26,6 +26,7 @@ import {
   isGenericFramingText,
   FrequencyCheckResult,
   classifyCaptionAgeTone,
+  isEsOwnedLink,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -284,7 +285,19 @@ export async function checkAccuracy(candidate: Candidate, primaryEntityName: str
   const deterministic = await accuracyGateCheck(candidate, primaryEntityName, maxAgeHours);
   if (!deterministic.pass) return deterministic;
 
-  if (candidate.source === "web_search" || candidate.source === "evergreen_search") {
+  // ⛔ OPERATOR FIX (2026-09-09): "fact check need not be done on posts
+  // created from ES articles." The source-tag check below already skips
+  // es_article/beehiiv_* — but sourceLink (the ORIGINAL discovery URL,
+  // preserved by resolveExternalLink even after `link` gets swapped to an
+  // ES-owned CTA target) shows plenty of genuinely ES-branded content
+  // ("EssentiallySports NFL Top-100...") gets discovered via the
+  // web_search/evergreen_search tiers instead of the dedicated es_article
+  // one — same real ES content, just found a different way, and it was
+  // still paying for a real web-search-grounded fact-check call every
+  // time. isEsOwnedLink on the ORIGINAL url (not the possibly-already-
+  // swapped candidate.link) catches this regardless of which tier found it.
+  const originallyEsOwned = isEsOwnedLink(candidate.sourceLink || candidate.link);
+  if ((candidate.source === "web_search" || candidate.source === "evergreen_search") && !originallyEsOwned) {
     const factCheck = await factCheckClaim(candidate);
     if (!factCheck.verified) {
       return { pass: false, reason: `FACT_CHECK_FAILED:${factCheck.reason}` };
