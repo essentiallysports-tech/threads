@@ -42,19 +42,28 @@ async function main() {
   }
 
   if (mode === "create-schedule") {
+    // ⛔ OPERATOR ADD (2026-09-09): was hardcoded to SCHEDULE_ID/DEFAULT_PAGE_ID
+    // (p80 only) — firehoseWorkflow.ts itself has always taken pageId as a
+    // real parameter (see FirehoseRunOptions), this script's create-schedule
+    // mode just never exposed that. --schedule-id/--page let this same
+    // script stand up an independent hourly schedule for any additional
+    // firehose page (e.g. a topically-scoped one) without colliding with or
+    // overwriting p80's own schedule. Both flags default to the original
+    // values, so the existing `create-schedule` invocation is unchanged.
+    const scheduleId = parseFlag("--schedule-id") || SCHEDULE_ID;
     await client.schedule.create({
-      scheduleId: SCHEDULE_ID,
+      scheduleId,
       spec: { intervals: [{ every: "1h" }] },
       policies: { overlap: ScheduleOverlapPolicy.SKIP },
       action: {
         type: "startWorkflow",
         workflowType: firehoseWorkflow,
         taskQueue: TASK_QUEUE,
-        args: [{ livePosting: process.env.LIVE_POSTING === "true", pageId: DEFAULT_PAGE_ID }],
+        args: [{ livePosting: process.env.LIVE_POSTING === "true", pageId }],
         workflowExecutionTimeout: "30 minutes",
       },
     });
-    console.log(`Created schedule ${SCHEDULE_ID} (hourly, page=${DEFAULT_PAGE_ID})`);
+    console.log(`Created schedule ${scheduleId} (hourly, page=${pageId})`);
     return;
   }
 
