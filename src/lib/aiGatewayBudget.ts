@@ -26,12 +26,21 @@
 // acceptable trade for not adding a new shared-lock dependency.
 import { getObject, putObject } from "./s3registry";
 
-// ⛔ OPERATOR FIX (2026-09-09): raised 8 -> 9 per explicit operator target
-// ("costs to be kept under 10$ a day") — the external Vercel-side cap this
-// margin sits below is $10 (see this file's own header comment); $9 keeps
-// a $1 margin instead of $2, trading a little safety margin for a little
-// more real fill-rate/quality-check budget per day.
-const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 9);
+// ⛔ OPERATOR FIX (2026-09-09): raised 9 -> 12 same day, after the operator
+// saw what an active budget cutoff actually costs in quality (templated
+// captions, generic layouts, skipped coherence/photo checks — see the
+// 2026-09-09 real incident where a HARD, manually-set Vercel-side ceiling
+// was crossed and every AI call failed for the rest of that window).
+// Explicit operator call: "budget can be still raised a bit but quality and
+// volume cannot be compromised at all" — $12 was the operator's own
+// original target before the tighter (and, it turned out, quality-costly)
+// $9 ask. Note this Vercel-side ceiling is NOT a daily-resetting budget —
+// it reads as a manually-set lifetime cap on the key that only moves when
+// an administrator raises it — so it does not track in lockstep with this
+// file's own dateISO-keyed daily counter; this cap is this codebase's own
+// graceful, daily-resetting stop, independent of whatever that ceiling is
+// set to on a given day.
+const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 12);
 const SPEND_KEY_PREFIX = "pool/ai_gateway_spend_";
 const REFRESH_INTERVAL_MS = 60_000; // re-check S3 (for the OTHER worker process's spend) at most once/minute — every call re-fetching would be its own waste
 
