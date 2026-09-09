@@ -359,8 +359,19 @@ function lookbackDates(dateISO: string, hours: number): string[] {
 }
 
 export async function sourceFromEsArticles(page: PageConfig, dateISO: string): Promise<Candidate[]> {
-  const sports = page.sport_groups.length > 0 ? page.sport_groups : [null];
   const entityNames = page.entities.map((e) => e.name);
+  // ⛔ OPERATOR FIX (2026-09-09): empty sport_groups used to unconditionally
+  // mean "no category filter, pull every recent article" (sports.flatMap
+  // below with a bare [null] sport) — correct for a true firehose page like
+  // p80 (sport_groups AND entities both empty, genuinely wants everything),
+  // but wrong for a page that registered real entities specifically BECAUSE
+  // it wants to be scoped to just those topics with no sport dimension at
+  // all (e.g. a "broadcasters and media" firehose page — ESPN/Fox Sports/
+  // commentators aren't a sport category, they're entities). Confirmed no
+  // existing page currently has this exact shape (empty sport_groups, real
+  // entities), so distinguishing it here is a new capability, not a
+  // behavior change for anything already configured.
+  const sports = page.sport_groups.length > 0 ? page.sport_groups : entityNames.length > 0 ? [] : [null];
   const dateStart = new Date(new Date(`${dateISO}T00:00:00Z`).getTime() - ES_ARTICLE_LOOKBACK_HOURS * 3600 * 1000)
     .toISOString()
     .slice(0, 10);
