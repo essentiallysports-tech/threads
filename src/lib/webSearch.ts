@@ -100,7 +100,21 @@ async function fetchMicroserviceWithRetry(url: string, init: RequestInit, timeou
       await sleep(MICROSERVICE_RETRY_DEFAULT_MS * attempt);
       continue;
     }
-    if (res.ok || isLastAttempt) return res;
+    // ⛔ OPERATOR FIX (2026-09-09, real live incident, severe): confirmed
+    // live — this specific microservice's /research endpoint has been
+    // returning 503 CONSISTENTLY (documented elsewhere in this file: 503
+    // "covers both ENABLE_LLM_LAYER=false or no provider configured — a
+    // deployment choice on the microservice's side, not a real failure
+    // here"). That's a static, non-transient state for the run's duration —
+    // retrying it can never succeed, unlike a 429 or a real 5xx blip. This
+    // file's own persistent-retry upgrade (added the same day, for
+    // webSearch()'s removed AI fallback) didn't know that and retried every
+    // single 503 the full 4 attempts anyway — confirmed live: entire hourly
+    // runs (all 6 shards, 60-120 real candidates each) posted ZERO, one
+    // shard's runtime blew up to 8+ minutes, purely from wasting ~9s of pure
+    // backoff sleep per fact-check call on a status that was never going to
+    // change mid-run. Return immediately on 503, same as ok/isLastAttempt.
+    if (res.ok || res.status === 503 || isLastAttempt) return res;
 
     const retryAfterSeconds = Number(res.headers.get("retry-after"));
     const delayMs =
