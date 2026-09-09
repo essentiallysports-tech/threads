@@ -161,6 +161,17 @@ export async function searchImages(query: string, type: "agency" | "custom" | "a
 const GENERIC_METADATA_RE = /^(getty images?|action images?|icon sportswire|imagn|reuters|ap photo|usa today|zuma press)$/i;
 const STOPWORD_TOKENS = new Set(["the", "and", "of", "for", "vs", "news"]);
 
+// ⛔ OPERATOR FIX (2026-09-09, real live incident): a real card ("Stafford
+// Speaks Out on Nacua's Uncertain Status" — a teammate injury story, zero
+// connection to Stafford's personal life) used a photo of Stafford kissing
+// his wife after a game — free, zero-cost text pre-filter alongside
+// verifyPhotoSubject's own vision-based version of this same rule (see its
+// comment): real sports-photo-agency captions routinely describe exactly
+// this moment in words ("X kisses wife Y after..."), so this catches the
+// obvious cases before ever spending a vision call, as defense in depth,
+// not a replacement for it.
+const INTIMATE_CONTACT_RE = /\b(kiss(es|ing)?|mak(e|es|ing) out|makeout|smooch(es|ing)?)\b/i;
+
 // ⛔ OPERATOR FIX (2026-09-08, comprehensive audit): this only ever had MLB
 // and NBA — a structural no-op for every other page's photo-metadata check
 // (hasConflictingTeamMention returns false immediately when sportGroup has
@@ -221,6 +232,7 @@ export function metadataMatchesSubject(
 
   const text = `${result.title} ${result.caption || ""}`.toLowerCase().trim();
   if (!text || GENERIC_METADATA_RE.test(result.title.trim())) return true;
+  if (INTIMATE_CONTACT_RE.test(text)) return false;
 
   const nameMatches = tokens.length === 2 ? tokens.every((t) => text.includes(t)) : tokens.some((t) => text.includes(t));
   if (!nameMatches) return false;
