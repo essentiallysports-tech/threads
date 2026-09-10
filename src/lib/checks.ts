@@ -1338,6 +1338,65 @@ export async function duplicateStoryCheck(
   return { pass: true, reason: null, costUsd: result.costUsd };
 }
 
+// ⛔ OPERATOR NOTE: same reasoning as isDuplicateStoryViaAI just above —
+// checks.ts can never import aiGatewayBudget.ts directly (that caused a
+// real workflow-bundling crash), so this returns costUsd as plain data;
+// the caller (activities/index.ts's checkPersonalLifeContent, safe to
+// import anything) does the actual budget-check-before/record-spend-after.
+async function isPersonalLifeContentViaAI(headline: string, rawText: string): Promise<{ personalLife: boolean; costUsd?: number }> {
+  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
+  if (!apiKey) return { personalLife: false }; // fail OPEN — same policy as every other AI-judgment gate in this pipeline
+  const prompt = [
+    `A sports news page only wants stories about athletes'/sports personalities' PROFESSIONAL activity — games, performance, trades, statements about their sport, on-field/on-court incidents, injuries affecting play, coaching/front-office moves, business dealings tied to their sports career, and similar.`,
+    `It does NOT want stories that are PRIMARILY about someone's personal/off-field life — their marriage, dating life, divorce, family drama, parenting, personal wealth or lifestyle, home life, health matters unrelated to their sport, or other private matters — even when the person is a real, well-known athlete or sports personality.`,
+    `Headline: "${headline}"`,
+    rawText ? `Article text: "${rawText.slice(0, 800)}"` : "",
+    `Is this story's actual subject PRIMARILY the person's personal/off-field life, rather than their sports/professional activity? A story mainly about a game, a trade, a statement about their sport, or on-field performance is NOT personal-life content, even if it briefly mentions family in passing. Answer true only when the real subject is personal/off-field.`,
+    `Output ONLY a JSON object: {"personal_life": true} or {"personal_life": false}. No markdown, no explanation.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  try {
+    const res = await fetchWithTimeout(
+      AI_GATEWAY_URL,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: AI_GATEWAY_MODEL, messages: [{ role: "user", content: prompt }], max_tokens: 60, temperature: 0 }),
+      },
+      20_000
+    );
+    if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
+    const content = json.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new Error("AI gateway returned no text content");
+    const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
+    const parsed = JSON.parse(cleaned);
+    return { personalLife: parsed?.personal_life === true, costUsd: json.usage?.cost };
+  } catch (e) {
+    console.error(`isPersonalLifeContentViaAI: failed, treating as not-personal-life: ${(e as Error).message}`);
+    return { personalLife: false };
+  }
+}
+
+export interface PersonalLifeCheckResult {
+  pass: boolean;
+  reason: string | null;
+  costUsd?: number;
+}
+
+// ⛔ OPERATOR RULE (2026-09-10, explicit operator directive): "no stories
+// related to player's personal lives on essentiallysportsmedia page" — p44
+// only, not a general content-quality rule. Every other page's existing
+// content mix (which can legitimately include a player's family/personal
+// moments as human-interest sports coverage) is unaffected.
+export async function personalLifeContentCheck(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
+  if (page.page_id !== "p44") return { pass: true, reason: null };
+  const result = await isPersonalLifeContentViaAI(candidate.headline, candidate.rawText || "");
+  if (result.personalLife) return { pass: false, reason: "PERSONAL_LIFE_CONTENT", costUsd: result.costUsd };
+  return { pass: true, reason: null, costUsd: result.costUsd };
+}
+
 // ⛔ OPERATOR FIX (2026-08-07): "vague things should never go out, it must
 // contain proper names" — not just a pattern match on "star fighter"-style
 // phrasing, a hard rule. If this page has ANY registered entities to check

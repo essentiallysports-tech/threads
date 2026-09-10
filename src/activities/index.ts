@@ -18,6 +18,8 @@ import {
   dominantNarrativeCheck,
   duplicateStoryCheck,
   DuplicateStoryCheckResult,
+  personalLifeContentCheck,
+  PersonalLifeCheckResult,
   matchedSportGroup,
   matchedEntityNames,
   realRegisteredEntityMatches,
@@ -353,6 +355,19 @@ export async function checkDuplicateStory(
   // comment says to.
   if (await isDailyBudgetExceeded()) return { pass: true, reason: null };
   const result = await duplicateStoryCheck(candidate, primaryEntityName, postedLog);
+  recordGatewaySpend(result.costUsd);
+  return result;
+}
+
+// ⛔ OPERATOR RULE (2026-09-10, explicit operator directive): "no stories
+// related to player's personal lives on essentiallysportsmedia page" — see
+// checks.ts's personalLifeContentCheck for the page-scoping (p44 only) and
+// the actual AI judgment. Same budget-gate-here/record-spend-here pattern
+// as checkDuplicateStory just above, for the same reason: checks.ts can
+// never import aiGatewayBudget.ts directly.
+export async function checkPersonalLifeContent(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
+  if (await isDailyBudgetExceeded()) return { pass: true, reason: null };
+  const result = await personalLifeContentCheck(candidate, page);
   recordGatewaySpend(result.costUsd);
   return result;
 }
@@ -1022,7 +1037,6 @@ export async function postToThreads(
   cardUrl: string | null,
   replyLinkHtml: string,
   postTimeUtc: string,
-  primaryEntity: string | null,
   sportGroup: string | null
 ): Promise<{ id: string }> {
   if (process.env.LIVE_POSTING !== "true") {
@@ -1044,7 +1058,7 @@ export async function postToThreads(
   // discovery surface. Always append it when available; only attempt the
   // (still-unverified) strip cleanup afterward, never gate appending on it.
   const wantsHashtagRegistration = page.threads?.topic_registration && page.threads?.hashtag_logic === "write_then_delete";
-  const hashtag = wantsHashtagRegistration ? buildTopicHashtag(primaryEntity ? [primaryEntity] : [], sportGroup) : null;
+  const hashtag = wantsHashtagRegistration ? buildTopicHashtag(sportGroup) : null;
   // ⛔ OPERATOR FIX (2026-08-24, real live incident audit): confirmed live —
   // manual posts on this page's own account (Ohio State Wireline) carry a
   // fixed, repeated branded set on every post ("#GoBucks #BuckeyeNation

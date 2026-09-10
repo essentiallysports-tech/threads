@@ -61,7 +61,7 @@ const { checkCandidate, checkTopicFrequency, checkDominantNarrative } = proxyLoc
 // instead of degrading gracefully. maximumAttempts:1 because the function
 // already handles its own failure path internally — an outer retry would
 // just redundantly re-attempt a call that already degraded on its own.
-const { checkDuplicateStory } = proxyLocalActivities<typeof activities>({
+const { checkDuplicateStory, checkPersonalLifeContent } = proxyLocalActivities<typeof activities>({
   startToCloseTimeout: "35 seconds",
   retry: { maximumAttempts: 1 },
 });
@@ -699,6 +699,19 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
           state.attemptFailures.push(`${candidate.key}:${duplicateStory.reason}`);
           continue;
         }
+        // ⛔ OPERATOR RULE (2026-09-10, explicit operator directive): "no
+        // stories related to player's personal lives on essentiallysports
+        // media page" — see checks.ts's personalLifeContentCheck for the
+        // page-scoping (p44 only, a free no-op for every other page) and
+        // the actual AI judgment. Placed last among the free/cheap gates,
+        // same reasoning as checkDuplicateStory's own placement comment
+        // above: a candidate that's about to fail this never wastes the
+        // caption/render pipeline's own AI calls first.
+        const personalLife = await checkPersonalLifeContent(candidate, state.page);
+        if (!personalLife.pass) {
+          state.attemptFailures.push(`${candidate.key}:${personalLife.reason}`);
+          continue;
+        }
 
         const caption = await buildCaptionText(candidate, state.page, athleteNames);
 
@@ -914,7 +927,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     // never abort every other already-rendered item still waiting in this
     // same loop (each represents real, already-spent render/AI-caption work).
     try {
-      const posted = await postToThreads(item.page, item.caption, item.cardUrl, item.finalLink, itemPostTime.toISOString(), item.entity, item.sportGroup);
+      const posted = await postToThreads(item.page, item.caption, item.cardUrl, item.finalLink, itemPostTime.toISOString(), item.sportGroup);
 
       await recordPosted(item.page.page_id, {
         key: item.candidate.key,
