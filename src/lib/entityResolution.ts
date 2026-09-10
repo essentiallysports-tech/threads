@@ -26,7 +26,20 @@ import { fetchWithTimeout } from "./httpUtil";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident): reverted to Sonnet —
+// the 2026-09-08 fleet-wide Haiku switch (cost-driven, no compensating
+// prompt/eval changes) landed the SAME DAY the AI Gateway key got fixed
+// from a dead placeholder, so this pipeline's entity resolution had never
+// actually run for real on Sonnet in production before being switched away
+// from it. Real autopost click sessions fell 9,896 (Sep8) -> 2,828 (Sep9)
+// -> 484 (Sep10), and NO_NAMED_ENTITY was the dominant real rejection
+// reason across nearly every page checked live that day — this is the
+// single highest-blast-radius judgment call in the whole pipeline (gates
+// every candidate on relevance). Real AI Gateway spend was $2.56 of the
+// $12 daily cap the day this was found — full headroom for entity
+// resolution's ~3x-costlier Sonnet calls; operator explicitly signed off
+// on spending up to the existing cap to fix this.
+const MODEL = "anthropic/claude-sonnet-4-5";
 
 function stripWrappingQuotesAndMarkdown(text: string): string {
   const t = text.trim();

@@ -1269,7 +1269,16 @@ export interface DuplicateStoryCheckResult {
 }
 
 const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const AI_GATEWAY_MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident): reverted to Sonnet —
+// see entityResolution.ts's matching comment for the full incident
+// (autopost sessions 9,896 -> 2,828 -> 484 across Sep8-10, tracing back to
+// the 2026-09-08 Haiku switch landing the same day the AI Gateway key got
+// fixed from a dead placeholder, with no compensating prompt/eval work).
+// Powers both isDuplicateStoryViaAI (duplicate-story detection — a hard
+// pass/fail gate on every candidate with recent same-entity posts) and
+// isPersonalLifeContentViaAI (p44-only, low call volume) below. Budget
+// headroom confirmed ($2.56 of $12 daily cap) before reverting.
+const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
 // ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
 // fine to repost once real time has passed, but the cutoff should match the
 // 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter
