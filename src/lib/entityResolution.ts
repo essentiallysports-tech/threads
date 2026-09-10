@@ -66,11 +66,38 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
 // more trustworthy than "no entity") — callers must trust this and NOT
 // second-guess it with a less reliable heuristic. A string = a real,
 // verified entity.
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident, cost efficiency):
+// candidates that fail some OTHER check keep getting re-sourced and
+// re-evaluated across every subsequent hourly cycle until they're either
+// posted or age past maxAgeHours — confirmed live (p41's Cowboys
+// candidates reappeared identically across consecutive shard runs the same
+// day). Entity resolution's answer for a given (candidate, page) is a pure
+// function of content that never changes once a candidate is created, so
+// every re-evaluation before this fix was paying for the identical AI
+// judgment again. Caches the PROMISE (not just the resolved value) so
+// concurrent in-flight calls for the same key also collapse into one
+// request — same pattern as cardTextQC.ts's verifyPhotoSubject cache.
+// Budget/API-key bail-outs are deliberately NOT cached (checked before the
+// cache lookup) — a "budget exceeded" non-answer must never be pinned in
+// place for 24h once the budget resets for a new day.
+const ENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const entityCache = new Map<string, { at: number; value: Promise<string | null | undefined> }>();
+const entitiesCache = new Map<string, { at: number; value: Promise<string[] | undefined> }>();
+
 export async function extractEntityViaAI(candidate: Candidate, page: PageConfig): Promise<string | null | undefined> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
+  const cacheKey = `${page.page_id}::${candidate.key}`;
+  const hit = entityCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
+  const value = extractEntityViaAIUncached(candidate, page, apiKey);
+  entityCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string): Promise<string | null | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,
@@ -152,6 +179,18 @@ export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfi
   if (!apiKey) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
+  // See extractEntityViaAI's matching comment — same redundant-re-evaluation
+  // problem, same fix. maxEntities is part of the key since a cached answer
+  // computed for a different cap wouldn't be valid for this call.
+  const cacheKey = `${page.page_id}::${candidate.key}::${maxEntities}`;
+  const hit = entitiesCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
+  const value = extractEntitiesViaAIUncached(candidate, page, apiKey, maxEntities);
+  entitiesCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string, maxEntities: number): Promise<string[] | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,

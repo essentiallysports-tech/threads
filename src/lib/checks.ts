@@ -1285,7 +1285,35 @@ const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
 // than it.
 const DUPLICATE_STORY_WINDOW_HOURS = 72;
 
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident, cost efficiency): a
+// candidate that fails on relevance/freshness/etc. gets re-sourced and
+// re-run through this SAME comparison every subsequent hourly cycle until
+// it's posted or ages out — the cache key already includes the full
+// recentHeadlines content, so a genuinely new post for this entity (the
+// only thing that could change the right answer) is a natural cache miss,
+// not a staleness risk. Caches the promise itself (not just the resolved
+// value) so concurrent calls for the same key collapse into one request —
+// same pattern as entityResolution.ts's extractEntityViaAI cache.
+const DUPLICATE_STORY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const duplicateStoryCache = new Map<string, { at: number; value: Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> }>();
+
 async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> {
+  const cacheKey = `${candidateHeadline}::${recentHeadlines.join("||")}`;
+  const hit = duplicateStoryCache.get(cacheKey);
+  // costUsd flows back to the caller (activities/index.ts's checkDuplicateStory)
+  // to record real spend — a cache hit made no real call, so it must report
+  // $0, or the caller would record the ORIGINAL call's cost again on every
+  // repeat evaluation, double-(and triple-, quadruple-...)counting spend the
+  // pipeline never actually incurred.
+  if (hit && Date.now() - hit.at < DUPLICATE_STORY_CACHE_TTL_MS) {
+    return hit.value.then((r) => ({ ...r, costUsd: undefined }));
+  }
+  const value = isDuplicateStoryViaAIUncached(candidateHeadline, recentHeadlines);
+  duplicateStoryCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function isDuplicateStoryViaAIUncached(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   // Fail OPEN, same policy as every other AI-judgment gate in this pipeline
   // (isCoherentHeadlineViaAI, factCheckClaim) — an infra hiccup on this
