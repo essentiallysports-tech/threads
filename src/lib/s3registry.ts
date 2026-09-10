@@ -63,8 +63,21 @@ export async function loadActiveThreadsPages(): Promise<PageConfig[]> {
   // no OTHER existing page has both fields empty, so this can only ever
   // exclude a page deliberately built for the firehose pipeline — every
   // real roster-scoped page keeps working exactly as before.
+  //
+  // ⛔ OPERATOR FIX (2026-09-10, real live incident): the both-empty
+  // inference above broke for p81 (Broadcaster and Media) — a firehose page
+  // with real entities (needed for its own relevance matching) but no
+  // sport_groups, so it slipped past this guard and got full AI-rendered
+  // cards from the main workflow on top of its intended plain-link firehose
+  // posts. is_firehose_only (see its own comment on PageConfig, types.ts)
+  // is the real, explicit signal now — checked first; the both-empty
+  // inference stays as a safety net for any page that predates the flag.
   return pages.filter(
-    (p): p is PageConfig => !!p && !!p.threads?.postiz_integration_id && !(p.sport_groups.length === 0 && p.entities.length === 0)
+    (p): p is PageConfig =>
+      !!p &&
+      !!p.threads?.postiz_integration_id &&
+      !p.is_firehose_only &&
+      !(p.sport_groups.length === 0 && p.entities.length === 0)
   );
 }
 
