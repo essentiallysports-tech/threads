@@ -1161,12 +1161,37 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   const forceNewsletterFirst = preferNewsletter && (newsletterIsTrackable || !hasTrackableEsArticle);
   const ordered = forceNewsletterFirst ? [resolvedNewsletterCandidate, ...unposted] : [...unposted, resolvedNewsletterCandidate];
 
-  const seen = new Set<string>();
-  const deduped = ordered.filter((c): c is Candidate => {
-    if (!c || seen.has(c.key)) return false;
-    seen.add(c.key);
-    return true;
-  });
+  // ⛔ OPERATOR FIX (2026-09-10, real live incident, fleet-wide low volume):
+  // the SAME real article is often discoverable via both sourceFromEsArticles
+  // (real publishedAt, ranks first here via tierRank) and
+  // sourceFromEsEvergreenArticles (stamps `${dateISO}T12:00:00Z` specifically
+  // so an otherwise-real-but-aged article can't be wrongly excluded on
+  // recency alone — see that function's own comment). Plain first-seen-wins
+  // dedup let the STALE real-dated copy win every time, silently discarding
+  // the evergreen tier's fresh-stamped rescue of the exact same content —
+  // confirmed live on p41: "Jerry Jones Reveals the Exact Moment He Knew Dak
+  // Prescott Would Replace Tony Romo" was sourced by both tiers, the
+  // 2-day-old real-dated copy won dedup, and it correctly (but pointlessly,
+  // since a fresher duplicate existed) failed STALE_CANDIDATE — defeating the
+  // entire point of the evergreen rescue. Only intervenes when the
+  // first-seen copy would actually fail freshness AND a duplicate exists
+  // that wouldn't — an already-fresh candidate keeps its richer, real-tier
+  // copy untouched, so this never trades caption grounding for recency it
+  // didn't need.
+  const dedupMaxAgeHours = page.page_type === "entity" ? 24 : 72;
+  const bestByKey = new Map<string, Candidate>();
+  for (const c of ordered) {
+    if (!c) continue;
+    const existing = bestByKey.get(c.key);
+    if (!existing) {
+      bestByKey.set(c.key, c);
+      continue;
+    }
+    if (!isFreshEnough(existing, dedupMaxAgeHours) && isFreshEnough(c, dedupMaxAgeHours)) {
+      bestByKey.set(c.key, c);
+    }
+  }
+  const deduped = Array.from(bestByKey.values());
 
   // ⛔ OPERATOR FIX (2026-08-19, real live incident): sourceCandidatePool's
   // return value is a Temporal ACTIVITY RESULT — it gets serialized into

@@ -734,12 +734,29 @@ const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿
 // accented mentions" intent this threshold was designed around (see the
 // comment above NON_ENGLISH_DIACRITIC_RE) without weakening it for sources
 // where subject/headline/rawText genuinely differ.
+// ⛔ OPERATOR FIX (2026-09-10, real live incident): a real, fully-English
+// NASCAR headline — "...Denny Hamlin Drops Scathing Verdict on Rick
+// Hendrick's Protégé..." — was rejected as NON_ENGLISH_CONTENT. The
+// 2026-09-09 dedup fix above stopped the same title being counted 3x, but
+// didn't cover this case: "protégé" is ONE common English loanword that
+// happens to carry 2 diacritics BY ITSELF, which alone crossed the old
+// >=2-characters threshold. That exact residual risk was named (and
+// accepted as rare) in the 2026-09-09 comment above — it's now confirmed
+// actually firing in production and costing real, on-topic candidates
+// their slot on a day the fleet is already short on volume. Counting
+// DISTINCT ACCENTED WORDS instead of raw diacritic characters restores the
+// original intent ("a single accented name/word should never be enough to
+// reject") without weakening the real catch: genuine non-English text
+// carries its accents across multiple different words, not stacked inside
+// one loanword.
 export function isNonEnglishContent(candidate: Candidate): boolean {
   const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
   const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
-  const matches = text.match(NON_ENGLISH_DIACRITIC_RE);
-  return (matches?.length || 0) >= 2;
+  const accentedWords = new Set(
+    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || []).map((w) => w.toLowerCase())
+  );
+  return accentedWords.size >= 2;
 }
 
 // ⛔ OPERATOR FIX (2026-08-11): "story selection can be made much much
@@ -1252,14 +1269,51 @@ export interface DuplicateStoryCheckResult {
 }
 
 const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const AI_GATEWAY_MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident): reverted to Sonnet —
+// see entityResolution.ts's matching comment for the full incident
+// (autopost sessions 9,896 -> 2,828 -> 484 across Sep8-10, tracing back to
+// the 2026-09-08 Haiku switch landing the same day the AI Gateway key got
+// fixed from a dead placeholder, with no compensating prompt/eval work).
+// Powers both isDuplicateStoryViaAI (duplicate-story detection — a hard
+// pass/fail gate on every candidate with recent same-entity posts) and
+// isPersonalLifeContentViaAI (p44-only, low call volume) below. Budget
+// headroom confirmed ($2.56 of $12 daily cap) before reverting.
+const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
 // ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
 // fine to repost once real time has passed, but the cutoff should match the
 // 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter
 // than it.
 const DUPLICATE_STORY_WINDOW_HOURS = 72;
 
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident, cost efficiency): a
+// candidate that fails on relevance/freshness/etc. gets re-sourced and
+// re-run through this SAME comparison every subsequent hourly cycle until
+// it's posted or ages out — the cache key already includes the full
+// recentHeadlines content, so a genuinely new post for this entity (the
+// only thing that could change the right answer) is a natural cache miss,
+// not a staleness risk. Caches the promise itself (not just the resolved
+// value) so concurrent calls for the same key collapse into one request —
+// same pattern as entityResolution.ts's extractEntityViaAI cache.
+const DUPLICATE_STORY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const duplicateStoryCache = new Map<string, { at: number; value: Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> }>();
+
 async function isDuplicateStoryViaAI(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> {
+  const cacheKey = `${candidateHeadline}::${recentHeadlines.join("||")}`;
+  const hit = duplicateStoryCache.get(cacheKey);
+  // costUsd flows back to the caller (activities/index.ts's checkDuplicateStory)
+  // to record real spend — a cache hit made no real call, so it must report
+  // $0, or the caller would record the ORIGINAL call's cost again on every
+  // repeat evaluation, double-(and triple-, quadruple-...)counting spend the
+  // pipeline never actually incurred.
+  if (hit && Date.now() - hit.at < DUPLICATE_STORY_CACHE_TTL_MS) {
+    return hit.value.then((r) => ({ ...r, costUsd: undefined }));
+  }
+  const value = isDuplicateStoryViaAIUncached(candidateHeadline, recentHeadlines);
+  duplicateStoryCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function isDuplicateStoryViaAIUncached(candidateHeadline: string, recentHeadlines: string[]): Promise<{ duplicate: boolean; matched?: string; costUsd?: number }> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   // Fail OPEN, same policy as every other AI-judgment gate in this pipeline
   // (isCoherentHeadlineViaAI, factCheckClaim) — an infra hiccup on this

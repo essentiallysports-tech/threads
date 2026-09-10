@@ -26,7 +26,20 @@ import { fetchWithTimeout } from "./httpUtil";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident): reverted to Sonnet —
+// the 2026-09-08 fleet-wide Haiku switch (cost-driven, no compensating
+// prompt/eval changes) landed the SAME DAY the AI Gateway key got fixed
+// from a dead placeholder, so this pipeline's entity resolution had never
+// actually run for real on Sonnet in production before being switched away
+// from it. Real autopost click sessions fell 9,896 (Sep8) -> 2,828 (Sep9)
+// -> 484 (Sep10), and NO_NAMED_ENTITY was the dominant real rejection
+// reason across nearly every page checked live that day — this is the
+// single highest-blast-radius judgment call in the whole pipeline (gates
+// every candidate on relevance). Real AI Gateway spend was $2.56 of the
+// $12 daily cap the day this was found — full headroom for entity
+// resolution's ~3x-costlier Sonnet calls; operator explicitly signed off
+// on spending up to the existing cap to fix this.
+const MODEL = "anthropic/claude-sonnet-4-5";
 
 function stripWrappingQuotesAndMarkdown(text: string): string {
   const t = text.trim();
@@ -53,11 +66,38 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
 // more trustworthy than "no entity") — callers must trust this and NOT
 // second-guess it with a less reliable heuristic. A string = a real,
 // verified entity.
+// ⛔ OPERATOR FIX (2026-09-10/11, real live incident, cost efficiency):
+// candidates that fail some OTHER check keep getting re-sourced and
+// re-evaluated across every subsequent hourly cycle until they're either
+// posted or age past maxAgeHours — confirmed live (p41's Cowboys
+// candidates reappeared identically across consecutive shard runs the same
+// day). Entity resolution's answer for a given (candidate, page) is a pure
+// function of content that never changes once a candidate is created, so
+// every re-evaluation before this fix was paying for the identical AI
+// judgment again. Caches the PROMISE (not just the resolved value) so
+// concurrent in-flight calls for the same key also collapse into one
+// request — same pattern as cardTextQC.ts's verifyPhotoSubject cache.
+// Budget/API-key bail-outs are deliberately NOT cached (checked before the
+// cache lookup) — a "budget exceeded" non-answer must never be pinned in
+// place for 24h once the budget resets for a new day.
+const ENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const entityCache = new Map<string, { at: number; value: Promise<string | null | undefined> }>();
+const entitiesCache = new Map<string, { at: number; value: Promise<string[] | undefined> }>();
+
 export async function extractEntityViaAI(candidate: Candidate, page: PageConfig): Promise<string | null | undefined> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
+  const cacheKey = `${page.page_id}::${candidate.key}`;
+  const hit = entityCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
+  const value = extractEntityViaAIUncached(candidate, page, apiKey);
+  entityCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string): Promise<string | null | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,
@@ -139,6 +179,18 @@ export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfi
   if (!apiKey) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
+  // See extractEntityViaAI's matching comment — same redundant-re-evaluation
+  // problem, same fix. maxEntities is part of the key since a cached answer
+  // computed for a different cap wouldn't be valid for this call.
+  const cacheKey = `${page.page_id}::${candidate.key}::${maxEntities}`;
+  const hit = entitiesCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
+  const value = extractEntitiesViaAIUncached(candidate, page, apiKey, maxEntities);
+  entitiesCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string, maxEntities: number): Promise<string[] | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,
