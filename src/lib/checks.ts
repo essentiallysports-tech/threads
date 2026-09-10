@@ -734,12 +734,29 @@ const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿
 // accented mentions" intent this threshold was designed around (see the
 // comment above NON_ENGLISH_DIACRITIC_RE) without weakening it for sources
 // where subject/headline/rawText genuinely differ.
+// ⛔ OPERATOR FIX (2026-09-10, real live incident): a real, fully-English
+// NASCAR headline — "...Denny Hamlin Drops Scathing Verdict on Rick
+// Hendrick's Protégé..." — was rejected as NON_ENGLISH_CONTENT. The
+// 2026-09-09 dedup fix above stopped the same title being counted 3x, but
+// didn't cover this case: "protégé" is ONE common English loanword that
+// happens to carry 2 diacritics BY ITSELF, which alone crossed the old
+// >=2-characters threshold. That exact residual risk was named (and
+// accepted as rare) in the 2026-09-09 comment above — it's now confirmed
+// actually firing in production and costing real, on-topic candidates
+// their slot on a day the fleet is already short on volume. Counting
+// DISTINCT ACCENTED WORDS instead of raw diacritic characters restores the
+// original intent ("a single accented name/word should never be enough to
+// reject") without weakening the real catch: genuine non-English text
+// carries its accents across multiple different words, not stacked inside
+// one loanword.
 export function isNonEnglishContent(candidate: Candidate): boolean {
   const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
   const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
-  const matches = text.match(NON_ENGLISH_DIACRITIC_RE);
-  return (matches?.length || 0) >= 2;
+  const accentedWords = new Set(
+    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || []).map((w) => w.toLowerCase())
+  );
+  return accentedWords.size >= 2;
 }
 
 // ⛔ OPERATOR FIX (2026-08-11): "story selection can be made much much
