@@ -48,6 +48,22 @@ export interface PageConfig {
   national_threshold: number;
   rival_entities: string[];
   threads?: ThreadsConfig;
+  // ⛔ OPERATOR FIX (2026-09-10, real live incident): loadActiveThreadsPages
+  // (s3registry.ts) used to infer "this is a dedicated-firehose page, the
+  // main workflow must never also pick it up" purely from sport_groups:[]
+  // AND entities:[] both being empty (see that function's own 2026-08-27
+  // comment). That inference broke for p81 (Broadcaster and Media), a
+  // firehose page that genuinely NEEDS real entities for its own relevance
+  // matching (sourceFromEsArticles' entity-only-scoped mode) but has no
+  // sport_groups — confirmed live: it slipped past the guard and started
+  // getting full AI-rendered infographic cards from the main workflow
+  // (dailyRunWorkflow.ts) on top of its intended plain-link firehose posts,
+  // both pipelines posting to the same account uncoordinated. This explicit
+  // flag is the real, unambiguous signal a firehose page's shape can never
+  // accidentally satisfy or fail to satisfy — set on every page owned by
+  // firehoseWorkflow.ts (getPageById, not this list), checked in ADDITION
+  // to the original both-empty inference, which stays as a safety net.
+  is_firehose_only?: boolean;
 }
 
 export interface PageIndexEntry {
