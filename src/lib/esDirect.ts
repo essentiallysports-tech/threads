@@ -457,6 +457,26 @@ async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Pro
 // query_articles's original "no sport filter" behavior. sport given now
 // resolves to a WP category id instead of an unindexed search= scan — see
 // resolveTaxonomyId above.
+// ⛔ OPERATOR FIX (2026-09-10, real live incident): `after`/`before` here had
+// no timezone designator ("2026-09-10T00:00:00") — the WP REST API's
+// documented behavior for a bare, zone-less datetime is to interpret it in
+// the SITE'S OWN configured timezone, not UTC, while every day-boundary
+// this file/sourcing.ts computes (dateISO, lookbackDates, the day passed in
+// here) is a plain UTC calendar day. Confirmed live: a real article with
+// date_gmt 2026-09-09T19:10:12+00:00 (correctly extracted as publishedTime
+// "19:10" by utcTimeOfDay, see that function's own comment) came back from
+// a day="2026-09-10" query — the site's timezone is evidently far enough
+// ahead of UTC (IST, UTC+5:30, fits exactly: 19:10 UTC is already past
+// midnight the next day in IST) that an article published in UTC evening
+// hours falls on the SITE's next calendar day, not UTC's. sourcing.ts's
+// dayByUrl then stamped that real yesterday-UTC article as "today," and
+// because sportDayPairs queries today before yesterday, the correct
+// yesterday tag from the (also-returned) yesterday query never got a
+// chance to overwrite it — every evening-UTC article across the whole
+// 72h lookback silently drifted a day late, right when this pipeline's
+// hourly cycles most need genuinely-fresh same-day content. Appending an
+// explicit UTC offset makes WordPress apply the same UTC day boundary this
+// code already assumes everywhere else.
 export async function queryRecentArticles(sport: string | null, dateISO: string, limit = 20, dateStart?: string): Promise<EsArticleResult[]> {
   const args = { kind: "recent", sport, dateISO, limit, dateStart };
   return cachedArticleQuery(args, async () => {
@@ -465,8 +485,8 @@ export async function queryRecentArticles(sport: string | null, dateISO: string,
       per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
       orderby: "date",
       order: "desc",
-      after: `${dateStart || dateISO}T00:00:00`,
-      before: `${dateISO}T23:59:59`,
+      after: `${dateStart || dateISO}T00:00:00+00:00`,
+      before: `${dateISO}T23:59:59+00:00`,
     });
     if (sport) {
       const categoryId = await resolveTaxonomyId("categories", sport);
@@ -501,8 +521,9 @@ export async function queryArticlesByEntity(entity: string, dateStart: string, d
       orderby: "date",
       order: "desc",
       tags: String(tagId),
-      after: `${dateStart}T00:00:00`,
-      before: `${dateEnd}T23:59:59`,
+      // Same UTC-vs-site-timezone fix as queryRecentArticles above.
+      after: `${dateStart}T00:00:00+00:00`,
+      before: `${dateEnd}T23:59:59+00:00`,
     });
     return toArticleResults(await fetchWpPosts(params));
   });
