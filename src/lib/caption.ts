@@ -37,23 +37,24 @@ export function buildCaption(candidate: Candidate, page: PageConfig): string {
 }
 
 // ⛔ LEARNING PORTED (2026-08-08, ES_Threads_Automation_Playbook.md Section 8
-// "Hashtag & Topic Logic"): channel selection is scope-based — a team/player-
-// specific story gets that entity's own hashtag, a league-wide story gets the
-// league hashtag, a cross-sport/national story gets none. Every real page's
+// "Hashtag & Topic Logic"): channel selection was scope-based — a team/player-
+// specific story got that entity's own hashtag, a league-wide story got the
+// league hashtag, a cross-sport/national story got none. Every real page's
 // registry entry already has `hashtag_logic: "write_then_delete"` and
 // `topic_registration: true` set (confirmed live 2026-08-08) — the schema was
-// always there, this is the first time it's actually used. Returns null when
-// no real scope-appropriate hashtag applies (never fabricates a generic one).
-export function buildTopicHashtag(matchedEntityNames: string[], sportGroup: string | null): string | null {
-  if (matchedEntityNames.length > 0) {
-    const tag = matchedEntityNames[0].replace(/[^a-zA-Z0-9]/g, "");
-    if (tag) return `#${tag}`;
-  }
-  if (sportGroup) {
-    const tag = sportGroup.replace(/[^a-zA-Z0-9]/g, "");
-    if (tag) return `#${tag}`;
-  }
-  return null; // cross-sport/national story — no topic channel to register
+// always there, this is the first time it's actually used.
+//
+// ⛔ OPERATOR RULE (2026-09-10, explicit operator directive): "do not use
+// player names as topic tags rather always use sport name... for nascar,
+// story topic tag should be nascar... implemented across sports, topic tags
+// should be the same as what sport the story belongs to." Player/entity
+// names are no longer used at all — every page's topic tag is its
+// sport_group, full stop. Returns null only for a cross-sport/national
+// story with no single sport_group to tag (never fabricates a generic one).
+export function buildTopicHashtag(sportGroup: string | null): string | null {
+  if (!sportGroup) return null; // cross-sport/national story — no topic channel to register
+  const tag = sportGroup.replace(/[^a-zA-Z0-9]/g, "");
+  return tag ? `#${tag}` : null;
 }
 
 // Returns null (never throws) when the page has no registered UTM string —
