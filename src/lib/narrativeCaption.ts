@@ -338,6 +338,23 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // the exact recurring phrases.
     `1. HOOK (1 line) — a genuine angle on the story, not a flat restatement of the headline. Doesn't need to be dramatic (not every story is), but it should give the reader something the headline alone doesn't — the stakes, the "why this matters" angle, or the specific human detail.`,
     `   HARD RULE: never open with "[Name] just [verb]" — that shape alone accounts for a large share of this account network's recent hooks and is an obvious tell. Also never use "said the quiet part out loud" or "hits different" — both are already overused network-wide. Vary the OPENING WORD/shape every time: sometimes lead with the stakes, sometimes a scene, sometimes a real number, sometimes a direct claim — never the same recognizable skeleton twice in a row.`,
+    // ⛔ OPERATOR FIX (2026-09-11, real live incident, severe): confirmed
+    // live via direct comparison on the SAME flagship page — posts opening
+    // with a clear, specific, name-and-stakes hook (structurally close to a
+    // real headline, just not a copy-pasted one) drew 400-430,000+ views;
+    // posts opening vague and unnamed ("Week 1 is three days away and
+    // Flournoy's still getting his deal locked in") drew 5-42. The
+    // ban above on "[Name] just [verb]" and other cliché skeletons was
+    // correctly fixing a real repetition problem, but left no positive
+    // requirement in its place — the model filled the gap by dropping the
+    // subject's identity entirely, assuming a level of fan familiarity real
+    // cold-scroll readers don't have. Avoiding a stale SKELETON must never
+    // mean avoiding the actual SUBSTANCE (who this is about, what happened)
+    // — those two are independent: vary the sentence shape all you like,
+    // but the reader must be able to tell WHO this is about and roughly
+    // WHAT happened within the first line, the same way a real headline
+    // would, without literally being one.
+    `   HARD REQUIREMENT: regardless of which sentence shape you use, the hook (or the sentence immediately after it) must name the actual real person/team this story is about — their real name as given in the facts, not a bare pronoun or last-name-only reference that assumes the reader already knows who that is. A reader scrolling past who has never seen this account before must be able to tell WHO this is about and roughly WHAT happened within the first line or two. Varying the opening's sentence shape (per the rule above) is about avoiding a stale, recognizable SKELETON — it is never a reason to drop the subject's identity or make the reader guess who or what the story is about.`,
     `2. THE FULL STORY (2-3 short paragraphs, conversational, NOT a copied or lightly-reworded headline) — tell the WHOLE story using everything genuinely available in the given facts, including the specific detail/quote/number if there is one. Nothing held back. First part: what actually happened. Second part: why it matters / the real context or consequence. Write it the way you'd actually tell a friend the news — direct, complete, no artificial suspense.`,
     // ⛔ OPERATOR FIX (2026-08-24): confirmed live — a real post closed "Some
     // legacies set impossible standards," a near-verbatim lift of this

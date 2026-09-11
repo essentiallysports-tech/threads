@@ -88,6 +88,16 @@ export interface Candidate {
   headline: string;
   link: string; // the ONE link that goes in the reply
   publishedAt: string; // ISO
+  // ⛔ OPERATOR FIX (2026-09-11, real live incident): evergreen_search stamps
+  // `publishedAt` as synthetic-today (see sourceFromEsEvergreenArticles's own
+  // comment) so freshness gates don't wrongly exclude a real-but-aged
+  // article — but that leaves no genuine date for anything that needs to
+  // know the article's REAL age (classifyCaptionAgeTone's retro/throwback
+  // framing, confirmed live captioning a CURRENT Rory McIlroy FedExCup story
+  // as "Throwback to..."). Set only by the evergreen tier when the source
+  // WordPress API actually returned a real date; absent for every other
+  // source and for the rare case that date was itself missing.
+  realPublishedAt?: string; // ISO, the article's REAL publish date (not synthetic)
   thumbnailUrl?: string | null;
   rawText?: string; // whatever text is available to build a caption from
   // ⛔ OPERATOR FIX (2026-08-08): "only ES article/newsletter link allowed in

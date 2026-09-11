@@ -848,9 +848,17 @@ export function computeNationalStoryScore(candidate: Candidate): StoryScoreBreak
   // every evergreen candidate computed ageHours ~= 0 and scored the MAXIMUM
   // breakingNews tier (35/35), the exact overclaim this function exists to
   // prevent, on a page whose entire premise is "how fresh is this really."
-  // Floored at the same tier as confirmed 24h+ content — we have zero real
-  // signal it's fresh, so it gets none of that credit.
-  const ageHours = candidate.source === "evergreen_search" ? Infinity : (Date.now() - new Date(candidate.publishedAt).getTime()) / (1000 * 60 * 60);
+  // Floored at the same tier as confirmed 24h+ content when we have zero
+  // real signal it's fresh. ⛔ OPERATOR FIX (2026-09-11): realPublishedAt
+  // (sourcing.ts) now carries a real signal when the source API provided
+  // one — use it instead of unconditionally flooring, same reasoning as
+  // classifyCaptionAgeTone's matching fix.
+  const ageHours =
+    candidate.source === "evergreen_search"
+      ? candidate.realPublishedAt
+        ? (Date.now() - new Date(candidate.realPublishedAt).getTime()) / (1000 * 60 * 60)
+        : Infinity
+      : (Date.now() - new Date(candidate.publishedAt).getTime()) / (1000 * 60 * 60);
   const breakingNews = ageHours <= 1 ? 35 : ageHours <= 24 ? 20 : 8;
 
   const sourceTier = candidate.source === "es_article" ? 25 : candidate.source === "beehiiv_poll" ? 18 : 10;
@@ -1878,7 +1886,26 @@ export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
   // effect of the old logic: the retro template had structurally never fired
   // across 2,327 real posts, and genuinely old evergreen content was being
   // captioned/rendered as if it were plain current news.
-  if (candidate.source === "evergreen_search") return "retro";
+  // ⛔ OPERATOR FIX (2026-09-11, real live incident): this used to return
+  // "retro" for EVERY evergreen_search candidate unconditionally — correct
+  // for the 5-year-lookback WordPress tier's ORIGINAL purpose (genuinely old
+  // archive content), but the 2026-09-10/11 dedup fix (sourcing.ts) now also
+  // routes genuinely RECENT articles through this exact tier whenever they
+  // win a freshness-rescue over a stale duplicate. Confirmed live: real Golf
+  // Syndicate posts about Rory McIlroy's CURRENT FedExCup form and Tiger
+  // Woods' CURRENT Stanford appearance were captioned "Throwback to..." —
+  // both were only 1-2 days old. `realPublishedAt` (sourcing.ts) carries the
+  // article's ACTUAL date when the source API provided one; check that
+  // first and only fall back to the unconditional rule when no real date is
+  // available at all (sourceFromEvergreenBank's webSearch-derived results,
+  // which never carry a real date to begin with).
+  if (candidate.source === "evergreen_search") {
+    if (!candidate.realPublishedAt) return "retro";
+    const realAgeMs = Date.now() - new Date(candidate.realPublishedAt).getTime();
+    if (realAgeMs <= BREAKING_ELIGIBLE_MAX_HOURS * 3600 * 1000) return "current";
+    if (realAgeMs >= RETRO_TONE_MIN_DAYS * 24 * 3600 * 1000) return "retro";
+    return "standard";
+  }
   const ageMs = Date.now() - new Date(candidate.publishedAt).getTime();
   if (ageMs <= BREAKING_ELIGIBLE_MAX_HOURS * 3600 * 1000) return "current";
   if (ageMs >= RETRO_TONE_MIN_DAYS * 24 * 3600 * 1000) return "retro";
