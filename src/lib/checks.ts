@@ -519,6 +519,29 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
       if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
     }
   }
+  // ⛔ OPERATOR FIX (2026-09-12, real live incident): `rival_entities` has
+  // been declared on PageConfig and populated with real, curated data for
+  // 15 of 35 active pages (real rival teams/racers/fighters an operator
+  // deliberately typed in) since this project's early days — but nothing
+  // anywhere ever actually READ the field, so it did nothing. Confirmed
+  // live on the exact page (p40, Detroit Lions Community) the 2026-08-15
+  // incident above was about: this page's own registered rivals (Green Bay
+  // Packers, Minnesota Vikings, Chicago Bears) are real, on-topic crossover
+  // content by the page's own configuration — a real "Packers HC Matt
+  // LaFleur..." / "Aaron Rodgers calls LaFleur a clown" story pair sat in
+  // p40's candidate pool and got NO_NAMED_ENTITY-rejected purely because
+  // this field was dead. `rival_entities` is exactly the CURATED, narrow
+  // replacement the 2026-08-15 fix needed for the too-loose "any same-sport
+  // story" fallback it correctly removed — it was just never wired up. Same
+  // matching rules as a registered entity's own keywords (length>2, not a
+  // placeholder, respects the same includeRawText option) since these are
+  // meant to be treated identically once matched — a rival is not the
+  // page's flagship, but it's exactly the kind of real, on-topic secondary
+  // match `requiresNamedEntity`'s existing non-flagship logic already knows
+  // how to allow.
+  for (const name of page.rival_entities || []) {
+    if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
+  }
   matched.sort((a, b) => firstOccurrenceIndex(orderingHaystack, a) - firstOccurrenceIndex(orderingHaystack, b));
   return matched;
 }
@@ -1194,7 +1217,16 @@ export function topicFrequencyCheck(
   }
 
   if (primaryEntityName && !isSingleEntityPage) {
-    const entityCount = last24h.filter((p) => p.entity === primaryEntityName).length;
+    // ⛔ OPERATOR FIX (2026-09-12, real live incident, comprehensive audit):
+    // raw string equality here silently splits the SAME real subject across
+    // multiple counted "entities" whenever casing/whitespace differs between
+    // what got written to postedLog at post time and this candidate's own
+    // primaryEntityName — confirmed live on several fleet pages, undercounting
+    // (and in one case skipping a cap this rule is meant to enforce) purely
+    // from that mismatch, independent of any threshold value. Same fix
+    // applied to dominantNarrativeCheck below (identical root cause).
+    const normalized = primaryEntityName.toLowerCase().trim();
+    const entityCount = last24h.filter((p) => p.entity?.toLowerCase().trim() === normalized).length;
     if (entityCount >= 3) return { pass: false, reason: `TOPIC_FREQUENCY_ENTITY_CAP:${primaryEntityName}` };
   }
   if (primarySportGroup && !isSingleSportGroupPage) {
@@ -1222,7 +1254,10 @@ export function dominantNarrativeCheck(
   const now = Date.now();
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
-  const entityCount = last7d.filter((p) => p.entity === primaryEntityName).length;
+  // ⛔ OPERATOR FIX (2026-09-12): see topicFrequencyCheck's matching fix
+  // just above — same raw-string-equality bug, same normalization.
+  const normalizedEntity = primaryEntityName.toLowerCase().trim();
+  const entityCount = last7d.filter((p) => p.entity?.toLowerCase().trim() === normalizedEntity).length;
   // ⛔ OPERATOR FIX (2026-09-09, real live incident): the +1/+1 Laplace
   // smoothing here was meant to be lenient near the sample-size floor above,
   // but it does the opposite — at exactly the 4-7 post volumes several real
@@ -1497,6 +1532,22 @@ export function isWomensOnlyPage(page: PageConfig): boolean {
   return WOMENS_ONLY_THEME_RE.test(page.page_theme || "");
 }
 
+// ⛔ OPERATOR FIX (2026-09-12, real live incident, comprehensive audit):
+// extracted from requiresNamedEntity's own 2026-09-09 fix (see that
+// function's comment for the full "true flagship vs co-equal roster"
+// reasoning) so dailyRunWorkflow.ts's freshness-window choice can use the
+// SAME real test instead of its own cruder `page_type === "entity" ? 24 : 72`
+// — confirmed live that a flat page_type check wrongly gives the tight
+// single-athlete 24h freshness window to co-equal multi-person roster pages
+// (page_type "entity" without a true flagship), killing real, on-topic,
+// 24-72h-old news across at least 13 fleet pages that structurally belong
+// in the same 72h bucket a "regional" page already gets.
+export function isTrueSingleFlagshipPage(page: PageConfig): boolean {
+  if (page.page_type !== "entity") return false;
+  const weights = page.entities.map((e) => e.weight).sort((a, b) => b - a);
+  return weights.length === 1 || weights[0] >= 2 * weights[1];
+}
+
 export function requiresNamedEntity(candidate: Candidate, page: PageConfig, matchedNames: string[]): boolean {
   if (page.page_type === "national") return false;
   if (page.entities.length === 0) return false;
@@ -1560,18 +1611,76 @@ export function requiresNamedEntity(candidate: Candidate, page: PageConfig, matc
   // incidents on file (p54's 4x vs this page's 1.14x) — anything closer is a
   // co-equal roster, same as an explicitly "regional" page already is.
   if (page.page_type === "entity") {
-    const weights = page.entities.map((e) => e.weight).sort((a, b) => b - a);
-    const hasTrueFlagship = weights.length === 1 || weights[0] >= 2 * weights[1];
+    const hasTrueFlagship = isTrueSingleFlagshipPage(page);
     if (!hasTrueFlagship) return matchedNames.length === 0;
+    const weights = page.entities.map((e) => e.weight).sort((a, b) => b - a);
     const flagshipKeywords = new Set(
       page.entities
         .filter((e) => e.weight === weights[0])
         .flatMap((e) => (e.keywords.length > 0 ? e.keywords : [e.name]))
         .map((k) => k.toLowerCase())
     );
-    return !matchedNames.some((m) => flagshipKeywords.has(m.toLowerCase()));
+    if (matchedNames.some((m) => flagshipKeywords.has(m.toLowerCase()))) return false;
+    // ⛔ OPERATOR FIX (2026-09-12, real live incident, comprehensive audit):
+    // this used to reject EVERY non-flagship match, on the theory that a
+    // roster slot below the flagship only exists "for legitimate crossover
+    // coverage" (2026-08-31's own comment above) — i.e. a story naming that
+    // slot should still mention the flagship too. That's stricter than any
+    // page's own registered theme actually asks for: p54's real page_theme
+    // is "a UFC hub... covering the full sport: title fights, rankings,
+    // Dana White announcements, rival storylines, and major UFC events
+    // league-wide" — real, on-topic, registered-entity news with zero
+    // McGregor mention is exactly what that theme describes, not an
+    // exception to it. Confirmed live: p54 lost 100% of one hourly cycle's
+    // candidates to this (Dana White/Ryan Garcia, Islam Makhachev's MRI
+    // update, Dana White/Topuria, and 6 more — all name a real registered
+    // p54 entity, none mention McGregor). Same shape confirmed on p61
+    // (Shedeur Sanders stories rejected on a Deion-flagship page) and p52
+    // (Shaq/Phil Jackson stories rejected on a Kobe-flagship page).
+    // Relaxed to allow a real non-flagship match — but NOT the original
+    // 2026-08-31 incident's own rawText-only shape: that fix's own example
+    // was a registered slot matching only because it happened to appear
+    // deep in scraped article text, not because the story was actually
+    // about that person. Recomputing the match headline/subject-only
+    // (excludeRawText) keeps that original guard intact while no longer
+    // blanket-rejecting a real, headline-level, on-topic crossover story
+    // just because it isn't ALSO about the flagship.
+    const headlineLevelMatches = realRegisteredEntityMatches(candidate, page, { includeRawText: false });
+    return headlineLevelMatches.length === 0;
   }
   return matchedNames.length === 0;
+}
+
+// ⛔ OPERATOR ADD (2026-09-12, explicit operator directive): "for the
+// essentiallysports media page, these are the only 4 sports for which 1
+// post should go each... from 9, we have to bring it down to 4." A
+// "national" page_type (p44) skips requiresNamedEntity entirely (see its
+// own `if (page.page_type === "national") return false;` above) and
+// relies on computeNationalStoryScore against national_threshold instead —
+// that scoring has no concept of "only these sports" or "one post per
+// sport per day," so without this gate any high-scoring cross-sport story
+// stays eligible regardless of subject. No-op (always passes) for every
+// page without threads.fixed_sport_slots configured — every existing page
+// is completely unaffected.
+export function checkFixedSportSlot(candidate: Candidate, page: PageConfig, postedLog: PostedLogEntry[]): { pass: boolean; reason: string | null } {
+  const slots = page.threads?.fixed_sport_slots;
+  if (!slots || slots.length === 0) return { pass: true, reason: null };
+  const sportGroup = matchedSportGroup(candidate, page);
+  const slot = sportGroup ? slots.find((s) => s.sport_groups.some((g) => g.toLowerCase() === sportGroup.toLowerCase())) : null;
+  if (!slot) return { pass: false, reason: "NOT_IN_FIXED_SPORT_SLOTS" };
+  const slotGroupsLower = slot.sport_groups.map((g) => g.toLowerCase());
+  // Same rolling-window idiom as alreadyPostedRecently/duplicateLinkRecently
+  // just below — a fixed calendar-day boundary would need a timezone
+  // decision this pipeline doesn't otherwise make; 24h since this slot's
+  // own last real post is a simple, consistent "once a day" cap instead.
+  const postedWithin24h = postedLog.some((p) => {
+    if (!p.posted_at || !p.sportGroup) return false;
+    if (!slotGroupsLower.includes(p.sportGroup.toLowerCase())) return false;
+    const ageMs = Date.now() - new Date(p.posted_at).getTime();
+    return ageMs >= 0 && ageMs < 24 * 3600 * 1000;
+  });
+  if (postedWithin24h) return { pass: false, reason: `FIXED_SPORT_SLOT_ALREADY_POSTED:${slot.label}` };
+  return { pass: true, reason: null };
 }
 
 // Same key (exact story/edition) already posted on this page, ever within
@@ -1961,6 +2070,32 @@ function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig)
   // matching (es_article/web_search/social_search), not to second-guess
   // the one tier built specifically for these pages.
   //
+  // ⛔ OPERATOR FIX (2026-09-12, real live incident, comprehensive audit):
+  // this blanket exemption assumed EVERY evergreen_search candidate is
+  // "topically retrospective by construction" — true for sourceFromEvergreenBank/
+  // sourceFromEvergreenWebSearch's curated-angle search, but sourceFromEsEvergreenArticles
+  // (sourcing.ts) shares this exact same source tag for a DIFFERENT query
+  // shape: "any real ES article mentioning a registered entity from the
+  // last 5 years," with no guarantee the article's actual SUBJECT is
+  // historical at all. Confirmed live and currently active on all 3
+  // registered retrospective pages: MMA Archives ("vintage fights/iconic
+  // finishes/retired champions only") posted current, breaking UFC event
+  // news via this exemption 2 days before this audit; Kobe 8/24 Legacy
+  // ("Kobe's career/Lakers dynasty 2000-2016, not current-season news") had
+  // half its evergreen_search posts be current-season/active-player/
+  // celebrity stories that merely name-drop "Kobe" — the exact same failure
+  // shape as the 2026-08-12 incident above this fix responds to, just
+  // reached via a different tier. realPublishedAt (sourcing.ts, added
+  // 2026-09-11) now carries the article's REAL date when the source API
+  // provided one — checking it here closes this specific reach of the same
+  // hole without touching the genuinely angle-driven, dateless tiers this
+  // exemption was built for (they never set realPublishedAt, so they keep
+  // the unconditional exemption below unchanged).
+  if (candidate.source === "evergreen_search" && candidate.realPublishedAt) {
+    const realAgeMs = Date.now() - new Date(candidate.realPublishedAt).getTime();
+    return realAgeMs < RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000;
+  }
+  //
   // ⛔ OPERATOR FIX (2026-08-24, real live incident, resolves the 2026-08-23
   // flagged decision above): confirmed live on the two newly-onboarded
   // retrospective pages (Classic NASCAR, MMA Archives) — TOO_RECENT_FOR_
@@ -2048,6 +2183,10 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   }
   if (requiresNamedEntity(candidate, page, matchedEntityNames(candidate, page))) {
     return { pass: false, reason: "NO_NAMED_ENTITY" };
+  }
+  const fixedSlot = checkFixedSportSlot(candidate, page, postedLog);
+  if (!fixedSlot.pass) {
+    return { pass: false, reason: fixedSlot.reason };
   }
   // Allowlist, not the old competitor blocklist — strictly subsumes it
   // (anything on COMPETITOR_DOMAINS necessarily fails this too), and also

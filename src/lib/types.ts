@@ -34,6 +34,31 @@ export interface ThreadsConfig {
   // default; only populate with hashtags actually confirmed from real fan
   // usage for that page, never invented.
   branded_hashtags?: string[];
+  // ⛔ OPERATOR ADD (2026-09-12, explicit operator directive): "for the
+  // essentiallysports media page, these are the only 4 sports for which 1
+  // post should go each... to be scheduled at the time told." Before this,
+  // a "national" page (p44) had no way to restrict itself to a fixed set of
+  // sports or pin a post to a specific clock time — every post on every
+  // page just gets scheduled for "~1 hour from whenever this cycle
+  // finishes" (dailyRunWorkflow.ts's `postTime`). `sport_groups` is a flat
+  // matchable-keyword list with no per-entry cap or timing, so this is a
+  // separate, additive structure: when present, checkFixedSportSlot
+  // (checks.ts) restricts candidates to ONLY a sport_group in one of these
+  // slots and caps each slot to one post per rolling 24h, and
+  // dailyRunWorkflow.ts's scheduling step pins that item's post to the
+  // slot's next IST clock-time occurrence instead of the default "+1h"
+  // timestamp. `sport_groups` here can list MULTIPLE real matchable
+  // strings for one slot (e.g. ["UFC","Boxing"] both feeding one "Combat"
+  // slot/post) — matchedSportGroup only ever matches the literal words a
+  // real headline actually contains ("UFC", "Boxing"), never the slot's
+  // own display label, which may not appear in any real story text at all.
+  fixed_sport_slots?: FixedSportSlot[];
+}
+
+export interface FixedSportSlot {
+  label: string; // display/log name for this slot, e.g. "Combat" — not itself matched against candidate text
+  sport_groups: string[]; // real page.sport_groups entries that feed this one slot (matchedSportGroup semantics)
+  post_time_ist: string; // "HH:MM", 24h IST clock time this slot's one daily post is scheduled for
 }
 
 export interface PageConfig {

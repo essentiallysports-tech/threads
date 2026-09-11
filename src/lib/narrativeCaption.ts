@@ -17,7 +17,20 @@ import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 import { classifyCaptionAgeTone } from "./checks";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
+// Haiku switch (cost-driven, no compensating prompt/eval work) is the
+// documented root cause of the same-day autopost volume collapse fixed on
+// entityResolution.ts's and checks.ts's judgment-gate calls (see their
+// matching comments) — this is the same class of failure, just on a
+// generation task instead of a gate: a real live incident this week
+// (Sep7-11 views collapse) traced to this exact caption call consistently
+// failing to name the story's real subject in the hook, a nuanced
+// instruction Haiku was demonstrably worse at following than Sonnet was
+// pre-switch. Daily AI Gateway spend ran $3.20-7.01 against the $12 soft /
+// real $13 hard cap the days around this fix — full headroom for Sonnet's
+// ~3x cost on the highest-leverage call in the whole pipeline for what a
+// reader actually sees.
+const MODEL = "anthropic/claude-sonnet-4-5";
 
 // Explicit engagement-bait ban — Meta/Threads demonetize this pattern, and
 // it's a standing operator policy across every ES page, not specific to this
