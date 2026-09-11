@@ -263,6 +263,19 @@ export interface EsArticleResult {
   title: string;
   url: string;
   publishedTime: string | null; // "HH:MM" UTC — no date component, matching esMcp.ts's original contract
+  // ⛔ OPERATOR FIX (2026-09-11, real live incident): the full real date WAS
+  // always available here (date_gmt, fetched in FIELDS below) but got
+  // reduced to time-of-day only, matching esMcp.ts's old contract — which
+  // meant sourceFromEsEvergreenArticles (sourcing.ts) had no real date to
+  // give a rescued-but-actually-recent article, only the synthetic "today"
+  // stamp it uses for freshness-gate purposes. classifyCaptionAgeTone
+  // (checks.ts) then trusted `source === "evergreen_search"` alone as "this
+  // is old" — wrong the moment a genuinely recent article reaches this tier
+  // (confirmed live: real Golf Syndicate posts about Rory McIlroy's CURRENT
+  // FedExCup run and Tiger Woods' CURRENT Stanford appearance captioned as
+  // "Throwback to..."). Full date now preserved so callers can tell real
+  // age from tier-of-origin.
+  dateGmt: string | null; // "YYYY-MM-DDTHH:MM:SS", genuinely UTC (WordPress's date_gmt)
 }
 
 interface WpPost {
@@ -351,6 +364,7 @@ function toArticleResults(posts: WpPost[]): EsArticleResult[] {
       title: stripHtml(p.title!.rendered),
       url: p.link,
       publishedTime: utcTimeOfDay(p.date_gmt),
+      dateGmt: p.date_gmt || null,
     }));
 }
 
