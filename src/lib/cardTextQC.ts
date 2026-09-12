@@ -26,7 +26,18 @@ import { fetchWithTimeout } from "./httpUtil";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
+// Haiku switch was never validated against production output before
+// shipping — entityResolution.ts's and checks.ts's matching comments
+// document the same switch tanking real autopost volume (9,896 -> 484
+// sessions Sep8-10) on other judgment-gate calls, both since reverted to
+// Sonnet. This file's three vision-judgment calls (text/subject/background
+// QC, the actual photo-subject match, and the generic-logo match) are the
+// same class of call — a real pass/fail judgment gating whether a card
+// ships at all, not a cheap formatting task — so they get the same fix.
+// Daily AI Gateway spend was $3.20-7.01 against the $12 soft cap / real $13
+// hard cap the days around this fix, full headroom for Sonnet's ~3x cost.
+const MODEL = "anthropic/claude-sonnet-4-5";
 
 export interface CardTextQCResult {
   pass: boolean;

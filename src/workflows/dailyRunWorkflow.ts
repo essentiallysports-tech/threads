@@ -1,7 +1,7 @@
 import { proxyActivities, proxyLocalActivities, log, workflowInfo } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { PageRunResult, PageConfig, Candidate, PostedLogEntry } from "../lib/types";
-import { matchedEntityNames, matchedSportGroup } from "../lib/checks";
+import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage } from "../lib/checks";
 
 // ⛔ OPERATOR FIX (2026-08-22, real live incident): checkCandidate,
 // checkTopicFrequency, and checkDominantNarrative were all proxied as full
@@ -166,6 +166,21 @@ export interface DailyRunOptions {
   // run-once or an already-scheduled fire from a pre-sharding deploy safe.
   shardIndex?: number;
   shardCount?: number;
+}
+
+// ⛔ OPERATOR ADD (2026-09-12, explicit operator directive): fixed-slot pages
+// (p44) need a real IST wall-clock post time, not "+1h from now" — IST has a
+// constant +5:30 offset (no DST), so shifting the instant by that offset,
+// reading its Y/M/D in UTC getters, and rebuilding at the target H:M on that
+// same wall date is a correct, dependency-free way to get "today's" (or if
+// already past, tomorrow's) next occurrence without a timezone library.
+function nextIstOccurrenceUtc(hhmm: string, fromUtc: Date): Date {
+  const [h, m] = hhmm.split(":").map(Number);
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const istNow = new Date(fromUtc.getTime() + IST_OFFSET_MS);
+  const istTargetSameDay = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate(), h, m, 0));
+  const targetUtc = new Date(istTargetSameDay.getTime() - IST_OFFSET_MS);
+  return targetUtc.getTime() <= fromUtc.getTime() ? new Date(targetUtc.getTime() + 24 * 3600 * 1000) : targetUtc;
 }
 
 // This function is the deterministic replacement for the old prose skill
@@ -634,7 +649,17 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         // actual stale-content path, sourceFromEsEvergreenArticles's faked
         // "now" timestamp, is handled explicitly via classifyCaptionAgeTone
         // instead of relying on a loose accuracy-gate window to catch it).
-        const maxAgeHours = state.page.page_type === "entity" ? 24 : 72;
+        // ⛔ OPERATOR FIX (2026-09-12, real live incident, comprehensive
+        // audit): the flat page_type check above wrongly gave every
+        // page_type "entity" page the tight 24h window, including co-equal
+        // multi-person roster/vault pages (Vintage NASCAR Vault, MMA
+        // Archives, etc.) that have the same editorial shape as a 72h
+        // "regional" page — confirmed live killing real, on-topic,
+        // 24-72h-old news across 13+ fleet pages every hour. Reuses
+        // requiresNamedEntity's own real "true flagship vs co-equal roster"
+        // test (checks.ts) instead of trusting the page_type label alone —
+        // only a genuinely single-flagship page gets the tighter window now.
+        const maxAgeHours = isTrueSingleFlagshipPage(state.page) ? 24 : 72;
         const accuracy = await checkAccuracy(candidate, athleteNames[0] || null, maxAgeHours);
         if (!accuracy.pass) {
           state.attemptFailures.push(`${candidate.key}:${accuracy.reason ?? "ACCURACY_GATE_FAILED"}`);
@@ -920,7 +945,18 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   for (const item of readyToPost) {
     const indexForPage = postCountForPage.get(item.page.page_id) ?? 0;
     postCountForPage.set(item.page.page_id, indexForPage + 1);
-    const itemPostTime = new Date(postTime.getTime() + indexForPage * 15 * 60 * 1000);
+    // ⛔ OPERATOR ADD (2026-09-12, explicit operator directive): a page with
+    // threads.fixed_sport_slots (p44) pins each matched item to that slot's
+    // own IST clock time instead of the default "+1h from cycle completion"
+    // — checks.ts's checkFixedSportSlot already guarantees at most one
+    // ready-to-post item per slot reaches here, so there's no same-slot
+    // collision to stagger. Same Date.now()-is-fine reasoning as `postTime`
+    // above: this only ever affects a future Postiz schedule timestamp,
+    // never a workflow branching decision.
+    const fixedSlot = item.page.threads?.fixed_sport_slots?.find((s) =>
+      item.sportGroup ? s.sport_groups.some((g) => g.toLowerCase() === item.sportGroup!.toLowerCase()) : false
+    );
+    const itemPostTime = fixedSlot ? nextIstOccurrenceUtc(fixedSlot.post_time_ist, new Date()) : new Date(postTime.getTime() + indexForPage * 15 * 60 * 1000);
 
     // ⛔ OPERATOR FIX (2026-08-10): same class of bug as attemptPageCandidates
     // above — a Postiz/S3 failure scheduling ONE already-rendered item must

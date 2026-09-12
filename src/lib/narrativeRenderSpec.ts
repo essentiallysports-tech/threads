@@ -21,7 +21,14 @@ import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 import { truncateAtWordBoundary } from "./headlineTruncation";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL = "anthropic/claude-haiku-4-5";
+// ⛔ OPERATOR FIX (2026-09-12, real live incident): same root cause and fix
+// as narrativeCaption.ts's matching comment — the 2026-09-08 fleet-wide
+// Haiku switch was never validated against production output, and this
+// call decides the actual on-card headline/accent/kicker copy readers see,
+// the same "reasons about what's dramatic/coherent" job proven to need a
+// stronger model. Daily AI Gateway spend ran $3.20-7.01 against the $12
+// soft / real $13 hard cap the days around this fix — full headroom.
+const MODEL = "anthropic/claude-sonnet-4-5";
 
 export interface RenderCopy {
   headline: string;
