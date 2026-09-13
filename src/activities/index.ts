@@ -754,7 +754,25 @@ async function renderCardInner(
   // to extractEntitiesViaAI below exactly as if there'd been no real match
   // at all, the same tool already trusted to pick the right entity when
   // regex alone can't.
-  const hasRealEntityMatch = realMatches.length > 0 && !hasUnaccountedOtherName(candidate, realMatches);
+  // ⛔ OPERATOR FIX (2026-09-14, real live incident): "Who is Kyle Larson's
+  // Wife? Everything to Know About Katelyn Larson" posted on Hendrick
+  // Heroes with a photo verified AS Kyle Larson (correctly — he's really in
+  // it) instead of his wife, the story's actual subject. hasUnaccountedOtherName
+  // just above already exists for this exact wrong-photo class (Jimmie
+  // Johnson posted with Dale Earnhardt's photo; LeBron posted with Kobe's)
+  // — but its one regex guess (extractSimilarPlayerName) only ever returns
+  // the FIRST plausible name in the text. Here that's "Kyle Larson"
+  // himself, named first as the headline's possessor — which IS one of
+  // matchedNames, so the guess reads as "accounted for" and the real,
+  // later-appearing subject ("Katelyn Larson") never gets checked at all.
+  // A registered name appearing only as the POSSESSOR of a relation word
+  // ("'s wife", "'s girlfriend", "'s mother"...) is never itself the photo
+  // subject — treat this headline shape exactly like "no real match" so it
+  // falls through to extractEntitiesViaAI below, which reads the whole
+  // headline and resolves the person actually being profiled.
+  const PROFILE_OF_RELATION_RE = /\b(?:wife|husband|girlfriend|boyfriend|fianc[ée]e?|mother|father|mom|dad|son|daughter|kids?|children)\b/i;
+  const isProfileOfUnregisteredRelation = PROFILE_OF_RELATION_RE.test(candidate.headline);
+  const hasRealEntityMatch = realMatches.length > 0 && !hasUnaccountedOtherName(candidate, realMatches) && !isProfileOfUnregisteredRelation;
   // ⛔ OPERATOR ARCHITECTURE CHANGE (2026-08-11): "deterministic code isn't
   // able to choose which entity to pick from... claude has full context so
   // that can easily pick up what entity is needed." Tried BEFORE the regex
