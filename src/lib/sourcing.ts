@@ -889,6 +889,27 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   const todaysEntries = postedLog.filter((p) => (p.posted_at || "").startsWith(dateISO));
   const newsletterCount = todaysEntries.filter((p) => p.reply_url?.includes("utm_content=reply_link")).length;
   const preferNewsletter = shouldSourceFromNewsletter(newsletterCount, todaysEntries.length);
+  // ⛔ OPERATOR FIX (2026-09-14, explicit operator directive): "each page
+  // must get at least 3 quality posts a day... system to atleast try for
+  // 3 posts per page." Real incident: Dallas Cowboys Community, All Things
+  // Rogan, EssentiallySports Boxing, Boxing Bulletin, and Alex Eala Fan
+  // Club all went a full day with ZERO real posts — not because nothing
+  // was tried, but because genuinelyRelevantCount below (a NAME-MENTION
+  // heuristic checked BEFORE the real per-candidate gate gauntlet even
+  // runs) can look "satisfied" by a few safe-tier candidates that ALL then
+  // fail later gates (duplicate-story, source-mismatch, staleness) —
+  // leaving the page with nothing, and the wider tiers below never even
+  // got a chance to look, on this hour OR any repair-pass retry within it,
+  // because this same heuristic is recomputed fresh from the same
+  // safe-tier data every single time. This does not loosen any actual
+  // relevance/quality gate — every candidate the wider tiers turn up still
+  // has to survive the exact same runDeterministicChecks gauntlet
+  // everything else does. It only decides whether to bother trying wider,
+  // and a page that hasn't posted even 3 real times today has clearly not
+  // been well served by the safe tiers alone, regardless of what this
+  // heuristic estimated in advance.
+  const QUALITY_POST_TARGET_PER_DAY = 3;
+  const belowDailyQualityTarget = todaysEntries.length < QUALITY_POST_TARGET_PER_DAY;
 
   // ⛔ OPERATOR FIX (2026-08-10/11): "we have fallbacks for almost all of
   // them, make sure they don't become a roadblocker." This call ran
@@ -989,7 +1010,7 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // sourceFromTwitter/sourceFromReddit in socialSearch.ts are untouched and
   // fully working — re-enable by adding them back to the Promise.all below.
   let riskyCandidates: Candidate[] = [];
-  if (genuinelyRelevantCount < MIN_SAFE_CANDIDATES) {
+  if (genuinelyRelevantCount < MIN_SAFE_CANDIDATES || belowDailyQualityTarget) {
     const webCandidates = await sourceFromWebSearch(page, dateISO);
     riskyCandidates = webCandidates.filter((c) => !postedKeys.has(c.key) && entityOrSportMatch(c, page));
   }
@@ -1019,7 +1040,7 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     page.entities.length > 0
       ? combinedSoFar.filter((c) => realRegisteredEntityMatches(c, page).length > 0).length
       : combinedSoFar.length;
-  if (genuinelyRelevantCountAfterRisky < MIN_SAFE_CANDIDATES) {
+  if (genuinelyRelevantCountAfterRisky < MIN_SAFE_CANDIDATES || belowDailyQualityTarget) {
     const [evergreenBankCandidates, evergreenWebCandidates] = await Promise.all([
       sourceFromEvergreenBank(page, dateISO),
       sourceFromEvergreenWebSearch(page, dateISO),
