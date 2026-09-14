@@ -208,6 +208,30 @@ export async function sourceFromWebSearch(page: PageConfig, dateISO: string): Pr
   const entityNames = page.entities.map((e) => e.name);
   const sportTerm = page.sport_groups[0] ? ` ${page.sport_groups[0]}` : "";
 
+  // ⛔ OPERATOR FIX (2026-09-14, real live incident): every query below is
+  // phrased as one or more registered PLAYER names — a genuinely fresh,
+  // on-topic TEAM-level story (a game recap, a coaching decision) that
+  // doesn't happen to prominently feature one specific named player in its
+  // own search snippet is never even searched for. Real incident: Dallas
+  // Cowboys Community's real candidate pool was full of stale/duplicate
+  // player-specific stories on a real NFL Monday, while a bare "dallas
+  // cowboys" query — the page's own theme, and a keyword shared across 4
+  // of its 5 registered entities — would very plausibly have found real,
+  // current team coverage instead. A keyword shared across 2+ registered
+  // entities is a strong, real signal it's the actual team/org name, not
+  // one player's own detail — add it as its own search term. Never
+  // fabricated when no such shared keyword exists (a single-subject page
+  // like a solo athlete's fan page has nothing to share, and gets no new
+  // term — its existing per-entity queries are already the right shape).
+  const keywordCounts = new Map<string, number>();
+  for (const e of page.entities) {
+    for (const k of e.keywords) {
+      const norm = k.toLowerCase().trim();
+      keywordCounts.set(norm, (keywordCounts.get(norm) || 0) + 1);
+    }
+  }
+  const sharedTeamKeyword = [...keywordCounts.entries()].find(([, count]) => count >= 2)?.[0] || null;
+
   const termBatches: string[][] =
     entityNames.length > 0
       ? Array.from({ length: Math.ceil(entityNames.length / ENTITY_BATCH_SIZE) }, (_, i) =>
@@ -216,6 +240,7 @@ export async function sourceFromWebSearch(page: PageConfig, dateISO: string): Pr
       : page.sport_groups.length > 0
       ? [page.sport_groups.slice(0, 2)]
       : [];
+  if (sharedTeamKeyword) termBatches.push([sharedTeamKeyword]);
   if (termBatches.length === 0) return [];
 
   // Sport term appended even for named-entity queries — a bare name search
