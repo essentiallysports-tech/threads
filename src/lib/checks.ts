@@ -772,6 +772,26 @@ const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿
 // reject") without weakening the real catch: genuine non-English text
 // carries its accents across multiple different words, not stacked inside
 // one loanword.
+// ⛔ OPERATOR FIX (2026-09-14, real live incident): the 2026-09-10 fix just
+// above already named this exact residual risk and accepted it as rare —
+// now confirmed firing again on two different real, fully-English WWE
+// headlines ("WWE Saving Netflix? Fans Overjoyed at Decade-Long Service...",
+// "'It Feeds Our Desire': Netflix CEO Compliments Latest $5B Deal With
+// WWE..."), both false-positived on `rawText`, not the headline itself
+// (confirmed live: neither headline alone trips this check). A real,
+// longer scraped article body incidentally containing 2 unrelated
+// loanwords/accented names (a quoted executive's surname, "café," "à la
+// carte" in Netflix-business coverage, etc.) is a near-certainty at any
+// real article length — genuine non-English content instead carries
+// accents across a real PROPORTION of its words, not just 2 out of
+// however many hundred. Scaling the bar with text length (a density floor,
+// on top of the existing >=2 absolute floor) keeps catching a genuinely
+// foreign-language article while no longer punishing normal-length English
+// prose for 2 incidental loanwords — the short-headline-only case the
+// 2026-09-10 fix targeted is untouched (1 accented word still never
+// qualifies, exactly as before).
+const NON_ENGLISH_DENSITY_THRESHOLD = 0.05;
+
 export function isNonEnglishContent(candidate: Candidate): boolean {
   const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
   const text = [...new Set(parts)].join(" ");
@@ -779,7 +799,9 @@ export function isNonEnglishContent(candidate: Candidate): boolean {
   const accentedWords = new Set(
     (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || []).map((w) => w.toLowerCase())
   );
-  return accentedWords.size >= 2;
+  if (accentedWords.size < 2) return false;
+  const totalWords = text.split(/\s+/).filter(Boolean).length;
+  return accentedWords.size / totalWords >= NON_ENGLISH_DENSITY_THRESHOLD;
 }
 
 // ⛔ OPERATOR FIX (2026-08-11): "story selection can be made much much
