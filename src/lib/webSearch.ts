@@ -522,7 +522,12 @@ const DATE_META_PATTERNS: RegExp[] = [
 
 async function fetchPublishedDate(url: string): Promise<string | null> {
   try {
-    const res = await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0" } }, 8_000);
+    // ⛔ OPERATOR FIX (2026-09-14): this explicit override was a bare
+    // "Mozilla/5.0" with nothing else — real browsers never send that alone,
+    // and it's a known bot-detection tell in its own right, weaker than just
+    // omitting the header and taking httpUtil.ts's own real-desktop-Chrome
+    // default. Removed so this inherits that default instead.
+    const res = await fetchWithTimeout(url, {}, 8_000);
     if (!res.ok) return null;
     const html = await res.text();
     for (const pattern of DATE_META_PATTERNS) {

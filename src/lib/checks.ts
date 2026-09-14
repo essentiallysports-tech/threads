@@ -1799,6 +1799,22 @@ const POLITICAL_TIER1 = [
 // politically-adjacent regardless of sports framing).
 const POLITICAL_TIER2 = [/\bpresident\b/i, /\bshooting\b/i, /\bpolitical\b/i, /white\s+house/i];
 const SPORTS_NOUNS = /\b(team|game|player|athlete|coach|league|season|championship|trophy|match|tournament|roster|draft|contract|stadium|arena|nfl|nba|mlb|nhl|ufc|mma|wnba|f1|nascar|golf|tennis|boxing)\b/i;
+// ⛔ OPERATOR FIX (2026-09-14, real live incident): "Terence Crawford Gives
+// Special Gift to Ukrainian President During Honored Visit to Ukraine" got
+// POLITICAL_TIER2-blocked on p56 (Boxing Bulletin) — a real, on-topic,
+// fresh boxing story about a real registered subject, killed because the
+// headline names Crawford (a person), not a generic sports NOUN like
+// "boxer"/"boxing". SPORTS_NOUNS only ever catches generic category words —
+// a headline about a specific, named athlete routinely has none of them at
+// all, which is exactly the shape of most real sports headlines. ES's own
+// article key/slug already reliably encodes the real category
+// ("boxing-news-...", "nfl-active-news-...", "ufc-mma-news-...") for the
+// es_article/shared_pool tiers, and external web_search/evergreen URLs
+// routinely carry the same signal in their own path ("/nfl/", "/boxing/",
+// "/mma/"...) — check both as an ADDITIONAL way to pass this context check,
+// never a new way to fail it (a false negative here still had to independently
+// clear every other check just like today).
+const SPORTS_SLUG_RE = /(nfl|nba|mlb|nhl|wnba|ufc|mma|boxing|golf|tennis|nascar|wwe|wrestling|ncaa|college-football|wta|atp|olympics|f1)[-_/]/i;
 const WHITE_HOUSE_VENUE = /white\s+house/i;
 
 // ⛔ OPERATOR FIX (2026-08-12, real live incident): the new "israel" Tier 1
@@ -1823,8 +1839,9 @@ export function politicalContentCheck(candidate: Candidate): { blocked: boolean;
     if (re.source === /\bisrael(i|is)?\b/i.source && ISRAEL_AS_NAME_RE.test(text)) continue;
     if (re.test(text)) return { blocked: true, reason: `POLITICAL_TIER1:${re.source}` };
   }
+  const hasSportsContext = SPORTS_NOUNS.test(text) || SPORTS_SLUG_RE.test(candidate.key) || SPORTS_SLUG_RE.test(candidate.link);
   for (const re of POLITICAL_TIER2) {
-    if (re.test(text) && !SPORTS_NOUNS.test(text)) {
+    if (re.test(text) && !hasSportsContext) {
       return { blocked: true, reason: `POLITICAL_TIER2_NO_SPORTS_CONTEXT:${re.source}` };
     }
   }
