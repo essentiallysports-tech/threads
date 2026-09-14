@@ -1252,6 +1252,18 @@ export function dominantNarrativeCheck(
   // forever, not a real signal of narrative crowding.
   if (!primaryEntityName || isSingleEntityPage) return { pass: true, reason: null };
   const now = Date.now();
+  // ⛔ OPERATOR FIX (2026-09-14, explicit operator directive): "if posts on a
+  // page are less than 3 in a day, then dominant narrative cap should not be
+  // enforced." Real incidents: Buffalo Bills' own franchise QB (Josh Allen)
+  // and Essentially Golf's Rory McIlroy both got capped here on real, fresh,
+  // on-topic stories while their pages sat at zero real posts for the day —
+  // enforcing narrative diversity is a lower priority than getting real
+  // volume out at all when a page is this starved. The cap's whole purpose
+  // (avoid one-note over-focus) presupposes there's already enough real
+  // recent volume to judge that from, which a starved page doesn't have
+  // regardless of what its 7-day window looks like.
+  const last24h = postedLog.filter((p) => withinHours(p, 24, now));
+  if (last24h.length < 3) return { pass: true, reason: null };
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   // ⛔ OPERATOR FIX (2026-09-12): see topicFrequencyCheck's matching fix
