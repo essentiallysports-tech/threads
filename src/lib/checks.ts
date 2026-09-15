@@ -1305,8 +1305,18 @@ export function dominantNarrativeCheck(
   // (avoid one-note over-focus) presupposes there's already enough real
   // recent volume to judge that from, which a starved page doesn't have
   // regardless of what its 7-day window looks like.
-  const last24h = postedLog.filter((p) => withinHours(p, 24, now));
-  if (last24h.length < 3) return { pass: true, reason: null };
+  // ⛔ OPERATOR FIX (2026-09-15, explicit operator directive): the 24h
+  // starved-window above was too loose for high-frequency pages. Real
+  // incident: Dallas Cowboys (p41, normal ~4h posting cadence) went 15.8h
+  // without a post — DOMINANT_NARRATIVE_CAP:dak prescott was the blocker —
+  // yet its rolling-24h count still read >=3 because those posts were from
+  // much earlier in the window, so the exemption above never engaged.
+  // Operator: "if in past 12 hours not even 3 posts have gone live, make
+  // sure no such stupid caps stops the posts." Tightened to 12h so the
+  // exemption actually catches a high-frequency page mid-drought instead of
+  // only a page that's been fully dead for a whole day.
+  const last12h = postedLog.filter((p) => withinHours(p, 12, now));
+  if (last12h.length < 3) return { pass: true, reason: null };
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   // ⛔ OPERATOR FIX (2026-09-12): see topicFrequencyCheck's matching fix
