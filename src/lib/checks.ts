@@ -2131,7 +2131,7 @@ export function isRetrospectiveOnlyPage(page: PageConfig): boolean {
   return RETROSPECTIVE_THEME_RE.test(page.page_theme || "");
 }
 
-function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig): boolean {
+export function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig): boolean {
   if (!isRetrospectiveOnlyPage(page)) return false;
   // evergreen_search deliberately searches for content ABOUT a curated
   // retrospective angle (e.g. "1979 Petty-Pearson Daytona finish") — a
@@ -2221,7 +2221,28 @@ function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig)
   return ageMs < RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000;
 }
 
+// ⛔ OPERATOR FIX (2026-09-15, explicit operator directive): "if posts are
+// less than 3 on a page per day, duplicate links etc should not be an
+// issue." Same reasoning as dominantNarrativeCheck's matching 2026-09-14
+// fix, applied to every OTHER repetition-avoidance gate (ALREADY_POSTED,
+// DUPLICATE_LINK_24H here; checkDuplicateStory in dailyRunWorkflow.ts,
+// which imports this same helper — checks.ts is fully bundled into that
+// workflow already, so a new named export here costs nothing extra):
+// getting real volume out is a higher priority than perfect novelty/dedup
+// when a page is this starved — these checks exist to stop a HEALTHY page
+// from looking repetitive, not to keep a starved one at zero. Real
+// incidents: Dallas Cowboys Community and Essentially Golf both sat at
+// zero real posts for the day while their only real, on-topic candidates
+// were rejected ALREADY_POSTED/DUPLICATE_LINK_24H. Relevance/quality gates
+// (entity match, political content, generic framing, etc.) are untouched —
+// this only ever relaxes "have we shown this before," never "is this
+// actually a good, on-topic candidate."
+export function isPageStarvedToday(postedLog: PostedLogEntry[]): boolean {
+  return postedLog.filter((p) => withinHours(p, 24, Date.now())).length < 3;
+}
+
 export function runDeterministicChecks(candidate: Candidate, page: PageConfig, postedLog: PostedLogEntry[]): CandidateCheckResult {
+  const isStarvedToday = isPageStarvedToday(postedLog);
   const political = politicalContentCheck(candidate);
   if (political.blocked) {
     return { pass: false, reason: political.reason };
@@ -2267,10 +2288,10 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   if (!isEsOwnedLink(candidate.link)) {
     return { pass: false, reason: "LINK_NOT_ES_OWNED" };
   }
-  if (alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
+  if (!isStarvedToday && alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
     return { pass: false, reason: "ALREADY_POSTED" };
   }
-  if (duplicateLinkRecently(candidate, postedLog, 24)) {
+  if (!isStarvedToday && duplicateLinkRecently(candidate, postedLog, 24)) {
     return { pass: false, reason: "DUPLICATE_LINK_24H" };
   }
   return { pass: true, reason: null };

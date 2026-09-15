@@ -8,6 +8,8 @@ import {
   isFlatStatDump,
   realRegisteredEntityMatches,
   computeNationalStoryScore,
+  isRetrospectiveOnlyPage,
+  isTooRecentForRetrospectivePage,
 } from "./checks";
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
@@ -1121,6 +1123,27 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // same-sport noise, not just whatever happened to publish most recently.
   const hasRealEntityMatch = (c: Candidate): number => (realRegisteredEntityMatches(c, page).length > 0 ? 1 : 0);
 
+  // ⛔ OPERATOR FIX (2026-09-15, real live incident): confirmed live on both
+  // real retrospective-only pages (Kobe 8/24 Legacy, Vintage NASCAR Vault):
+  // 100% of a full 20-candidate pool was current-news es_article/shared_pool
+  // content, every single one rejected TOO_RECENT_FOR_RETROSPECTIVE_PAGE —
+  // zero evergreen_search candidates even reached the pool, despite
+  // sourceFromEsEvergreenArticles running unconditionally for every page
+  // and there being a genuine "plethora" of old ES coverage on legends this
+  // well-covered. Root cause: tierRank below ranks es_article above
+  // evergreen_search regardless of page type, and a current story that
+  // happens to also name a registered entity (a real Shaq/Kobe-adjacent
+  // NBA story, say) ties on hasRealEntityMatch too — so on any page this
+  // well-covered, current stories fill all 20 MAX_CANDIDATES_PER_PAGE
+  // slots before a single evergreen one gets a chance, even though every
+  // one of those current candidates is STRUCTURALLY GUARANTEED to fail
+  // this page's own defining age gate. For a retrospective-only page,
+  // "will this candidate even survive this page's own core rule" has to
+  // outrank tier/entity signals tuned for pages that don't have that rule
+  // at all.
+  const survivesRetrospectiveGate = (c: Candidate): number => (isTooRecentForRetrospectivePage(c, page) ? 0 : 1);
+  const pageIsRetrospectiveOnly = isRetrospectiveOnlyPage(page);
+
   // ⛔ OPERATOR FIX (2026-09-07): "how do you determine biggest?" — see
   // computeNationalStoryScore in checks.ts for the full reasoning. Only
   // page_type "national" branches onto the new score: every other page
@@ -1152,6 +1175,10 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     }
   } else {
     unposted = unposted.sort((a, b) => {
+      if (pageIsRetrospectiveOnly) {
+        const survivesDiff = survivesRetrospectiveGate(b) - survivesRetrospectiveGate(a);
+        if (survivesDiff !== 0) return survivesDiff;
+      }
       const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
       if (entityDiff !== 0) return entityDiff;
       const rankDiff = tierRank(b) - tierRank(a);
