@@ -167,6 +167,18 @@ async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string)
     // this check has no story context to judge a genuine exception (a real
     // wedding/engagement story) against, so it doesn't try to.
     `Reply FAIL, regardless of whether ${subjectName} is correctly identified, if the photo shows kissing, making out, or other intimate/romantic physical contact. Normal athletic contact (hugs, high-fives, team celebrations, handshakes, a coach's arm around a player) is NOT what this means and remains fine.`,
+    // ⛔ OPERATOR FIX (2026-09-14, real live incident, recurring): confirmed
+    // live — repeated card-QC failures on NASCAR driver pages (JGR Racing
+    // Digest, Hendrick Heroes) where the FINAL rendered card showed only a
+    // race car, no visible driver. Root cause: this check's own "jersey/
+    // memorabilia in a relevant context" pass condition above already lets
+    // through a photo whose dominant subject is the CAR (livery/number
+    // clearly reads as "theirs"), with the driver themselves small,
+    // obscured, or entirely out of frame — same class of bug as the
+    // Stafford-kissing-photo fix above: "is this associated with them" and
+    // "does this actually depict them as a person" are different
+    // questions, and a car-dominant photo only ever answered the first.
+    `Reply FAIL, even if a car/vehicle's number or livery clearly identifies it as ${subjectName}'s, if that vehicle (not a person) is the photo's dominant visual subject and ${subjectName} themselves isn't plainly visible and recognizable as a person in it. A photo of them clearly standing by, sitting in, or celebrating with/on the vehicle, where they themselves are the recognizable subject, remains fine — only reject when the person is small, obscured, or absent and the vehicle alone is carrying the "is this them" answer.`,
     `Reply with EXACTLY one line: "PASS" or "FAIL: <short reason>". When genuinely uncertain, answer PASS — this check exists to catch obviously wrong/unrelated photos, not to make a strict facial-identity call you can't reliably make.`,
   ].join("\n");
 

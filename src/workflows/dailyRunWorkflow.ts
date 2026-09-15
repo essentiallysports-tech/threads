@@ -1,7 +1,7 @@
 import { proxyActivities, proxyLocalActivities, log, workflowInfo } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { PageRunResult, PageConfig, Candidate, PostedLogEntry } from "../lib/types";
-import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage } from "../lib/checks";
+import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday } from "../lib/checks";
 
 // ⛔ OPERATOR FIX (2026-08-22, real live incident): checkCandidate,
 // checkTopicFrequency, and checkDominantNarrative were all proxied as full
@@ -719,7 +719,14 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         // duplicateStoryCheck for the full incident. Placed before caption
         // generation so a real duplicate never spends an LLM call writing a
         // caption for content that's about to be dropped anyway.
-        const duplicateStory = await checkDuplicateStory(candidate, primaryEntity, effectivePostedLog);
+        // ⛔ OPERATOR FIX (2026-09-15, explicit operator directive): see
+        // checks.ts's isPageStarvedToday for the full reasoning — same
+        // starved-page exemption as ALREADY_POSTED/DUPLICATE_LINK_24H,
+        // applied here too since this is the same "have we shown this
+        // before" class of check, just AI-judged instead of deterministic.
+        const duplicateStory = isPageStarvedToday(effectivePostedLog)
+          ? { pass: true, reason: null }
+          : await checkDuplicateStory(candidate, primaryEntity, effectivePostedLog);
         if (!duplicateStory.pass) {
           state.attemptFailures.push(`${candidate.key}:${duplicateStory.reason}`);
           continue;

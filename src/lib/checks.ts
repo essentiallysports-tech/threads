@@ -772,14 +772,57 @@ const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿
 // reject") without weakening the real catch: genuine non-English text
 // carries its accents across multiple different words, not stacked inside
 // one loanword.
+// ⛔ OPERATOR FIX (2026-09-14, real live incident): the 2026-09-10 fix just
+// above already named this exact residual risk and accepted it as rare —
+// now confirmed firing again on two different real, fully-English WWE
+// headlines ("WWE Saving Netflix? Fans Overjoyed at Decade-Long Service...",
+// "'It Feeds Our Desire': Netflix CEO Compliments Latest $5B Deal With
+// WWE..."), both false-positived on `rawText`, not the headline itself
+// (confirmed live: neither headline alone trips this check). A real,
+// longer scraped article body incidentally containing 2 unrelated
+// loanwords/accented names (a quoted executive's surname, "café," "à la
+// carte" in Netflix-business coverage, etc.) is a near-certainty at any
+// real article length — genuine non-English content instead carries
+// accents across a real PROPORTION of its words, not just 2 out of
+// however many hundred. Scaling the bar with text length (a density floor,
+// on top of the existing >=2 absolute floor) keeps catching a genuinely
+// foreign-language article while no longer punishing normal-length English
+// prose for 2 incidental loanwords — the short-headline-only case the
+// 2026-09-10 fix targeted is untouched (1 accented word still never
+// qualifies, exactly as before).
+const NON_ENGLISH_DENSITY_THRESHOLD = 0.05;
+
+// ⛔ OPERATOR FIX (2026-09-15, real live incident): the density fix just
+// above did NOT actually solve the WWE/Netflix false positives it was
+// written for — confirmed still firing live the very next day, same two
+// headlines. Root cause found by fetching the real, live article: it has
+// ZERO genuine accented characters anywhere. The candidate's OWN `rawText`
+// (populated via a different path than the clean page HTML) instead
+// carries classic mojibake — UTF-8 smart-quote/dash bytes misread as
+// Latin-1/CP1252, which turns each corrupted quote/dash into a "word"
+// containing "â" (0xE2), landing squarely inside this check's own accented-
+// character class. `"It Feeds Our Desire"` alone mojibakes into TWO such
+// fake words (one per smart quote) — 2 accented "words" in a ~16-word
+// headline is 12%+, comfortably past yesterday's 5% density floor despite
+// being 100% encoding corruption, not one real accented character. Every
+// common mojibake case (curly quotes, em/en dash) shares the same
+// unmistakable "â€" two-character signature, which never occurs in genuine
+// language — excluding words containing it is a real fix, not another
+// bandage on the same untreated cause.
+const MOJIBAKE_SIGNATURE_RE = /â€/;
+
 export function isNonEnglishContent(candidate: Candidate): boolean {
   const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
   const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
   const accentedWords = new Set(
-    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || []).map((w) => w.toLowerCase())
+    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || [])
+      .filter((w) => !MOJIBAKE_SIGNATURE_RE.test(w))
+      .map((w) => w.toLowerCase())
   );
-  return accentedWords.size >= 2;
+  if (accentedWords.size < 2) return false;
+  const totalWords = text.split(/\s+/).filter(Boolean).length;
+  return accentedWords.size / totalWords >= NON_ENGLISH_DENSITY_THRESHOLD;
 }
 
 // ⛔ OPERATOR FIX (2026-08-11): "story selection can be made much much
@@ -1252,6 +1295,18 @@ export function dominantNarrativeCheck(
   // forever, not a real signal of narrative crowding.
   if (!primaryEntityName || isSingleEntityPage) return { pass: true, reason: null };
   const now = Date.now();
+  // ⛔ OPERATOR FIX (2026-09-14, explicit operator directive): "if posts on a
+  // page are less than 3 in a day, then dominant narrative cap should not be
+  // enforced." Real incidents: Buffalo Bills' own franchise QB (Josh Allen)
+  // and Essentially Golf's Rory McIlroy both got capped here on real, fresh,
+  // on-topic stories while their pages sat at zero real posts for the day —
+  // enforcing narrative diversity is a lower priority than getting real
+  // volume out at all when a page is this starved. The cap's whole purpose
+  // (avoid one-note over-focus) presupposes there's already enough real
+  // recent volume to judge that from, which a starved page doesn't have
+  // regardless of what its 7-day window looks like.
+  const last24h = postedLog.filter((p) => withinHours(p, 24, now));
+  if (last24h.length < 3) return { pass: true, reason: null };
   const last7d = postedLog.filter((p) => withinHours(p, 24 * 7, now));
   if (last7d.length < 4) return { pass: true, reason: null };
   // ⛔ OPERATOR FIX (2026-09-12): see topicFrequencyCheck's matching fix
@@ -1799,6 +1854,22 @@ const POLITICAL_TIER1 = [
 // politically-adjacent regardless of sports framing).
 const POLITICAL_TIER2 = [/\bpresident\b/i, /\bshooting\b/i, /\bpolitical\b/i, /white\s+house/i];
 const SPORTS_NOUNS = /\b(team|game|player|athlete|coach|league|season|championship|trophy|match|tournament|roster|draft|contract|stadium|arena|nfl|nba|mlb|nhl|ufc|mma|wnba|f1|nascar|golf|tennis|boxing)\b/i;
+// ⛔ OPERATOR FIX (2026-09-14, real live incident): "Terence Crawford Gives
+// Special Gift to Ukrainian President During Honored Visit to Ukraine" got
+// POLITICAL_TIER2-blocked on p56 (Boxing Bulletin) — a real, on-topic,
+// fresh boxing story about a real registered subject, killed because the
+// headline names Crawford (a person), not a generic sports NOUN like
+// "boxer"/"boxing". SPORTS_NOUNS only ever catches generic category words —
+// a headline about a specific, named athlete routinely has none of them at
+// all, which is exactly the shape of most real sports headlines. ES's own
+// article key/slug already reliably encodes the real category
+// ("boxing-news-...", "nfl-active-news-...", "ufc-mma-news-...") for the
+// es_article/shared_pool tiers, and external web_search/evergreen URLs
+// routinely carry the same signal in their own path ("/nfl/", "/boxing/",
+// "/mma/"...) — check both as an ADDITIONAL way to pass this context check,
+// never a new way to fail it (a false negative here still had to independently
+// clear every other check just like today).
+const SPORTS_SLUG_RE = /(nfl|nba|mlb|nhl|wnba|ufc|mma|boxing|golf|tennis|nascar|wwe|wrestling|ncaa|college-football|wta|atp|olympics|f1)[-_/]/i;
 const WHITE_HOUSE_VENUE = /white\s+house/i;
 
 // ⛔ OPERATOR FIX (2026-08-12, real live incident): the new "israel" Tier 1
@@ -1823,8 +1894,9 @@ export function politicalContentCheck(candidate: Candidate): { blocked: boolean;
     if (re.source === /\bisrael(i|is)?\b/i.source && ISRAEL_AS_NAME_RE.test(text)) continue;
     if (re.test(text)) return { blocked: true, reason: `POLITICAL_TIER1:${re.source}` };
   }
+  const hasSportsContext = SPORTS_NOUNS.test(text) || SPORTS_SLUG_RE.test(candidate.key) || SPORTS_SLUG_RE.test(candidate.link);
   for (const re of POLITICAL_TIER2) {
-    if (re.test(text) && !SPORTS_NOUNS.test(text)) {
+    if (re.test(text) && !hasSportsContext) {
       return { blocked: true, reason: `POLITICAL_TIER2_NO_SPORTS_CONTEXT:${re.source}` };
     }
   }
@@ -2059,7 +2131,7 @@ export function isRetrospectiveOnlyPage(page: PageConfig): boolean {
   return RETROSPECTIVE_THEME_RE.test(page.page_theme || "");
 }
 
-function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig): boolean {
+export function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig): boolean {
   if (!isRetrospectiveOnlyPage(page)) return false;
   // evergreen_search deliberately searches for content ABOUT a curated
   // retrospective angle (e.g. "1979 Petty-Pearson Daytona finish") — a
@@ -2149,7 +2221,28 @@ function isTooRecentForRetrospectivePage(candidate: Candidate, page: PageConfig)
   return ageMs < RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000;
 }
 
+// ⛔ OPERATOR FIX (2026-09-15, explicit operator directive): "if posts are
+// less than 3 on a page per day, duplicate links etc should not be an
+// issue." Same reasoning as dominantNarrativeCheck's matching 2026-09-14
+// fix, applied to every OTHER repetition-avoidance gate (ALREADY_POSTED,
+// DUPLICATE_LINK_24H here; checkDuplicateStory in dailyRunWorkflow.ts,
+// which imports this same helper — checks.ts is fully bundled into that
+// workflow already, so a new named export here costs nothing extra):
+// getting real volume out is a higher priority than perfect novelty/dedup
+// when a page is this starved — these checks exist to stop a HEALTHY page
+// from looking repetitive, not to keep a starved one at zero. Real
+// incidents: Dallas Cowboys Community and Essentially Golf both sat at
+// zero real posts for the day while their only real, on-topic candidates
+// were rejected ALREADY_POSTED/DUPLICATE_LINK_24H. Relevance/quality gates
+// (entity match, political content, generic framing, etc.) are untouched —
+// this only ever relaxes "have we shown this before," never "is this
+// actually a good, on-topic candidate."
+export function isPageStarvedToday(postedLog: PostedLogEntry[]): boolean {
+  return postedLog.filter((p) => withinHours(p, 24, Date.now())).length < 3;
+}
+
 export function runDeterministicChecks(candidate: Candidate, page: PageConfig, postedLog: PostedLogEntry[]): CandidateCheckResult {
+  const isStarvedToday = isPageStarvedToday(postedLog);
   const political = politicalContentCheck(candidate);
   if (political.blocked) {
     return { pass: false, reason: political.reason };
@@ -2195,10 +2288,10 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   if (!isEsOwnedLink(candidate.link)) {
     return { pass: false, reason: "LINK_NOT_ES_OWNED" };
   }
-  if (alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
+  if (!isStarvedToday && alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
     return { pass: false, reason: "ALREADY_POSTED" };
   }
-  if (duplicateLinkRecently(candidate, postedLog, 24)) {
+  if (!isStarvedToday && duplicateLinkRecently(candidate, postedLog, 24)) {
     return { pass: false, reason: "DUPLICATE_LINK_24H" };
   }
   return { pass: true, reason: null };

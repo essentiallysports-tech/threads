@@ -11,11 +11,35 @@
 // anywhere in this codebase should go through this instead of the bare
 // global — a swept audit (2026-08-10) found 14 call sites with this exact
 // gap; this is the single shared fix applied to all of them.
+// ⛔ OPERATOR FIX (2026-09-14, real live incident): a real, recurring chunk
+// of candidates across many pages fail SOURCE_UNREACHABLE:403/LINK_DEAD
+// against real, live, legitimate news URLs (on3.com, foxsports.com, autosport
+// forums...) — this function previously sent whatever `init.headers` the
+// caller passed, which for the accuracy-gate/source-verification call sites
+// in checks.ts is nothing at all, meaning Node's own default fetch identity.
+// Real bot-protection (Cloudflare and similar, common on exactly these sites)
+// routinely 403s a request with no User-Agent, or a mismatched/absent Accept
+// header, regardless of whether the underlying page is genuinely reachable.
+// A real desktop-browser identity, applied as the default here (not per call
+// site — 14+ external-facing calls share this one function per its own
+// header comment), is the standard, low-risk fix; an explicit caller-provided
+// header (e.g. an internal API's own required headers) still wins via the
+// spread order below.
+// Only the User-Agent gets a default — unlike Accept, no real API among this
+// function's 14+ internal callers (ES-MCP, OpenArt, AI Gateway, Postiz) is
+// likely to change behavior based on it, so this is safe to apply universally.
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      headers: { "User-Agent": DEFAULT_USER_AGENT, ...init.headers },
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timer);
   }
