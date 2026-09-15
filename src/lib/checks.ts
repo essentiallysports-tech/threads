@@ -792,12 +792,33 @@ const NON_LATIN_SCRIPT_RE = /[一-鿿぀-ヿ가-힣؀-ۿЀ-ӿऀ-ॿ฀-๿֐-׿
 // qualifies, exactly as before).
 const NON_ENGLISH_DENSITY_THRESHOLD = 0.05;
 
+// ⛔ OPERATOR FIX (2026-09-15, real live incident): the density fix just
+// above did NOT actually solve the WWE/Netflix false positives it was
+// written for — confirmed still firing live the very next day, same two
+// headlines. Root cause found by fetching the real, live article: it has
+// ZERO genuine accented characters anywhere. The candidate's OWN `rawText`
+// (populated via a different path than the clean page HTML) instead
+// carries classic mojibake — UTF-8 smart-quote/dash bytes misread as
+// Latin-1/CP1252, which turns each corrupted quote/dash into a "word"
+// containing "â" (0xE2), landing squarely inside this check's own accented-
+// character class. `"It Feeds Our Desire"` alone mojibakes into TWO such
+// fake words (one per smart quote) — 2 accented "words" in a ~16-word
+// headline is 12%+, comfortably past yesterday's 5% density floor despite
+// being 100% encoding corruption, not one real accented character. Every
+// common mojibake case (curly quotes, em/en dash) shares the same
+// unmistakable "â€" two-character signature, which never occurs in genuine
+// language — excluding words containing it is a real fix, not another
+// bandage on the same untreated cause.
+const MOJIBAKE_SIGNATURE_RE = /â€/;
+
 export function isNonEnglishContent(candidate: Candidate): boolean {
   const parts = [candidate.subject, candidate.headline, candidate.rawText].filter((p): p is string => Boolean(p));
   const text = [...new Set(parts)].join(" ");
   if (NON_LATIN_SCRIPT_RE.test(text)) return true;
   const accentedWords = new Set(
-    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || []).map((w) => w.toLowerCase())
+    (text.match(/\S*[áéíóúñüàèìòùâêîôûçäöëïÁÉÍÓÚÑÜÀÈÌÒÙÂÊÎÔÛÇÄÖËÏ]\S*/g) || [])
+      .filter((w) => !MOJIBAKE_SIGNATURE_RE.test(w))
+      .map((w) => w.toLowerCase())
   );
   if (accentedWords.size < 2) return false;
   const totalWords = text.split(/\s+/).filter(Boolean).length;
