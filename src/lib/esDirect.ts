@@ -442,6 +442,32 @@ function pickBestTerm(terms: WpTerm[], query: string): number | null {
   return exact ? exact.id : terms.reduce((best, t) => (t.count > best.count ? t : best)).id;
 }
 
+async function searchWpTerms(kind: "tags" | "categories", search: string): Promise<WpTerm[]> {
+  const params = new URLSearchParams({ search, _fields: "id,name,count", per_page: "20" });
+  const res = await limitWpApi(() =>
+    fetchWithTimeout(`https://staging.essentiallysports.com/wp-json/wp/v2/${kind}?${params}`, {}, 10_000)
+  );
+  if (!res.ok) throw new Error(`WP ${kind} -> ${res.status}`);
+  return (await res.json()) as WpTerm[];
+}
+
+// ⛔ OPERATOR FIX (2026-09-15, real live incident): "De'Andre Hunter" (a
+// Kings Court Chronicles registered entity) has no WP tag search hit at all —
+// confirmed live: WP's own tag search returns zero results for both
+// "De'Andre Hunter" and "De’Andre Hunter" (straight and curly apostrophe),
+// because ES's real tag for him drops the apostrophe entirely
+// ("DeAndre Hunter", 45 articles) and WordPress's tag search does not
+// fuzzy-match past the punctuation difference. This tier then silently
+// returns zero evergreen coverage for him regardless of how many real
+// articles exist. NOT a blanket "strip apostrophes" fix, which would break
+// entities whose real tag KEEPS one — confirmed live: "Shaquille O'Neal"'s
+// real tag has the apostrophe, and searching the stripped "Shaquille ONeal"
+// returns zero results. Try the name as given first (correct for the common
+// case), and only fall back to a stripped retry when that comes up empty.
+function stripApostrophes(value: string): string {
+  return value.replace(/['’]/g, "");
+}
+
 async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Promise<number | null> {
   const cacheKey = `${kind}:${name.toLowerCase()}`;
   const hit = taxonomyIdCache.get(cacheKey);
@@ -449,13 +475,14 @@ async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Pro
   if (circuitIsOpen()) return null;
 
   try {
-    const params = new URLSearchParams({ search: name, _fields: "id,name,count", per_page: "20" });
-    const res = await limitWpApi(() =>
-      fetchWithTimeout(`https://staging.essentiallysports.com/wp-json/wp/v2/${kind}?${params}`, {}, 10_000)
-    );
-    if (!res.ok) throw new Error(`WP ${kind} -> ${res.status}`);
-    const terms = (await res.json()) as WpTerm[];
-    const id = pickBestTerm(terms, name);
+    let terms = await searchWpTerms(kind, name);
+    let matchAgainst = name;
+    const stripped = stripApostrophes(name);
+    if (terms.length === 0 && stripped !== name) {
+      terms = await searchWpTerms(kind, stripped);
+      matchAgainst = stripped;
+    }
+    const id = pickBestTerm(terms, matchAgainst);
     taxonomyIdCache.set(cacheKey, { at: Date.now(), id });
     circuitRecordSuccess();
     return id;

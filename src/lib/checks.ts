@@ -2135,7 +2135,7 @@ export interface CandidateCheckResult {
 // maintain) rather than a hardcoded page-ID list, so it applies to any
 // future retrospective page automatically.
 const RETROSPECTIVE_THEME_RE = /\b(nostalgia|retrospective|vintage|legends-era|classic\s+19\d0s)\b/i;
-const RETROSPECTIVE_MAX_AGE_DAYS = 60;
+export const RETROSPECTIVE_MAX_AGE_DAYS = 60;
 
 export function isRetrospectiveOnlyPage(page: PageConfig): boolean {
   return RETROSPECTIVE_THEME_RE.test(page.page_theme || "");
