@@ -41,6 +41,20 @@ const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // on spending up to the existing cap to fix this.
 const MODEL = "anthropic/claude-sonnet-4-5";
 
+// ⛔ COST FIX (2026-09-17): same fix as narrativeCaption.ts's
+// CAPTION_STYLE_GUIDE (see that file's comment for the full rationale,
+// live measurements, and why manual cache_control was used over
+// `caching: 'auto'`). Only the trailing output-format line is pulled out
+// here — the intro line above the facts ends in a colon that introduces
+// the facts block immediately below it, and two of the four "Rules:"
+// bullets reference "the facts above" positionally, so both stay in the
+// per-call message exactly as originally worded rather than risk breaking
+// that reference. This prompt is small enough that the win here is modest
+// compared to narrativeCaption.ts's — done anyway for consistency across
+// every AI-gateway call this file makes.
+const ENTITY_OUTPUT_FORMAT_SYSTEM = `Output ONLY a JSON object with exactly one key: {"entity": "<name>"} or {"entity": null}. No markdown, no explanation, no code fence.`;
+const ENTITIES_OUTPUT_FORMAT_SYSTEM = `Output ONLY a JSON object with exactly one key: {"entities": ["<name>", ...]} (empty array if none). No markdown, no explanation, no code fence.`;
+
 function stripWrappingQuotesAndMarkdown(text: string): string {
   const t = text.trim();
   if (t.startsWith("{") && t.endsWith("}")) return t;
@@ -115,9 +129,9 @@ async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig
     `- If the facts don't clearly name a specific depictable person/team (e.g. a league-wide, abstract, or procedural story with no single subject), return null rather than guessing.`,
     `- NEVER return a word that merely LOOKS like a name (a quoted clause, a headline verb, a pronoun) — only a real person or team actually being reported on.`,
     `- NEVER return a name you merely suspect is involved but that isn't actually written in the facts above.`,
-    ``,
-    `Output ONLY a JSON object with exactly one key: {"entity": "<name>"} or {"entity": null}. No markdown, no explanation, no code fence.`,
   ].join("\n");
+  // (2026-09-17: the trailing "Output ONLY a JSON object..." line moved to
+  // ENTITY_OUTPUT_FORMAT_SYSTEM above — identical on every call, cacheable.)
 
   try {
     const res = await fetchWithTimeout(
@@ -127,7 +141,10 @@ async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: MODEL,
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            { role: "system", content: ENTITY_OUTPUT_FORMAT_SYSTEM, cache_control: { type: "ephemeral" } },
+            { role: "user", content: prompt },
+          ],
           max_tokens: 100,
           temperature: 0,
         }),
@@ -211,9 +228,9 @@ async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConf
     `- NEVER return a word that merely LOOKS like a name (a quoted clause, a headline verb, a pronoun, a connector word like "between"/"fight") — only a real person or team actually being reported on.`,
     `- NEVER return a name you merely suspect is involved but that isn't actually written in the facts above.`,
     `- Return at most ${maxEntities} names.`,
-    ``,
-    `Output ONLY a JSON object with exactly one key: {"entities": ["<name>", ...]} (empty array if none). No markdown, no explanation, no code fence.`,
   ].join("\n");
+  // (2026-09-17: the trailing "Output ONLY a JSON object..." line moved to
+  // ENTITIES_OUTPUT_FORMAT_SYSTEM above — identical on every call, cacheable.)
 
   try {
     const res = await fetchWithTimeout(
@@ -223,7 +240,10 @@ async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConf
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: MODEL,
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            { role: "system", content: ENTITIES_OUTPUT_FORMAT_SYSTEM, cache_control: { type: "ephemeral" } },
+            { role: "user", content: prompt },
+          ],
           max_tokens: 150,
           temperature: 0,
         }),
