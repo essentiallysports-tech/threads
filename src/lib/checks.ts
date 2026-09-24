@@ -52,6 +52,100 @@ export function isEsOwnedLink(url: string): boolean {
 // own registered entities or sport_groups — the deterministic version of the
 // old skill file's `entity_or_sport_match`, and the exact check that would
 // have stopped the WNBA/boxing incident that started this whole rewrite.
+// ⛔ OPERATOR FIX (2026-09-24, real live incident): College Football Forum
+// (p68) posted "Fans in Disbelief After Michigan Tops No. 13 Ohio State in
+// Wild 88-86 OT Finish" — a basketball article — as a football post, flagged
+// by the team. The evergreen tier pulls by entity TAG ("Ohio State",
+// "Alabama"), and those school tags span every sport; entityOrSportMatch then
+// accepts any registered school-name match before the sport is ever
+// considered. ES's own URL slug carries its editorial category
+// ("ncaa-college-basketball-news-...") — the same signal the WNBA/NBA slug
+// veto below already trusts. This vetoes a different SPORT only, never a
+// different league of the same sport: Colorado Prime Time's NFL coverage of
+// its own alumni, or Ohio State's ex-Buckeyes-in-the-NFL posts, are football
+// on a football page and pass. Fails open whenever either side is unknown
+// (no "-news-" category in the slug, an unmapped sport_group, an empty
+// sport_groups list) and never applies to national multi-sport pages.
+type SportFamily = "football" | "basketball" | "baseball" | "golf" | "tennis" | "racing" | "combat" | "wrestling" | "olympics" | "soccer" | "hockey";
+
+// Slug categories are hand-typed and include real typos seen live
+// ("nasar", "nfl-ctive", "ncaa-college-foootball", "nba-active-baketball").
+const SLUG_FAMILY_PATTERNS: Array<[SportFamily, RegExp]> = [
+  ["football", /football|foootball|nfl/],
+  ["basketball", /basket|baket|baks|nba/],
+  ["baseball", /baseb|mlb/],
+  ["golf", /golf/],
+  ["tennis", /tennis|atp|wta/],
+  ["racing", /nascar|nasar|f1|formula|indycar/],
+  ["combat", /ufc|mma|boxing/],
+  ["wrestling", /wwe|wrestling/],
+  ["olympics", /olymp|olymic/],
+  ["soccer", /soccer/],
+  ["hockey", /hockey|nhl/],
+];
+
+const SPORT_GROUP_FAMILY: Record<string, SportFamily> = {
+  "college football": "football",
+  nfl: "football",
+  nba: "basketball",
+  wnba: "basketball",
+  "college basketball": "basketball",
+  mlb: "baseball",
+  golf: "golf",
+  tennis: "tennis",
+  nascar: "racing",
+  f1: "racing",
+  ufc: "combat",
+  mma: "combat",
+  boxing: "combat",
+  wwe: "wrestling",
+  olympic: "olympics",
+  olympics: "olympics",
+  soccer: "soccer",
+  nhl: "hockey",
+};
+
+// Only these share institution names across sports ("Ohio State", "Alabama",
+// "Lakers"/"Dodgers" cities), which is how an entity-tag hit crosses sports.
+// A combat, wrestling, golf, tennis or racing page seeing an off-category
+// article is almost always a real crossover personality instead — replayed
+// against live history: Roman Reigns in a college-football story on the WWE
+// pages, Joe Rogan on WNBA leadership, Luka Doncic golfing — so those pages
+// are never vetoed here.
+const TEAM_SPORT_FAMILIES = new Set<SportFamily>(["football", "basketball", "baseball", "hockey", "soccer"]);
+
+export function esUrlSportFamilies(url: string | null | undefined): Set<SportFamily> | null {
+  // Slugs can stack categories ("nba-active-basketball-news-mlb-news-<title>"),
+  // so read every leading "<category>-news-" segment, not just the first.
+  const m = (url || "").match(/^https?:\/\/(?:www\.)?essentiallysports\.com\/((?:[a-z0-9-]+?-news-)+)/i);
+  if (!m) return null;
+  const categories = m[1].toLowerCase().split("-news-").filter(Boolean);
+  const families = new Set(
+    SLUG_FAMILY_PATTERNS.filter(([, re]) => categories.some((c) => re.test(c))).map(([f]) => f)
+  );
+  return families.size > 0 ? families : null;
+}
+
+function pageSportFamilies(page: PageConfig): Set<SportFamily> | null {
+  if (page.page_type === "national" || page.sport_groups.length === 0) return null;
+  const families = new Set<SportFamily>();
+  for (const g of page.sport_groups) {
+    const f = SPORT_GROUP_FAMILY[g.toLowerCase().trim()];
+    if (!f) return null;
+    families.add(f);
+  }
+  return families;
+}
+
+export function esUrlSportConflict(url: string | null | undefined, page: PageConfig): boolean {
+  const articleFamilies = esUrlSportFamilies(url);
+  const pageFamilies = pageSportFamilies(page);
+  if (!articleFamilies || !pageFamilies) return false;
+  if (![...pageFamilies].every((f) => TEAM_SPORT_FAMILIES.has(f))) return false;
+  if (![...articleFamilies].every((f) => TEAM_SPORT_FAMILIES.has(f))) return false;
+  return ![...articleFamilies].some((f) => pageFamilies.has(f));
+}
+
 export function entityOrSportMatch(candidate: Candidate, page: PageConfig): boolean {
   // ⛔ OPERATOR BROADENING (2026-08-10): "Daily 150 ES articles... should be
   // mapped to relevant pages and posted." sourcing.ts's sourceFromEsArticles
@@ -64,6 +158,8 @@ export function entityOrSportMatch(candidate: Candidate, page: PageConfig): bool
   // re-checking it with a much blunter local text match.
   const haystack = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`.toLowerCase();
   const sportGroups = page.sport_groups.map((s) => s.toLowerCase());
+
+  if (esUrlSportConflict(candidate.link, page)) return false;
 
   // ⛔ OPERATOR FIX (2026-08-12, real live incident, confirmed at severe
   // scale): a real ES article about WNBA commissioner Cathy Engelbert and
@@ -2235,7 +2331,8 @@ export function isTooRecentForRetrospectivePage(candidate: Candidate, page: Page
 // less than 3 on a page per day, duplicate links etc should not be an
 // issue." Same reasoning as dominantNarrativeCheck's matching 2026-09-14
 // fix, applied to every OTHER repetition-avoidance gate (ALREADY_POSTED,
-// DUPLICATE_LINK_24H here; checkDuplicateStory in dailyRunWorkflow.ts,
+// DUPLICATE_LINK_24H here — the link half was narrowed 2026-09-24, see the
+// DUPLICATE_LINK_72H comment in runDeterministicChecks; checkDuplicateStory in dailyRunWorkflow.ts,
 // which imports this same helper — checks.ts is fully bundled into that
 // workflow already, so a new named export here costs nothing extra):
 // getting real volume out is a higher priority than perfect novelty/dedup
@@ -2301,8 +2398,22 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   if (!isStarvedToday && alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
     return { pass: false, reason: "ALREADY_POSTED" };
   }
-  if (!isStarvedToday && duplicateLinkRecently(candidate, postedLog, 24)) {
-    return { pass: false, reason: "DUPLICATE_LINK_24H" };
+  // ⛔ OPERATOR FIX (2026-09-24, real live incident): the link check used to
+  // be skipped entirely for a starved page (<3 posts in 24h, the 2026-09-15
+  // rule above) and was only 24h otherwise. A brand-new page starts at zero,
+  // so it skipped dedup outright: the p91-p95 NASCAR pages each posted the
+  // same article twice an hour apart. And on healthy pages, every article's
+  // alternate-angle copy (sourceFromEsArticles emits two keys per article)
+  // cleared the 24h window and went out again the next day — College
+  // Football Forum repeated 23 articles ~24-30h apart in one week, flagged by
+  // the team as "same stuff getting repeated on different days." The same
+  // link is now never reposted on a page within 72h — the same window as the
+  // es_article freshness lookback, so a fresh article goes out once per page.
+  // Applies to starved pages too; they still keep the 2026-09-15 relaxation
+  // of the key check above. Replayed against Sep 10-24 history, a 7-day
+  // window caught only 0-2 more repeats/day than 72h, so 72h is used.
+  if (duplicateLinkRecently(candidate, postedLog, 72)) {
+    return { pass: false, reason: "DUPLICATE_LINK_72H" };
   }
   return { pass: true, reason: null };
 }

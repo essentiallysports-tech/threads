@@ -561,10 +561,28 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
     })
   );
   const seen = new Set<string>();
+  // ⛔ OPERATOR FIX (2026-09-24, real live incident): on a news page this
+  // tier resurfaced dated NEWS as if it were current — College Football
+  // Forum posted "How Fans Turned Out for 2026 Spring Games" and "College
+  // Football Program Bans Public From Attending Spring Game" in late
+  // September, flagged by the team as "months old articles being pushed as
+  // LICs." Every candidate here is stamped publishedAt=today (see the
+  // comment above this function), so the 72h freshness gate never sees the
+  // real age. Genuinely old content is what a retrospective page is for
+  // (isRetrospectiveOnlyPage keeps the full multi-year window); every other
+  // page now only gets entity-tag hits whose REAL publish date is inside the
+  // same freshness window es_article uses, and a hit with no real date is
+  // dropped rather than trusted.
+  const retrospective = isRetrospectiveOnlyPage(page);
+  const freshCutoffMs = Date.now() - ES_ARTICLE_LOOKBACK_HOURS * 3600 * 1000;
   const articles = perEntity.flat().filter((a) => {
     if (seen.has(a.url)) return false;
     seen.add(a.url);
-    return true;
+    if (retrospective) return true;
+    // date_gmt is zone-less UTC ("YYYY-MM-DDTHH:MM:SS") — parse it as UTC,
+    // not host-local time.
+    const realMs = a.dateGmt ? Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(a.dateGmt) ? a.dateGmt : `${a.dateGmt}Z`) : NaN;
+    return !isNaN(realMs) && realMs >= freshCutoffMs;
   });
   return articles.map((a): Candidate => {
     const slugMatch = a.url.match(/\/([^/]+)\/?$/);
