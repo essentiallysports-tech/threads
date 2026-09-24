@@ -38,6 +38,8 @@ import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from 
 import { searchImages, metadataMatchesSubject } from "../lib/esDirect";
 import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
+import { ensureCrossPageLedgerSeeded, crossPageConflict, claimArticle, releaseArticle } from "../lib/crossPageLedger";
+import { ApplicationFailure } from "@temporalio/activity";
 import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText, verifyPhotoSubject, verifyGenericPhotoSubject } from "../lib/cardTextQC";
 import { truncateAtWordBoundary } from "../lib/headlineTruncation";
@@ -253,6 +255,9 @@ export async function sourceOneCandidate(page: PageConfig, dateISO: string, post
 // gate. sourceOneCandidate above is kept only because nothing else still
 // calls it; new call sites should use this.
 export async function sourceCandidatePool(page: PageConfig, dateISO: string, postedLog: PostedLogEntry[]): Promise<Candidate[]> {
+  // Seeded here (20-min timeout, always the first per-page activity) rather
+  // than in checkCandidate, which is a 10s local activity.
+  await ensureCrossPageLedgerSeeded();
   return sourceCandidatePoolForPage(page, dateISO, postedLog);
 }
 
@@ -268,6 +273,11 @@ export interface CheckedCandidate {
 // enforces it as a run-level hard stop, not a per-candidate drop).
 export async function checkCandidate(candidate: Candidate, page: PageConfig, postedLog: PostedLogEntry[]): Promise<CheckedCandidate> {
   const result = runDeterministicChecks(candidate, page, postedLog);
+  if (result.pass) {
+    // In-memory lookup only; the authoritative claim happens in postToThreads.
+    const conflict = crossPageConflict(candidate.link, page.page_id);
+    if (conflict) return { candidate, pass: false, reason: conflict };
+  }
   return { candidate, ...result };
 }
 
@@ -1117,7 +1127,21 @@ export async function postToThreads(
   }
   const canStrip = postHtml === withHashtag && hashtag && hashtagStripVerified();
 
-  const posted = await scheduleThreadsPost(integrationId, postHtml, cardUrl, replyLinkHtml, new Date(postTimeUtc));
+  // Cross-page dedup, see crossPageLedger.ts. Non-retryable: a retry would
+  // hit the same conflict, and the workflow already treats a throw here as
+  // a dropped item without aborting the rest of the batch.
+  const claimedAt = Date.now();
+  const conflict = claimArticle(replyLinkHtml, page.page_id, claimedAt);
+  if (conflict) {
+    throw ApplicationFailure.nonRetryable(conflict, "CrossPageDuplicate");
+  }
+  let posted: { id: string };
+  try {
+    posted = await scheduleThreadsPost(integrationId, postHtml, cardUrl, replyLinkHtml, new Date(postTimeUtc));
+  } catch (e) {
+    releaseArticle(replyLinkHtml, page.page_id, claimedAt);
+    throw e;
+  }
 
   if (canStrip) {
     try {
