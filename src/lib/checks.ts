@@ -2406,14 +2406,19 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // alternate-angle copy (sourceFromEsArticles emits two keys per article)
   // cleared the 24h window and went out again the next day — College
   // Football Forum repeated 23 articles ~24-30h apart in one week, flagged by
-  // the team as "same stuff getting repeated on different days." The same
-  // link is now never reposted on a page within 72h — the same window as the
-  // es_article freshness lookback, so a fresh article goes out once per page.
-  // Applies to starved pages too; they still keep the 2026-09-15 relaxation
-  // of the key check above. Replayed against Sep 10-24 history, a 7-day
-  // window caught only 0-2 more repeats/day than 72h, so 72h is used.
-  if (duplicateLinkRecently(candidate, postedLog, 72)) {
-    return { pass: false, reason: "DUPLICATE_LINK_72H" };
+  // the team as "same stuff getting repeated on different days."
+  // ⛔ CORRECTION (2026-09-25, real live incident): a 72h window (deployed
+  // 2026-09-24) removed each article's second, next-day post — about a third
+  // of the article-link supply on the busiest pages. Pages then fell through
+  // to web search, whose unmatched stories get a newsletter link: within
+  // hours over half of all posts carried a newsletter link instead of an ES
+  // article (was ~99%), and GA4 link clicks fell further. Back to the
+  // original 24h window for healthy pages. The one real defect kept fixed:
+  // a starved page no longer skips the link check entirely — it gets a 12h
+  // floor, so a new page can't post the same article twice an hour apart.
+  const linkWindowHours = isStarvedToday ? 12 : 24;
+  if (duplicateLinkRecently(candidate, postedLog, linkWindowHours)) {
+    return { pass: false, reason: isStarvedToday ? "DUPLICATE_LINK_12H" : "DUPLICATE_LINK_24H" };
   }
   return { pass: true, reason: null };
 }
