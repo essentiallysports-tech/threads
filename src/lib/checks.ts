@@ -212,7 +212,9 @@ export function entityOrSportMatch(candidate: Candidate, page: PageConfig): bool
 
   // A genuine registered name/team actually mentioned is trusted fully,
   // same as before — this is real, specific signal nothing else can fake.
-  const realEntityMatch = [...entityNames, ...entityKeywords].some((term) => term.length > 2 && haystack.includes(term));
+  const realEntityMatch = page.entities.some((e) =>
+    [e.name, ...e.keywords].some((term) => term.length > 2 && keywordIndex(haystack, term, e.whole_word) !== -1)
+  );
   if (realEntityMatch) return true;
 
   const sportGroupMatch = sportGroups.some((term) => term.length > 2 && haystack.includes(term));
@@ -571,6 +573,19 @@ function firstOccurrenceIndex(haystack: string, name: string): number {
   return idx === -1 ? Infinity : idx;
 }
 
+// Position of a registered keyword in an already-lowercased haystack, -1 if
+// absent. Substring semantics unless the slot opted into whole_word (see
+// EntitySlot.whole_word): Dallas/Detroit headlines say "Cowboys"/"Lions",
+// never the full "Dallas Cowboys"/"Detroit Lions" their slots registered,
+// which rejected ~3 of every 4 real Cowboys ES articles NO_NAMED_ENTITY
+// (2026-09-18..25), but a bare "lions" substring also hits "Billions".
+function keywordIndex(haystack: string, keyword: string, wholeWord = false): number {
+  const kw = keyword.toLowerCase();
+  if (!wholeWord) return haystack.indexOf(kw);
+  const m = new RegExp(`(?<![a-z0-9])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`).exec(haystack);
+  return m ? m.index : -1;
+}
+
 // ⛔ OPERATOR FIX (2026-08-10, real live incidents): an Islam Makhachev post
 // (headline: "...watching Ilia Topuria and Khamzat Chimaev both suffer
 // shocking losses" — no mention of Khabib anywhere) rendered a VS card
@@ -596,6 +611,7 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   const orderingHaystack = `${candidate.headline} ${candidate.subject}`.toLowerCase();
   const haystack = `${candidate.subject} ${candidate.headline} ${includeRawText ? candidate.rawText || "" : ""}`.toLowerCase();
   const matched: string[] = [];
+  const wholeWordNames = new Set<string>();
   for (const e of page.entities) {
     const individualNames = e.keywords.length > 0 ? e.keywords : [e.name];
     for (const name of individualNames) {
@@ -612,7 +628,10 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
       // card. isCategoryPlaceholder (renderSpec.ts) already exists to
       // reject exactly this class of generic label; a page's own
       // registered keywords are not exempt from it.
-      if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
+      if (name.length > 2 && !isCategoryPlaceholder(name) && keywordIndex(haystack, name, e.whole_word) !== -1) {
+        matched.push(name);
+        if (e.whole_word) wholeWordNames.add(name);
+      }
     }
   }
   // ⛔ OPERATOR FIX (2026-09-12, real live incident): `rival_entities` has
@@ -638,7 +657,11 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   for (const name of page.rival_entities || []) {
     if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
   }
-  matched.sort((a, b) => firstOccurrenceIndex(orderingHaystack, a) - firstOccurrenceIndex(orderingHaystack, b));
+  const orderOf = (name: string) => {
+    const idx = keywordIndex(orderingHaystack, name, wholeWordNames.has(name));
+    return idx === -1 ? Infinity : idx;
+  };
+  matched.sort((a, b) => orderOf(a) - orderOf(b));
   return matched;
 }
 
