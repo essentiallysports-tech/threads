@@ -275,7 +275,7 @@ export async function checkCandidate(candidate: Candidate, page: PageConfig, pos
   const result = runDeterministicChecks(candidate, page, postedLog);
   if (result.pass) {
     // In-memory lookup only; the authoritative claim happens in postToThreads.
-    const conflict = crossPageConflict(candidate.link, page.page_id);
+    const conflict = crossPageConflict(candidate.link, page);
     if (conflict) return { candidate, pass: false, reason: conflict };
   }
   return { candidate, ...result };
@@ -1131,7 +1131,7 @@ export async function postToThreads(
   // hit the same conflict, and the workflow already treats a throw here as
   // a dropped item without aborting the rest of the batch.
   const claimedAt = Date.now();
-  const conflict = claimArticle(replyLinkHtml, page.page_id, claimedAt);
+  const conflict = claimArticle(replyLinkHtml, page, claimedAt);
   if (conflict) {
     throw ApplicationFailure.nonRetryable(conflict, "CrossPageDuplicate");
   }

@@ -342,6 +342,7 @@ export async function sourceFromSharedPool(page: PageConfig, dateISO: string): P
 // window to 72h doesn't bypass that gate — it just lets genuinely-fresh ES
 // articles from the last 3 days be found at all before falling back further.
 const ES_ARTICLE_LOOKBACK_HOURS = 72;
+const EVERGREEN_NON_RETRO_MAX_AGE_DAYS = 21;
 
 // query_articles' `publish_date_start`/`_end` filters the DB correctly
 // across a multi-day range, but its response text only ever carries an
@@ -570,11 +571,15 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // comment above this function), so the 72h freshness gate never sees the
   // real age. Genuinely old content is what a retrospective page is for
   // (isRetrospectiveOnlyPage keeps the full multi-year window); every other
-  // page now only gets entity-tag hits whose REAL publish date is inside the
-  // same freshness window es_article uses, and a hit with no real date is
-  // dropped rather than trusted.
+  // page only gets entity-tag hits whose REAL publish date is recent, and a
+  // hit with no real date is dropped rather than trusted.
+  // ⛔ CORRECTION (2026-09-25): first shipped at 72h, which also cut
+  // legitimately recent entity coverage and helped starve pages into the
+  // newsletter-link fallback (see runDeterministicChecks' DUPLICATE_LINK
+  // comment). 21 days still blocks every example the team flagged (26-209
+  // days old) while keeping recent-but-not-today entity stories.
   const retrospective = isRetrospectiveOnlyPage(page);
-  const freshCutoffMs = Date.now() - ES_ARTICLE_LOOKBACK_HOURS * 3600 * 1000;
+  const freshCutoffMs = Date.now() - EVERGREEN_NON_RETRO_MAX_AGE_DAYS * 24 * 3600 * 1000;
   const articles = perEntity.flat().filter((a) => {
     if (seen.has(a.url)) return false;
     seen.add(a.url);
