@@ -10,6 +10,7 @@ import {
   computeNationalStoryScore,
   isRetrospectiveOnlyPage,
   isTooRecentForRetrospectivePage,
+  RETROSPECTIVE_MAX_AGE_DAYS,
 } from "./checks";
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
@@ -341,6 +342,7 @@ export async function sourceFromSharedPool(page: PageConfig, dateISO: string): P
 // window to 72h doesn't bypass that gate — it just lets genuinely-fresh ES
 // articles from the last 3 days be found at all before falling back further.
 const ES_ARTICLE_LOOKBACK_HOURS = 72;
+const EVERGREEN_NON_RETRO_MAX_AGE_DAYS = 21;
 
 // query_articles' `publish_date_start`/`_end` filters the DB correctly
 // across a multi-day range, but its response text only ever carries an
@@ -511,6 +513,27 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   const dateStart = new Date(new Date(`${dateISO}T00:00:00Z`).getTime() - 5 * 365 * 24 * 3600 * 1000)
     .toISOString()
     .slice(0, 10);
+  // ⛔ OPERATOR FIX (2026-09-15, real live incident): confirmed live on Kobe
+  // 8/24 Legacy — queryArticlesByEntity sorts newest-first and takes only the
+  // top 5 per entity, which is right for a normal page (freshest coverage of
+  // a named player) but is exactly backwards for a retrospective-only page.
+  // A heavily-referenced legend like Kobe Bryant gets tagged on a constant
+  // stream of CURRENT articles that merely name-drop him (GOAT debates,
+  // "next Kobe" comparisons) despite having 6,000+ tagged articles total —
+  // so the "5 most recent" are almost always well under
+  // isTooRecentForRetrospectivePage's 60-day realPublishedAt gate, no matter
+  // how deep the real retrospective archive underneath them goes. The gate
+  // then correctly rejects every one of them, and the page's evergreen tier
+  // silently returns nothing useful every single run despite unconditionally
+  // "running." Pushing this query's own end date back past that same 60-day
+  // line means "most recent" now means the freshest article that can
+  // actually PASS the gate, reaching into the real archive instead of
+  // skimming only the newest name-drops off the top.
+  const dateEnd = isRetrospectiveOnlyPage(page)
+    ? new Date(new Date(`${dateISO}T00:00:00Z`).getTime() - RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000)
+        .toISOString()
+        .slice(0, 10)
+    : dateISO;
   // ⛔ OPERATOR FIX (2026-08-23, real live incident): this was the only one
   // of the three ES-article tiers still capped to the first 5 entities —
   // sourceFromEsArticles's own per-entity query and resolveExternalLink's
@@ -521,17 +544,50 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // which loses coverage for 10 of its 15.
   // Halved from 4 (2026-08-24, sharding rollout) — see sourceFromEsArticles's
   // matching comment; up to 6 shards now run this fan-out concurrently.
+  //
+  // ⛔ OPERATOR FIX (2026-09-15, real live incident): the per-entity result
+  // count above was ALSO still 5 — confirmed live on Kings Court Chronicles
+  // (Domantas Sabonis: 180 real tagged ES articles; Zach LaVine: 427; DeMar
+  // DeRozan: 495): fetching only the newest 5 per entity means once those 5
+  // are exhausted (posted already, or — as confirmed live — the single
+  // remaining one has since gone LINK_DEAD), this tier goes silently empty
+  // regardless of how deep the real archive underneath is, identical in
+  // shape to the retrospective-page fix just above. Raised to 15 for real
+  // headroom against normal exhaustion; still bounded, still 2-at-a-time.
+  const EVERGREEN_ARTICLES_PER_ENTITY = 15;
   const perEntity = await mapWithConcurrency(entityNames, 2, (name) =>
-    queryArticlesByEntity(name, dateStart, dateISO, 5).catch((e) => {
+    queryArticlesByEntity(name, dateStart, dateEnd, EVERGREEN_ARTICLES_PER_ENTITY).catch((e) => {
       console.error(`sourceFromEsEvergreenArticles: queryArticlesByEntity failed for ${page.page_id} entity="${name}": ${(e as Error).message}`);
       return [];
     })
   );
   const seen = new Set<string>();
+  // ⛔ OPERATOR FIX (2026-09-24, real live incident): on a news page this
+  // tier resurfaced dated NEWS as if it were current — College Football
+  // Forum posted "How Fans Turned Out for 2026 Spring Games" and "College
+  // Football Program Bans Public From Attending Spring Game" in late
+  // September, flagged by the team as "months old articles being pushed as
+  // LICs." Every candidate here is stamped publishedAt=today (see the
+  // comment above this function), so the 72h freshness gate never sees the
+  // real age. Genuinely old content is what a retrospective page is for
+  // (isRetrospectiveOnlyPage keeps the full multi-year window); every other
+  // page only gets entity-tag hits whose REAL publish date is recent, and a
+  // hit with no real date is dropped rather than trusted.
+  // ⛔ CORRECTION (2026-09-25): first shipped at 72h, which also cut
+  // legitimately recent entity coverage and helped starve pages into the
+  // newsletter-link fallback (see runDeterministicChecks' DUPLICATE_LINK
+  // comment). 21 days still blocks every example the team flagged (26-209
+  // days old) while keeping recent-but-not-today entity stories.
+  const retrospective = isRetrospectiveOnlyPage(page);
+  const freshCutoffMs = Date.now() - EVERGREEN_NON_RETRO_MAX_AGE_DAYS * 24 * 3600 * 1000;
   const articles = perEntity.flat().filter((a) => {
     if (seen.has(a.url)) return false;
     seen.add(a.url);
-    return true;
+    if (retrospective) return true;
+    // date_gmt is zone-less UTC ("YYYY-MM-DDTHH:MM:SS") — parse it as UTC,
+    // not host-local time.
+    const realMs = a.dateGmt ? Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(a.dateGmt) ? a.dateGmt : `${a.dateGmt}Z`) : NaN;
+    return !isNaN(realMs) && realMs >= freshCutoffMs;
   });
   return articles.map((a): Candidate => {
     const slugMatch = a.url.match(/\/([^/]+)\/?$/);
@@ -607,7 +663,7 @@ async function sourceFromEvergreenBank(page: PageConfig, dateISO: string): Promi
   const picked = matching.slice(0, 2);
   const resultsPerAngle = await Promise.all(
     picked.map((a) =>
-      webSearch(a.frame).catch((e) => {
+      webSearch(a.frame, 8, false, page.page_id).catch((e) => {
         console.error(`sourceFromEvergreenBank: query failed for ${page.page_id} (${a.angle_id}): ${(e as Error).message}`);
         return [];
       })

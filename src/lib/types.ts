@@ -7,6 +7,11 @@ export interface EntitySlot {
   name: string;
   keywords: string[];
   weight: number;
+  // Match this slot's name/keywords as whole words only. Plain substring
+  // matching stays the default because existing slots rely on it ("shaq" ->
+  // "Shaquille", "golf" -> "golfer"); this is for bare team nicknames that
+  // also sit inside ordinary words ("lions" in "Billions").
+  whole_word?: boolean;
 }
 
 export interface ThreadsConfig {
@@ -25,6 +30,11 @@ export interface ThreadsConfig {
   posting_window_start?: string;
   posting_window_end?: string;
   utm_string?: string;
+  // Only post articles no other page has posted in the last 24h — see
+  // crossPageLedger.ts. For pages whose natural candidate pool overlaps
+  // established pages (e.g. several general-NASCAR accounts); an unflagged
+  // page is never blocked by the cross-page ledger.
+  exclusive_articles?: boolean;
   // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
   // appended on every post ALONGSIDE the existing per-story dynamic hashtag
   // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):

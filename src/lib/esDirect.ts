@@ -219,6 +219,30 @@ export function hasConflictingTeamMention(text: string, sportGroup: string | und
   return teamNames.some((team) => !expected.some((k) => k.includes(team) || team.includes(k)) && text.includes(team));
 }
 
+// ⛔ OPERATOR FIX (2026-09-25, real live incident, team-reported): an Alex
+// Eala Fan Club post ("Eala bows out of Singapore Open") shipped with a photo
+// of Iga Swiatek. metadataMatchesSubject only asks whether the name appears
+// ANYWHERE in the caption, and agency match photos name both players —
+// "<pictured player> ... against <opponent>". verifyPhotoSubject can't settle
+// it either: it can't identify real people by face, so any player of the
+// same sport "plausibly" passes. The caption is the reliable signal: agency
+// captions name the pictured person first, and a relation word before the
+// subject's first mention means the subject is the OTHER person in the shot.
+// Fails open when there's no caption text or no subject mention.
+const OPPONENT_RELATION_RE = /\b(against|vs\.?|versus|v\.|defeats?|defeated|beats?|beaten|faces?|faced|loses to|lost to|falls to|fell to|plays?|played|takes on|took on)\b/i;
+
+export function captionShowsSomeoneElse(result: EsImageResult, subjectName: string): boolean {
+  const text = `${result.title} ${result.caption || ""}`.toLowerCase();
+  if (!text.trim()) return false;
+  const tokens = subjectName.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+  if (tokens.length === 0) return false;
+  // Surname is the most specific token and survives "Alex"/"Alexandra".
+  const surname = tokens[tokens.length - 1];
+  const idx = text.indexOf(surname);
+  if (idx <= 0) return false;
+  return OPPONENT_RELATION_RE.test(text.slice(0, idx));
+}
+
 export function metadataMatchesSubject(
   result: EsImageResult,
   searchTerm: string,
@@ -442,6 +466,32 @@ function pickBestTerm(terms: WpTerm[], query: string): number | null {
   return exact ? exact.id : terms.reduce((best, t) => (t.count > best.count ? t : best)).id;
 }
 
+async function searchWpTerms(kind: "tags" | "categories", search: string): Promise<WpTerm[]> {
+  const params = new URLSearchParams({ search, _fields: "id,name,count", per_page: "20" });
+  const res = await limitWpApi(() =>
+    fetchWithTimeout(`https://staging.essentiallysports.com/wp-json/wp/v2/${kind}?${params}`, {}, 10_000)
+  );
+  if (!res.ok) throw new Error(`WP ${kind} -> ${res.status}`);
+  return (await res.json()) as WpTerm[];
+}
+
+// ⛔ OPERATOR FIX (2026-09-15, real live incident): "De'Andre Hunter" (a
+// Kings Court Chronicles registered entity) has no WP tag search hit at all —
+// confirmed live: WP's own tag search returns zero results for both
+// "De'Andre Hunter" and "De’Andre Hunter" (straight and curly apostrophe),
+// because ES's real tag for him drops the apostrophe entirely
+// ("DeAndre Hunter", 45 articles) and WordPress's tag search does not
+// fuzzy-match past the punctuation difference. This tier then silently
+// returns zero evergreen coverage for him regardless of how many real
+// articles exist. NOT a blanket "strip apostrophes" fix, which would break
+// entities whose real tag KEEPS one — confirmed live: "Shaquille O'Neal"'s
+// real tag has the apostrophe, and searching the stripped "Shaquille ONeal"
+// returns zero results. Try the name as given first (correct for the common
+// case), and only fall back to a stripped retry when that comes up empty.
+function stripApostrophes(value: string): string {
+  return value.replace(/['’]/g, "");
+}
+
 async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Promise<number | null> {
   const cacheKey = `${kind}:${name.toLowerCase()}`;
   const hit = taxonomyIdCache.get(cacheKey);
@@ -449,13 +499,14 @@ async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Pro
   if (circuitIsOpen()) return null;
 
   try {
-    const params = new URLSearchParams({ search: name, _fields: "id,name,count", per_page: "20" });
-    const res = await limitWpApi(() =>
-      fetchWithTimeout(`https://staging.essentiallysports.com/wp-json/wp/v2/${kind}?${params}`, {}, 10_000)
-    );
-    if (!res.ok) throw new Error(`WP ${kind} -> ${res.status}`);
-    const terms = (await res.json()) as WpTerm[];
-    const id = pickBestTerm(terms, name);
+    let terms = await searchWpTerms(kind, name);
+    let matchAgainst = name;
+    const stripped = stripApostrophes(name);
+    if (terms.length === 0 && stripped !== name) {
+      terms = await searchWpTerms(kind, stripped);
+      matchAgainst = stripped;
+    }
+    const id = pickBestTerm(terms, matchAgainst);
     taxonomyIdCache.set(cacheKey, { at: Date.now(), id });
     circuitRecordSuccess();
     return id;

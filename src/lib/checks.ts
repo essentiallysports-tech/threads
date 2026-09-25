@@ -52,6 +52,100 @@ export function isEsOwnedLink(url: string): boolean {
 // own registered entities or sport_groups — the deterministic version of the
 // old skill file's `entity_or_sport_match`, and the exact check that would
 // have stopped the WNBA/boxing incident that started this whole rewrite.
+// ⛔ OPERATOR FIX (2026-09-24, real live incident): College Football Forum
+// (p68) posted "Fans in Disbelief After Michigan Tops No. 13 Ohio State in
+// Wild 88-86 OT Finish" — a basketball article — as a football post, flagged
+// by the team. The evergreen tier pulls by entity TAG ("Ohio State",
+// "Alabama"), and those school tags span every sport; entityOrSportMatch then
+// accepts any registered school-name match before the sport is ever
+// considered. ES's own URL slug carries its editorial category
+// ("ncaa-college-basketball-news-...") — the same signal the WNBA/NBA slug
+// veto below already trusts. This vetoes a different SPORT only, never a
+// different league of the same sport: Colorado Prime Time's NFL coverage of
+// its own alumni, or Ohio State's ex-Buckeyes-in-the-NFL posts, are football
+// on a football page and pass. Fails open whenever either side is unknown
+// (no "-news-" category in the slug, an unmapped sport_group, an empty
+// sport_groups list) and never applies to national multi-sport pages.
+type SportFamily = "football" | "basketball" | "baseball" | "golf" | "tennis" | "racing" | "combat" | "wrestling" | "olympics" | "soccer" | "hockey";
+
+// Slug categories are hand-typed and include real typos seen live
+// ("nasar", "nfl-ctive", "ncaa-college-foootball", "nba-active-baketball").
+const SLUG_FAMILY_PATTERNS: Array<[SportFamily, RegExp]> = [
+  ["football", /football|foootball|nfl/],
+  ["basketball", /basket|baket|baks|nba/],
+  ["baseball", /baseb|mlb/],
+  ["golf", /golf/],
+  ["tennis", /tennis|atp|wta/],
+  ["racing", /nascar|nasar|f1|formula|indycar/],
+  ["combat", /ufc|mma|boxing/],
+  ["wrestling", /wwe|wrestling/],
+  ["olympics", /olymp|olymic/],
+  ["soccer", /soccer/],
+  ["hockey", /hockey|nhl/],
+];
+
+const SPORT_GROUP_FAMILY: Record<string, SportFamily> = {
+  "college football": "football",
+  nfl: "football",
+  nba: "basketball",
+  wnba: "basketball",
+  "college basketball": "basketball",
+  mlb: "baseball",
+  golf: "golf",
+  tennis: "tennis",
+  nascar: "racing",
+  f1: "racing",
+  ufc: "combat",
+  mma: "combat",
+  boxing: "combat",
+  wwe: "wrestling",
+  olympic: "olympics",
+  olympics: "olympics",
+  soccer: "soccer",
+  nhl: "hockey",
+};
+
+// Only these share institution names across sports ("Ohio State", "Alabama",
+// "Lakers"/"Dodgers" cities), which is how an entity-tag hit crosses sports.
+// A combat, wrestling, golf, tennis or racing page seeing an off-category
+// article is almost always a real crossover personality instead — replayed
+// against live history: Roman Reigns in a college-football story on the WWE
+// pages, Joe Rogan on WNBA leadership, Luka Doncic golfing — so those pages
+// are never vetoed here.
+const TEAM_SPORT_FAMILIES = new Set<SportFamily>(["football", "basketball", "baseball", "hockey", "soccer"]);
+
+export function esUrlSportFamilies(url: string | null | undefined): Set<SportFamily> | null {
+  // Slugs can stack categories ("nba-active-basketball-news-mlb-news-<title>"),
+  // so read every leading "<category>-news-" segment, not just the first.
+  const m = (url || "").match(/^https?:\/\/(?:www\.)?essentiallysports\.com\/((?:[a-z0-9-]+?-news-)+)/i);
+  if (!m) return null;
+  const categories = m[1].toLowerCase().split("-news-").filter(Boolean);
+  const families = new Set(
+    SLUG_FAMILY_PATTERNS.filter(([, re]) => categories.some((c) => re.test(c))).map(([f]) => f)
+  );
+  return families.size > 0 ? families : null;
+}
+
+function pageSportFamilies(page: PageConfig): Set<SportFamily> | null {
+  if (page.page_type === "national" || page.sport_groups.length === 0) return null;
+  const families = new Set<SportFamily>();
+  for (const g of page.sport_groups) {
+    const f = SPORT_GROUP_FAMILY[g.toLowerCase().trim()];
+    if (!f) return null;
+    families.add(f);
+  }
+  return families;
+}
+
+export function esUrlSportConflict(url: string | null | undefined, page: PageConfig): boolean {
+  const articleFamilies = esUrlSportFamilies(url);
+  const pageFamilies = pageSportFamilies(page);
+  if (!articleFamilies || !pageFamilies) return false;
+  if (![...pageFamilies].every((f) => TEAM_SPORT_FAMILIES.has(f))) return false;
+  if (![...articleFamilies].every((f) => TEAM_SPORT_FAMILIES.has(f))) return false;
+  return ![...articleFamilies].some((f) => pageFamilies.has(f));
+}
+
 export function entityOrSportMatch(candidate: Candidate, page: PageConfig): boolean {
   // ⛔ OPERATOR BROADENING (2026-08-10): "Daily 150 ES articles... should be
   // mapped to relevant pages and posted." sourcing.ts's sourceFromEsArticles
@@ -64,6 +158,8 @@ export function entityOrSportMatch(candidate: Candidate, page: PageConfig): bool
   // re-checking it with a much blunter local text match.
   const haystack = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`.toLowerCase();
   const sportGroups = page.sport_groups.map((s) => s.toLowerCase());
+
+  if (esUrlSportConflict(candidate.link, page)) return false;
 
   // ⛔ OPERATOR FIX (2026-08-12, real live incident, confirmed at severe
   // scale): a real ES article about WNBA commissioner Cathy Engelbert and
@@ -116,7 +212,9 @@ export function entityOrSportMatch(candidate: Candidate, page: PageConfig): bool
 
   // A genuine registered name/team actually mentioned is trusted fully,
   // same as before — this is real, specific signal nothing else can fake.
-  const realEntityMatch = [...entityNames, ...entityKeywords].some((term) => term.length > 2 && haystack.includes(term));
+  const realEntityMatch = page.entities.some((e) =>
+    [e.name, ...e.keywords].some((term) => term.length > 2 && keywordIndex(haystack, term, e.whole_word) !== -1)
+  );
   if (realEntityMatch) return true;
 
   const sportGroupMatch = sportGroups.some((term) => term.length > 2 && haystack.includes(term));
@@ -475,6 +573,19 @@ function firstOccurrenceIndex(haystack: string, name: string): number {
   return idx === -1 ? Infinity : idx;
 }
 
+// Position of a registered keyword in an already-lowercased haystack, -1 if
+// absent. Substring semantics unless the slot opted into whole_word (see
+// EntitySlot.whole_word): Dallas/Detroit headlines say "Cowboys"/"Lions",
+// never the full "Dallas Cowboys"/"Detroit Lions" their slots registered,
+// which rejected ~3 of every 4 real Cowboys ES articles NO_NAMED_ENTITY
+// (2026-09-18..25), but a bare "lions" substring also hits "Billions".
+function keywordIndex(haystack: string, keyword: string, wholeWord = false): number {
+  const kw = keyword.toLowerCase();
+  if (!wholeWord) return haystack.indexOf(kw);
+  const m = new RegExp(`(?<![a-z0-9])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`).exec(haystack);
+  return m ? m.index : -1;
+}
+
 // ⛔ OPERATOR FIX (2026-08-10, real live incidents): an Islam Makhachev post
 // (headline: "...watching Ilia Topuria and Khamzat Chimaev both suffer
 // shocking losses" — no mention of Khabib anywhere) rendered a VS card
@@ -500,6 +611,7 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   const orderingHaystack = `${candidate.headline} ${candidate.subject}`.toLowerCase();
   const haystack = `${candidate.subject} ${candidate.headline} ${includeRawText ? candidate.rawText || "" : ""}`.toLowerCase();
   const matched: string[] = [];
+  const wholeWordNames = new Set<string>();
   for (const e of page.entities) {
     const individualNames = e.keywords.length > 0 ? e.keywords : [e.name];
     for (const name of individualNames) {
@@ -516,7 +628,10 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
       // card. isCategoryPlaceholder (renderSpec.ts) already exists to
       // reject exactly this class of generic label; a page's own
       // registered keywords are not exempt from it.
-      if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
+      if (name.length > 2 && !isCategoryPlaceholder(name) && keywordIndex(haystack, name, e.whole_word) !== -1) {
+        matched.push(name);
+        if (e.whole_word) wholeWordNames.add(name);
+      }
     }
   }
   // ⛔ OPERATOR FIX (2026-09-12, real live incident): `rival_entities` has
@@ -542,7 +657,11 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   for (const name of page.rival_entities || []) {
     if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
   }
-  matched.sort((a, b) => firstOccurrenceIndex(orderingHaystack, a) - firstOccurrenceIndex(orderingHaystack, b));
+  const orderOf = (name: string) => {
+    const idx = keywordIndex(orderingHaystack, name, wholeWordNames.has(name));
+    return idx === -1 ? Infinity : idx;
+  };
+  matched.sort((a, b) => orderOf(a) - orderOf(b));
   return matched;
 }
 
@@ -2135,7 +2254,7 @@ export interface CandidateCheckResult {
 // maintain) rather than a hardcoded page-ID list, so it applies to any
 // future retrospective page automatically.
 const RETROSPECTIVE_THEME_RE = /\b(nostalgia|retrospective|vintage|legends-era|classic\s+19\d0s)\b/i;
-const RETROSPECTIVE_MAX_AGE_DAYS = 60;
+export const RETROSPECTIVE_MAX_AGE_DAYS = 60;
 
 export function isRetrospectiveOnlyPage(page: PageConfig): boolean {
   return RETROSPECTIVE_THEME_RE.test(page.page_theme || "");
@@ -2235,7 +2354,8 @@ export function isTooRecentForRetrospectivePage(candidate: Candidate, page: Page
 // less than 3 on a page per day, duplicate links etc should not be an
 // issue." Same reasoning as dominantNarrativeCheck's matching 2026-09-14
 // fix, applied to every OTHER repetition-avoidance gate (ALREADY_POSTED,
-// DUPLICATE_LINK_24H here; checkDuplicateStory in dailyRunWorkflow.ts,
+// DUPLICATE_LINK_24H here — the link half was narrowed 2026-09-24, see the
+// DUPLICATE_LINK_72H comment in runDeterministicChecks; checkDuplicateStory in dailyRunWorkflow.ts,
 // which imports this same helper — checks.ts is fully bundled into that
 // workflow already, so a new named export here costs nothing extra):
 // getting real volume out is a higher priority than perfect novelty/dedup
@@ -2301,8 +2421,27 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   if (!isStarvedToday && alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
     return { pass: false, reason: "ALREADY_POSTED" };
   }
-  if (!isStarvedToday && duplicateLinkRecently(candidate, postedLog, 24)) {
-    return { pass: false, reason: "DUPLICATE_LINK_24H" };
+  // ⛔ OPERATOR FIX (2026-09-24, real live incident): the link check used to
+  // be skipped entirely for a starved page (<3 posts in 24h, the 2026-09-15
+  // rule above) and was only 24h otherwise. A brand-new page starts at zero,
+  // so it skipped dedup outright: the p91-p95 NASCAR pages each posted the
+  // same article twice an hour apart. And on healthy pages, every article's
+  // alternate-angle copy (sourceFromEsArticles emits two keys per article)
+  // cleared the 24h window and went out again the next day — College
+  // Football Forum repeated 23 articles ~24-30h apart in one week, flagged by
+  // the team as "same stuff getting repeated on different days."
+  // ⛔ CORRECTION (2026-09-25, real live incident): a 72h window (deployed
+  // 2026-09-24) removed each article's second, next-day post — about a third
+  // of the article-link supply on the busiest pages. Pages then fell through
+  // to web search, whose unmatched stories get a newsletter link: within
+  // hours over half of all posts carried a newsletter link instead of an ES
+  // article (was ~99%), and GA4 link clicks fell further. Back to the
+  // original 24h window for healthy pages. The one real defect kept fixed:
+  // a starved page no longer skips the link check entirely — it gets a 12h
+  // floor, so a new page can't post the same article twice an hour apart.
+  const linkWindowHours = isStarvedToday ? 12 : 24;
+  if (duplicateLinkRecently(candidate, postedLog, linkWindowHours)) {
+    return { pass: false, reason: isStarvedToday ? "DUPLICATE_LINK_12H" : "DUPLICATE_LINK_24H" };
   }
   return { pass: true, reason: null };
 }
