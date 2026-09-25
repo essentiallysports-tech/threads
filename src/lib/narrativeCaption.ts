@@ -115,6 +115,52 @@ const REFUSAL_PATTERNS = [
   /\bboth just say\b/i,
 ];
 
+// ⛔ COST FIX (2026-09-17): every caption call re-sent this file's own
+// style/structure rules from scratch on every single request — confirmed
+// live via SSH into es-temporal-worker (~/.pm2/logs/es-threads-worker-
+// error.log) that the AI Gateway's $12/day soft cap gets crossed at
+// anywhere from ~3,000 to ~9,500 calls/day across all 7 AI-gateway-calling
+// files, blended average ~$0.001-0.004/call — consistent with genuinely
+// cheap per-call text, not any single expensive call type. The real waste
+// was that a meaningful chunk of THIS file's own prompt (measured: see the
+// PR this shipped in) is byte-identical on every call and was never
+// cached — `grep -rn "cache_control" src/lib/*.ts` returned nothing before
+// this change. Vercel's AI Gateway passes cache_control straight through
+// to Anthropic on this same /v1/chat/completions endpoint (no AI SDK
+// needed — see vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-
+// completions/advanced#prompt-caching), so the lines below that don't
+// depend on this call's own candidate/page data are pulled into their own
+// cacheable `system` message. Every rule that references "the facts
+// above" or a STRUCTURE block by name is deliberately left where it was,
+// in its original wording, in the per-call message in buildPrompt() below
+// — this only changes which message carries which already-existing
+// sentence, never the sentence itself or the overall reading order the
+// model sees (system is read before user). Manual cache_control was used
+// instead of `caching: 'auto'` per Vercel's own guidance: this traffic is
+// one-shot (a fresh unrelated candidate every call), not a multi-turn
+// conversation, and Vercel explicitly recommends manual markers over auto
+// for one-shot traffic. Cache TTL is capped at 5 minutes on this endpoint
+// (Anthropic's 1-hour option isn't available outside Vercel's Responses
+// API) — acceptable here since the 6 posting shards fire every ~2 minutes,
+// well inside that window during any active run.
+const CAPTION_STYLE_GUIDE = [
+  `Your reader is a real, engaged fan of this team/sport — they already know who this player is, the team's current situation, and the recent context. NEVER explain basics they already know (who someone is, what their role is, generic background) — that reads as written for a stranger, not a fan, and instantly feels generic. Write like you're talking to someone already in the conversation, not introducing the topic to them.`,
+  ``,
+  `Before writing: if the facts reference a named internal program, proposal, framework, or initiative (e.g. a labeled CBA proposal, a codenamed policy) that belongs to a real organization (a league, team, union), attribute the actual action to that real organization — write "the WNBA is proposing..." or "under the WNBA's [name] framework...", never "[name] dropped new rules" as if the codenamed proposal itself is the one acting. A named internal program is a label for a policy, not a separate entity that can do anything on its own.`,
+  ``,
+  `NEVER write ABOUT this page, its usual focus, or whether this story "belongs" here — never say things like "this isn't our lane," "we're staying in our world," "this one's tricky," "not sure why we're covering this," or any version of that. If the facts given to you don't obviously fit this page's usual subject, that's not something to comment on — just write the real story directly and confidently, the way any of this page's normal posts would. The account should never sound uncertain about what it's allowed to post.`,
+  ``,
+  `Use short paragraphs with a blank line between each of the four moves — never one dense wall of text.`,
+  `- Do NOT ask people to like, comment, share, tag someone, double-tap, or react — that's banned engagement-bait, not a genuine hook.`,
+  `- Never reveal in the CTA/cliffhanger something you already fully explained in move 2 — the whole point is an open loop, not a redundant recap.`,
+  `- If the story's core fact is a specific number, stat, or record (a milestone reached, a record broken, a stat line), do NOT spell out that exact figure in your text — assume the reader can already see it on the card. Reference the achievement qualitatively ("she just broke a WNBA record nobody saw coming") and save the actual number/detail for the reply — that number IS the reason to tap through, so give it away and there's nothing left to click for.`,
+  `- Plain text only. No markdown, no hashtags, no emoji spam (one or two is fine if it fits the voice).`,
+  `- Never use em dashes (—) or en dashes (–) anywhere in the text — that's a well-known "this was written by AI" tell on Threads. Use a period, comma, colon, or "and" instead.`,
+  ``,
+  `Output ONLY the caption text, nothing else — no preamble, no explanation.`,
+]
+  .join("\n");
+
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -161,7 +207,15 @@ async function callGateway(prompt: string, apiKey: string): Promise<string> {
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: MODEL,
-        messages: [{ role: "user", content: prompt }],
+        // ⛔ COST FIX (2026-09-17): CAPTION_STYLE_GUIDE (see its own comment
+        // above) is byte-identical on every call, so it's a separate
+        // `system` message carrying cache_control — the per-call `prompt`
+        // (voice, this candidate's facts, structure choice, char limit,
+        // retry note) stays uncached since it's genuinely unique every time.
+        messages: [
+          { role: "system", content: CAPTION_STYLE_GUIDE, cache_control: { type: "ephemeral" } },
+          { role: "user", content: prompt },
+        ],
         max_tokens: 400,
         temperature: 0.8,
       }),
@@ -252,8 +306,8 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // The curiosity gap has to be pitched AT that existing knowledge (an
     // insider angle, a detail even a close follower hasn't clocked yet),
     // not a 101-level recap of things this audience already has.
-    `Your reader is a real, engaged fan of this team/sport — they already know who this player is, the team's current situation, and the recent context. NEVER explain basics they already know (who someone is, what their role is, generic background) — that reads as written for a stranger, not a fan, and instantly feels generic. Write like you're talking to someone already in the conversation, not introducing the topic to them.`,
-    ``,
+    // (2026-09-17: this rule's actual text moved to CAPTION_STYLE_GUIDE at
+    // the top of this file, since it's identical on every call — cacheable.)
     `Here are the ONLY facts you know about this story — do not invent any detail, quote, number, or context beyond what's given:`,
     facts,
     ``,
@@ -286,8 +340,8 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // organization behind it, misattributes agency — same category of error
     // as getting an injury/quote backwards above, just at the organization
     // level instead of the person level.
-    `Before writing: if the facts reference a named internal program, proposal, framework, or initiative (e.g. a labeled CBA proposal, a codenamed policy) that belongs to a real organization (a league, team, union), attribute the actual action to that real organization — write "the WNBA is proposing..." or "under the WNBA's [name] framework...", never "[name] dropped new rules" as if the codenamed proposal itself is the one acting. A named internal program is a label for a policy, not a separate entity that can do anything on its own.`,
-    ``,
+    // (2026-09-17: this rule's actual text moved to CAPTION_STYLE_GUIDE at
+    // the top of this file, since it's identical on every call — cacheable.)
     // ⛔ OPERATOR FIX (2026-08-13, real live incident): a real post opened
     // "This one's tricky because the headline is pure WNBA but our page is
     // Lakers through and through... not our lane... we're staying in our
@@ -299,8 +353,8 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // produce this same self-referential, "let me address why this is
     // weird" register — a reader should never see the account talking
     // about its own selection process, uncertainty, or lane.
-    `NEVER write ABOUT this page, its usual focus, or whether this story "belongs" here — never say things like "this isn't our lane," "we're staying in our world," "this one's tricky," "not sure why we're covering this," or any version of that. If the facts given to you don't obviously fit this page's usual subject, that's not something to comment on — just write the real story directly and confidently, the way any of this page's normal posts would. The account should never sound uncertain about what it's allowed to post.`,
-    ``,
+    // (2026-09-17: this rule's actual text moved to CAPTION_STYLE_GUIDE at
+    // the top of this file, since it's identical on every call — cacheable.)
     // ⛔ OPERATOR REVERSAL (2026-08-12): "same account, same reach — the
     // quality of post is the reason our link clicks are so low." Real
     // manual posts on these SAME accounts are self-contained (fact →
@@ -445,10 +499,15 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // (not just "stay under X") gives the model actual margin to work
     // with instead of writing to the edge and overshooting.
     `Formatting: aim for roughly 6-7 lines total across these four moves (a real, substantive post, not a 3-line skeleton) — but NEVER pad with filler or repeat yourself just to hit a line count. If the given facts genuinely don't support that much substance, a shorter, honest post beats a padded one. Target around ${Math.round(charLimit * 0.8)} characters total — leave real margin below the ${charLimit}-character hard limit, don't write to the edge and risk going over. That hard limit is non-negotiable and takes priority over hitting 6-7 lines — write tighter sentences rather than overflow it; a well-edited 5-line post beats a 7-line post that gets discarded for going over.`,
-    `Use short paragraphs with a blank line between each of the four moves — never one dense wall of text.`,
-    `- Do NOT ask people to like, comment, share, tag someone, double-tap, or react — that's banned engagement-bait, not a genuine hook.`,
+    // (2026-09-17: the always-identical rules that used to sit here —
+    // paragraph formatting, the engagement-bait ban, the CTA-redundancy
+    // rule, plain-text/no-em-dash formatting, and the final "output only
+    // the caption text" instruction — moved to CAPTION_STYLE_GUIDE at the
+    // top of this file, since they're byte-identical on every call and are
+    // now sent as a separate cacheable `system` message instead. Only the
+    // rules below that depend on THIS call's own facts/charLimit/retryNote
+    // stay here.)
     `- Never invent a detail, quote, or number not in the facts above just to make the post feel more substantive — a true, well-chosen detail from the real facts beats a fabricated dramatic one.`,
-    `- Never reveal in the CTA/cliffhanger something you already fully explained in move 2 — the whole point is an open loop, not a redundant recap.`,
     // ⛔ OPERATOR FIX (2026-08-10, real live incident): an Angel Reese post
     // spelled out the exact record ("fastest to reach 70 career double-
     // doubles... beating Tina Charles's old record by 25 games") in the
@@ -458,13 +517,10 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // that exact figure is what the accompanying infographic exists to
     // show — the caption's job is to sell the emotional weight of it, not
     // re-print the number a second time.
-    `- If the story's core fact is a specific number, stat, or record (a milestone reached, a record broken, a stat line), do NOT spell out that exact figure in your text — assume the reader can already see it on the card. Reference the achievement qualitatively ("she just broke a WNBA record nobody saw coming") and save the actual number/detail for the reply — that number IS the reason to tap through, so give it away and there's nothing left to click for.`,
-    `- Plain text only. No markdown, no hashtags, no emoji spam (one or two is fine if it fits the voice).`,
-    `- Never use em dashes (—) or en dashes (–) anywhere in the text — that's a well-known "this was written by AI" tell on Threads. Use a period, comma, colon, or "and" instead.`,
+    // (2026-09-17: this rule's actual text moved to CAPTION_STYLE_GUIDE at
+    // the top of this file, since it's identical on every call — cacheable.)
     `- Hard limit: ${charLimit} characters total, including spaces — use as much of that space as the real facts support.`,
     retryNote ? `\nIMPORTANT — your previous attempt failed because: ${retryNote}. Fix that specifically.` : "",
-    ``,
-    `Output ONLY the caption text, nothing else — no preamble, no explanation.`,
   ]
     .filter(Boolean)
     .join("\n");
