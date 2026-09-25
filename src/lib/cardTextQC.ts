@@ -132,12 +132,12 @@ export async function verifyCardText(
 const PHOTO_SUBJECT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const photoSubjectCache = new Map<string, { at: number; value: Promise<boolean> }>();
 
-export async function verifyPhotoSubject(imageUrl: string, subjectName: string): Promise<boolean> {
+export async function verifyPhotoSubject(imageUrl: string, subjectName: string, caption?: string): Promise<boolean> {
   const cacheKey = `${imageUrl}::${subjectName.toLowerCase()}`;
   const hit = photoSubjectCache.get(cacheKey);
   if (hit && Date.now() - hit.at < PHOTO_SUBJECT_CACHE_TTL_MS) return hit.value;
 
-  const value = verifyPhotoSubjectUncached(imageUrl, subjectName);
+  const value = verifyPhotoSubjectUncached(imageUrl, subjectName, caption);
   photoSubjectCache.set(cacheKey, { at: Date.now(), value });
   value.catch(() => {
     const current = photoSubjectCache.get(cacheKey);
@@ -146,13 +146,17 @@ export async function verifyPhotoSubject(imageUrl: string, subjectName: string):
   return value;
 }
 
-async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string): Promise<boolean> {
+async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string, caption?: string): Promise<boolean> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
   if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
     `This photo was found by searching a sports media library for "${subjectName}".`,
+    // 2026-09-25: the model can't identify real people by face, so two
+    // players of the same sport both "plausibly" pass on pixels alone — the
+    // library's own caption says who is actually pictured.
+    caption ? `The library's caption for this photo reads: "${caption.slice(0, 500)}". Agency captions name the pictured person first. Reply FAIL if the caption indicates the photo mainly shows a different named person (for example "<other player> ... against ${subjectName}"), even if ${subjectName} is mentioned.` : "",
     `Look at it and answer: does it actually, plausibly depict ${subjectName} — a recognizable photo of them (portrait, action shot, court/field/press-conference appearance), or clearly their jersey/memorabilia in a relevant context?`,
     `Reply FAIL if it instead shows unrelated people, a generic crowd/press/memorial scene with no clear visual connection to ${subjectName}, or anything else that just happens to be captioned with this name without the photo actually being "about" them.`,
     // ⛔ OPERATOR FIX (2026-09-09, real live incident): a real card ("Stafford
