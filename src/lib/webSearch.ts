@@ -663,17 +663,38 @@ export async function factCheckClaim(candidate: Candidate): Promise<FactCheckRes
   }
 }
 
+// ⛔ OPERATOR FIX (2026-09-25, real live incident): an undated result used to
+// fall back to publishedAt=today, so it always passed the freshness gate.
+// Confirmed live on Alex Eala Fan Club: a NewsNow search-results page
+// ('"Alex Eala" news - NewsNow') went out as a story, and a Sep 4 article
+// (date only in its URL path) went out three weeks later as news. A result
+// now needs a real date — the provider's, the page's own metadata, or a
+// /YYYY/MM/DD/ path — and search/aggregator/index pages are never stories.
+const NON_ARTICLE_URL_RE = /([?&](search|q|query|s)=)|\/(search|tag|tags|topic|topics|category)(\/|$)|\/\/(www\.)?(newsnow\.com|news\.google\.com|flipboard\.com|bing\.com|duckduckgo\.com)\//i;
+
+function dateFromUrlPath(url: string): string | null {
+  const m = url.match(/\/(20\d{2})\/(\d{1,2})\/(\d{1,2})\//);
+  if (!m) return null;
+  const iso = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}T12:00:00Z`;
+  return isNaN(Date.parse(iso)) ? null : iso;
+}
+
 export async function searchResultsToCandidates(results: SearchResult[], source: Candidate["source"], dateISO: string): Promise<Candidate[]> {
-  const titled = results.filter((r) => r.title && r.url);
+  void dateISO; // no longer used as a publish-date fallback, see above
+  const titled = results.filter((r) => r.title && r.url && !NON_ARTICLE_URL_RE.test(r.url));
   const realDates = await Promise.all(titled.map((r) => fetchPublishedDate(r.url)));
 
-  return titled.map((r, i): Candidate => ({
-    source,
-    key: r.url,
-    subject: r.title,
-    headline: r.title,
-    link: r.url,
-    publishedAt: r.published_date || realDates[i] || dateISO,
-    rawText: r.content?.slice(0, 500) || r.title,
-  }));
+  return titled.flatMap((r, i): Candidate[] => {
+    const publishedAt = r.published_date || realDates[i] || dateFromUrlPath(r.url);
+    if (!publishedAt) return [];
+    return [{
+      source,
+      key: r.url,
+      subject: r.title,
+      headline: r.title,
+      link: r.url,
+      publishedAt,
+      rawText: r.content?.slice(0, 500) || r.title,
+    }];
+  });
 }

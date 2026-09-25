@@ -219,6 +219,30 @@ export function hasConflictingTeamMention(text: string, sportGroup: string | und
   return teamNames.some((team) => !expected.some((k) => k.includes(team) || team.includes(k)) && text.includes(team));
 }
 
+// ⛔ OPERATOR FIX (2026-09-25, real live incident, team-reported): an Alex
+// Eala Fan Club post ("Eala bows out of Singapore Open") shipped with a photo
+// of Iga Swiatek. metadataMatchesSubject only asks whether the name appears
+// ANYWHERE in the caption, and agency match photos name both players —
+// "<pictured player> ... against <opponent>". verifyPhotoSubject can't settle
+// it either: it can't identify real people by face, so any player of the
+// same sport "plausibly" passes. The caption is the reliable signal: agency
+// captions name the pictured person first, and a relation word before the
+// subject's first mention means the subject is the OTHER person in the shot.
+// Fails open when there's no caption text or no subject mention.
+const OPPONENT_RELATION_RE = /\b(against|vs\.?|versus|v\.|defeats?|defeated|beats?|beaten|faces?|faced|loses to|lost to|falls to|fell to|plays?|played|takes on|took on)\b/i;
+
+export function captionShowsSomeoneElse(result: EsImageResult, subjectName: string): boolean {
+  const text = `${result.title} ${result.caption || ""}`.toLowerCase();
+  if (!text.trim()) return false;
+  const tokens = subjectName.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+  if (tokens.length === 0) return false;
+  // Surname is the most specific token and survives "Alex"/"Alexandra".
+  const surname = tokens[tokens.length - 1];
+  const idx = text.indexOf(surname);
+  if (idx <= 0) return false;
+  return OPPONENT_RELATION_RE.test(text.slice(0, idx));
+}
+
 export function metadataMatchesSubject(
   result: EsImageResult,
   searchTerm: string,

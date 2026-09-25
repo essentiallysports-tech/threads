@@ -35,7 +35,7 @@ import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
 import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI, isCoherentHeadlineViaAI, factsFor } from "../lib/narrativeRenderSpec";
 import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
-import { searchImages, metadataMatchesSubject } from "../lib/esDirect";
+import { searchImages, metadataMatchesSubject, captionShowsSomeoneElse } from "../lib/esDirect";
 import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
 import { ensureCrossPageLedgerSeeded, crossPageConflict, claimArticle, releaseArticle } from "../lib/crossPageLedger";
@@ -550,15 +550,17 @@ async function searchAndPick(term: string, recentlyUsed: Set<string>, sportHint?
   // against — never turns into a positive requirement for pages/entities
   // where none were found.
   const teamCheck = expectedTeamKeywords?.length ? { sportGroup: sportHint, expectedTeamKeywords } : undefined;
-  const verified = results.filter((r) => metadataMatchesSubject(r, term, teamCheck));
+  // captionShowsSomeoneElse (2026-09-25): drop match photos whose caption
+  // pictures the opponent ("<other player> ... against <subject>") — see its
+  // comment in esDirect.ts. The caption also goes to verifyPhotoSubject,
+  // since the vision check can't tell two same-sport players apart by face.
+  const verified = results.filter((r) => metadataMatchesSubject(r, term, teamCheck) && !captionShowsSomeoneElse(r, term));
   if (verified.length === 0) return null; // every candidate's own metadata contradicts the subject we searched for
-  // metadataMatchesSubject is text-only (does the caption mention this name
-  // anywhere) — verifyPhotoSubject is the real check that the photo itself
-  // looks like it's actually about them, not just captioned with their name.
+  const captionByUrl = new Map(verified.map((r) => [r.url, `${r.title} ${r.caption || ""}`.trim()]));
   return pickReachableUrl(
     verified.map((r) => r.url),
     recentlyUsed,
-    (url) => verifyPhotoSubject(url, term)
+    (url) => verifyPhotoSubject(url, term, captionByUrl.get(url))
   );
 }
 
