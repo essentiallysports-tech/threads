@@ -663,7 +663,7 @@ async function sourceFromEvergreenBank(page: PageConfig, dateISO: string): Promi
   const picked = matching.slice(0, 2);
   const resultsPerAngle = await Promise.all(
     picked.map((a) =>
-      webSearch(a.frame).catch((e) => {
+      webSearch(a.frame, 8, false, page.page_id).catch((e) => {
         console.error(`sourceFromEvergreenBank: query failed for ${page.page_id} (${a.angle_id}): ${(e as Error).message}`);
         return [];
       })

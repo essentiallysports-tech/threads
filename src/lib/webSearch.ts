@@ -250,7 +250,7 @@ export async function sourceFromWebSearch(page: PageConfig, dateISO: string): Pr
   // overlap, not real disambiguation, so this is the cheap fix upstream.
   const resultsPerBatch = await Promise.all(
     termBatches.map((terms) =>
-      webSearch(`${terms.join(" OR ")}${sportTerm} news`).catch((e) => {
+      webSearch(`${terms.join(" OR ")}${sportTerm} news`, 8, false, page.page_id).catch((e) => {
         console.error(`sourceFromWebSearch: web search failed for ${page.page_id} (${terms.join(", ")}): ${(e as Error).message}`);
         return [] as SearchResult[];
       })
@@ -317,7 +317,7 @@ export async function sourceFromEvergreenWebSearch(page: PageConfig, dateISO: st
   const resultsPerBatch = await Promise.all(
     termBatches.map((terms, i) => {
       const angle = EVERGREEN_ANGLE_QUERIES[(i + dateISO.length) % EVERGREEN_ANGLE_QUERIES.length];
-      return webSearch(angle(terms.join(" OR "), sportTerm), 8, true).catch((e) => {
+      return webSearch(angle(terms.join(" OR "), sportTerm), 8, true, page.page_id).catch((e) => {
         console.error(`sourceFromEvergreenWebSearch: web search failed for ${page.page_id} (${terms.join(", ")}): ${(e as Error).message}`);
         return [] as SearchResult[];
       });
@@ -490,7 +490,78 @@ export async function claudeWebSearch(query: string, maxResults = 8, evergreen =
 // volume for queries the microservice genuinely can't answer that Claude/
 // Grok search previously could — an explicit cost-over-fill-rate tradeoff
 // for THIS function, not a bug.
-export async function webSearch(query: string, maxResults = 8, evergreen = false): Promise<SearchResult[]> {
+// ⛔ OPERATOR FIX (2026-09-25, real live incident, operator directive: "put
+// a rate limit on the requests for websearch, so that like last night it
+// should not exceed"). Nothing capped how often this ran: when a bad deploy
+// starved pages of ES articles on Sep 24-25, every page fell into the web
+// tiers every run and every repair pass — an estimated ~80 searches/hour on
+// the Sep 24 evening and ~170/hour early Sep 25 (vs roughly 1-75 per whole
+// normal day), each fanning out into page fetches, link resolution, AI
+// same-story checks, fact-checks and Beehiiv lookups. Rolling-window caps,
+// fleet-wide and per page (so one starved page can't spend everyone's
+// allowance), enforced in-process: all six shards run inside the one
+// es-threads-worker process. The reservation is synchronous (no await
+// between check and record), so concurrent callers can't overshoot. A
+// refused search returns [] — the same outcome as a search that found
+// nothing, which every caller already handles.
+const WEB_SEARCH_MAX_PER_HOUR = 30;
+const WEB_SEARCH_MAX_PER_DAY = 300;
+const WEB_SEARCH_MAX_PER_PAGE_PER_HOUR = 3;
+const WEB_SEARCH_MAX_PER_PAGE_PER_DAY = 15;
+const HOUR_MS = 3600 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+const searchLog: Array<{ at: number; pageId: string | null }> = [];
+const refusalLogged = new Set<string>();
+let usageHour = Math.floor(Date.now() / HOUR_MS);
+let usageThisHour = 0;
+let refusedThisHour = 0;
+
+export function reserveWebSearch(pageId: string | null): string | null {
+  const now = Date.now();
+  const hour = Math.floor(now / HOUR_MS);
+  if (hour !== usageHour) {
+    console.error(`webSearch usage: ${usageThisHour} searches, ${refusedThisHour} refused in the hour starting ${new Date(usageHour * HOUR_MS).toISOString()} (caps ${WEB_SEARCH_MAX_PER_HOUR}/h, ${WEB_SEARCH_MAX_PER_DAY}/24h fleet; ${WEB_SEARCH_MAX_PER_PAGE_PER_HOUR}/h, ${WEB_SEARCH_MAX_PER_PAGE_PER_DAY}/24h per page)`);
+    usageHour = hour;
+    usageThisHour = 0;
+    refusedThisHour = 0;
+    refusalLogged.clear();
+  }
+  while (searchLog.length && now - searchLog[0].at >= DAY_MS) searchLog.shift();
+
+  let fleetHour = 0;
+  let pageHour = 0;
+  let pageDay = 0;
+  for (const s of searchLog) {
+    const inHour = now - s.at < HOUR_MS;
+    if (inHour) fleetHour++;
+    if (pageId && s.pageId === pageId) {
+      pageDay++;
+      if (inHour) pageHour++;
+    }
+  }
+  const refusal =
+    fleetHour >= WEB_SEARCH_MAX_PER_HOUR ? "fleet_hour" :
+    searchLog.length >= WEB_SEARCH_MAX_PER_DAY ? "fleet_day" :
+    pageId && pageHour >= WEB_SEARCH_MAX_PER_PAGE_PER_HOUR ? "page_hour" :
+    pageId && pageDay >= WEB_SEARCH_MAX_PER_PAGE_PER_DAY ? "page_day" :
+    null;
+  if (refusal) {
+    refusedThisHour++;
+    const logKey = `${pageId}:${refusal}`;
+    if (!refusalLogged.has(logKey)) {
+      refusalLogged.add(logKey);
+      console.error(`WEB_SEARCH_RATE_LIMITED page=${pageId ?? "-"} scope=${refusal} (fleet ${fleetHour}/h ${searchLog.length}/24h, page ${pageHour}/h ${pageDay}/24h)`);
+    }
+    return refusal;
+  }
+  searchLog.push({ at: now, pageId });
+  usageThisHour++;
+  return null;
+}
+
+export async function webSearch(query: string, maxResults = 8, evergreen = false, pageId: string | null = null): Promise<SearchResult[]> {
+  if (reserveWebSearch(pageId)) return [];
   const microserviceResults = await microserviceWebSearch(query, maxResults);
   return microserviceResults ?? [];
 }
