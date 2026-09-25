@@ -1,0 +1,6 @@
+{
+  "why": "p95 (NASCAR Crashes, @_nascarcrashes) was seeded with the same utm_medium as p66 (NASCAR Crashes, @nascar.crashes), so GA4 merges both accounts' clicks and the dashboard attributes p66's to p95. Give p95 its own medium, matching its handle like the other pages. Takes effect for new posts only.",
+  "pages": {
+    "p95": { "setThreads": { "utm_string": "utm_source=threads&utm_medium=_nascarcrashes&utm_campaign=threads" } }
+  }
+}

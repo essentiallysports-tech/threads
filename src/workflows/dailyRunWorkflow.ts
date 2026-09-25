@@ -183,6 +183,19 @@ function nextIstOccurrenceUtc(hhmm: string, fromUtc: Date): Date {
   return targetUtc.getTime() <= fromUtc.getTime() ? new Date(targetUtc.getTime() + 24 * 3600 * 1000) : targetUtc;
 }
 
+// Every page in a run used to share `postTime` to the second, so each hour
+// several accounts published at once — e.g. 08:14:09 on 2026-09-25, seven
+// accounts together, two of them (JGR Racing Digest, Hendrick Heroes) with
+// the same Legacy/RFK story. Synchronized posting across accounts is what
+// platform spam systems look for. Offsets each page 0-30 minutes, to the
+// second, re-drawn every hour so no account settles on a fixed minute. Pure
+// function of page id + run hour, so replay-deterministic.
+function publishSpreadMs(pageId: string, hourKey: string): number {
+  let h = 0x811c9dc5; // FNV-1a: the hour digit changes last, so it needs a hash that still mixes it well
+  for (const ch of `${pageId}|${hourKey}`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193);
+  return ((h >>> 0) % 1800) * 1000;
+}
+
 // This function is the deterministic replacement for the old prose skill
 // file's entire T_THREADS logic. Every decision point here is real,
 // replayable code — nothing here is "the model is supposed to remember to
@@ -945,6 +958,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // value that only affects a future Postiz schedule timestamp, never a
   // decision this workflow branches on.
   const postTime = new Date(Date.now() + 60 * 60 * 1000);
+  const runHourKey = new Date(workflowInfo().startTime).toISOString().slice(0, 13);
   // Multiple posts from the SAME page in one run (new as of the 13-post
   // floor above) must not all land on the exact same scheduled second —
   // stagger same-page posts 15 minutes apart so they don't fire simultaneously.
@@ -963,7 +977,9 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     const fixedSlot = item.page.threads?.fixed_sport_slots?.find((s) =>
       item.sportGroup ? s.sport_groups.some((g) => g.toLowerCase() === item.sportGroup!.toLowerCase()) : false
     );
-    const itemPostTime = fixedSlot ? nextIstOccurrenceUtc(fixedSlot.post_time_ist, new Date()) : new Date(postTime.getTime() + indexForPage * 15 * 60 * 1000);
+    const itemPostTime = fixedSlot
+      ? nextIstOccurrenceUtc(fixedSlot.post_time_ist, new Date())
+      : new Date(postTime.getTime() + publishSpreadMs(item.page.page_id, runHourKey) + indexForPage * 15 * 60 * 1000);
 
     // ⛔ OPERATOR FIX (2026-08-10): same class of bug as attemptPageCandidates
     // above — a Postiz/S3 failure scheduling ONE already-rendered item must
