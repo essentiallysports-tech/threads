@@ -809,6 +809,11 @@ export function isPromoBettingContent(candidate: Candidate): boolean {
 const LISTICLE_FILLER_PATTERNS = [
   /\b\d+\s+(?:funniest|best|worst|greatest|craziest|wildest|weirdest|dumbest|smartest|most\s+\w+)\b/i,
   /\btop\s+\d+\b/i,
+  // ES's daily "September 23rd's Complete Sports Schedule: Where, When, and
+  // How to Watch..." listing is filed under every sport category, so a
+  // general-news page would post it daily and every such page would post the
+  // same one. Only these 6 of 1,498 fleet pool titles (Sep 19-25) match.
+  /\bcomplete sports schedule\b/i,
 ];
 
 export function isListicleFillerContent(candidate: Candidate): boolean {
