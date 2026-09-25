@@ -7,6 +7,11 @@ export interface EntitySlot {
   name: string;
   keywords: string[];
   weight: number;
+  // Match this slot's name/keywords as whole words only. Plain substring
+  // matching stays the default because existing slots rely on it ("shaq" ->
+  // "Shaquille", "golf" -> "golfer"); this is for bare team nicknames that
+  // also sit inside ordinary words ("lions" in "Billions").
+  whole_word?: boolean;
 }
 
 export interface ThreadsConfig {
