@@ -30,3 +30,4 @@ fix_registry.js
 samples/
 samples-*/
 samples-v4.json
+registry-backups/

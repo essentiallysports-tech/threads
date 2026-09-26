@@ -1,0 +1,13 @@
+{
+  "why": "Same gap as Dallas/Detroit (threads#45): ES headlines name the team the way fans say it ('Ravens', 'Bills', 'LSU', 'JGR'), not the full registered phrase, so real team articles were rejected NO_NAMED_ENTITY. Each keyword checked against a month of ES headlines in its own category for collisions (Aug 25-Sep 25): bills 42 hits/0, ravens 34/0, lsu 108/0, ohio state 97/0, jgr 19/0, joe gibbs 12/0, hendrick 15/0, hms 10/0. Bare 'georgia' collided with Georgia Tech 5/19, so only 'georgia football' is added. Dale Earnhardt Sr. -> Dale Earnhardt Sr matches the real WP tag (471 articles); the trailing period made tag lookup fail, so the page's most-covered legend got no ES sourcing.",
+  "pages": {
+    "p48": { "addEntities": [{ "name": "Baltimore Ravens", "keywords": ["baltimore ravens", "ravens"], "weight": 20, "whole_word": true }] },
+    "p73": { "editEntities": [{ "name": "Buffalo Bills", "addKeywords": ["bills"], "whole_word": true }] },
+    "p60": { "editEntities": [{ "name": "Ohio State Buckeyes", "addKeywords": ["ohio state"] }] },
+    "p77": { "editEntities": [{ "name": "LSU Tigers", "addKeywords": ["lsu"], "whole_word": true }] },
+    "p76": { "editEntities": [{ "name": "Georgia Bulldogs", "addKeywords": ["georgia football"] }] },
+    "p47": { "addEntities": [{ "name": "Joe Gibbs Racing", "keywords": ["joe gibbs racing", "jgr", "joe gibbs"], "weight": 15, "whole_word": true }] },
+    "p65": { "addEntities": [{ "name": "Hendrick Motorsports", "keywords": ["hendrick motorsports", "hendrick", "hms"], "weight": 15, "whole_word": true }] },
+    "p46": { "renameEntity": ["Dale Earnhardt Sr.", "Dale Earnhardt Sr"] }
+  }
+}

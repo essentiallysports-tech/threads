@@ -46,7 +46,32 @@ export async function listPublications(): Promise<BeehiivPublication[]> {
 // candidate for "70% of posts sourced directly from the newsletter": a real
 // title, a real link, a real thumbnail, no fabrication risk since it's just
 // describing an edition that genuinely exists.
-export async function latestConfirmedPost(publicationId: string): Promise<BeehiivPost | null> {
+// ⛔ OPERATOR FIX (2026-09-25, real live incident): resolveExternalLink calls
+// this once per web-search candidate, so pages sharing a publication (the
+// five NFL pages share one) re-fetched the identical "latest 5" list hundreds
+// of times an hour — 3,394 Beehiiv 429s in the first 6h of Sep 25, and 4,070
+// on Sep 14. The latest edition changes a few times a day at most, so one
+// fetch per publication per 10 minutes is shared by every caller (the
+// promise itself is cached, so concurrent callers coalesce onto one request).
+// A failure is cached for 2 minutes so a rate-limited key gets room to
+// recover instead of being retried by every candidate in the run.
+const LATEST_POST_TTL_MS = 10 * 60 * 1000;
+const LATEST_POST_FAILURE_TTL_MS = 2 * 60 * 1000;
+const latestPostCache = new Map<string, { at: number; ttl: number; value: Promise<BeehiivPost | null> }>();
+
+export function latestConfirmedPost(publicationId: string): Promise<BeehiivPost | null> {
+  const hit = latestPostCache.get(publicationId);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.value;
+  const entry = { at: Date.now(), ttl: LATEST_POST_TTL_MS, value: fetchLatestConfirmedPost(publicationId) };
+  entry.value.catch(() => {
+    entry.at = Date.now();
+    entry.ttl = LATEST_POST_FAILURE_TTL_MS;
+  });
+  latestPostCache.set(publicationId, entry);
+  return entry.value;
+}
+
+async function fetchLatestConfirmedPost(publicationId: string): Promise<BeehiivPost | null> {
   const res = await beehiivGet<{ data: BeehiivPost[] }>(
     `/publications/${publicationId}/posts?limit=5&status=confirmed&order_by=publish_date&direction=desc`
   );
