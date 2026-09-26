@@ -1,0 +1,11 @@
+{
+  "why": "These pages' own themes are league-wide ('General league-wide NBA news', 'League-wide MLB news hub ... across all 30 franchises', 'General golf coverage', 'General golf news hub', 'General current boxing news', 'General ES-branded boxing news hub') but were configured page_type=entity around 4-15 stars, so every ES article about anyone else died NO_NAMED_ENTITY (real run 2026-09-25 09:10: 17 of p53's 21 candidates). page_type=national is what p44/p91-p97 already use for general pages. Replay of the real Sep 19-25 pools (deterministic gates, upper bound): p53 2.8 -> 13.3 unposted passing ES articles/day, p62 1.4 -> 9.4, p39 0 -> 11.4, p74 0.3 -> 10.6, p56/p75 0 -> ~1.5 each. exclusive_articles keeps same-sport pages from posting the same article (the Sep 22 clone pattern): both golf pages and both boxing pages split their sport; p53 runs in the last shard, so it skips what the Lakers/Warriors/Kings/Kobe pages already took. APPLY ONLY AFTER the 'complete sports schedule' filter (threads#46) is deployed — otherwise these pages would post ES's daily cross-sport schedule listing.",
+  "pages": {
+    "p53": { "set": { "page_type": "national" }, "setThreads": { "exclusive_articles": true } },
+    "p62": { "set": { "page_type": "national" } },
+    "p39": { "set": { "page_type": "national" }, "setThreads": { "exclusive_articles": true } },
+    "p74": { "set": { "page_type": "national" }, "setThreads": { "exclusive_articles": true } },
+    "p56": { "set": { "page_type": "national" }, "setThreads": { "exclusive_articles": true } },
+    "p75": { "set": { "page_type": "national" }, "setThreads": { "exclusive_articles": true } }
+  }
+}
