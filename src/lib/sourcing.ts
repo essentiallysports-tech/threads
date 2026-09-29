@@ -794,7 +794,7 @@ async function isSameRealStory(headlineA: string, headlineB: string): Promise<bo
     );
     if (!res.ok) return false;
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "same_story");
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return false;
     const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();

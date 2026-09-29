@@ -156,7 +156,7 @@ async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig
       return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
     }
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "entity_extract");
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return undefined;
 
@@ -255,7 +255,7 @@ async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConf
       return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
     }
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "entities_extract");
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") return undefined;
 

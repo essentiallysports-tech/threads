@@ -98,7 +98,7 @@ export async function verifyCardText(
       return { pass: true, reason: null }; // verification infra failure — don't block posting over it
     }
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "card_text_qc");
     const content = (json.choices?.[0]?.message?.content || "").trim();
     if (/^PASS/i.test(content)) return { pass: true, reason: null };
     return { pass: false, reason: content.slice(0, 200) || "FAIL: no reason given" };
@@ -205,7 +205,7 @@ async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string,
       return true; // verification infra failure — don't block posting over it
     }
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "photo_verify");
     const content = (json.choices?.[0]?.message?.content || "").trim();
     return /^PASS/i.test(content);
   } catch (e) {
@@ -270,7 +270,7 @@ async function verifyGenericPhotoSubjectUncached(imageUrl: string, subjectName: 
       return true; // verification infra failure — don't block posting over it
     }
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost);
+    recordGatewaySpend(json.usage?.cost, "generic_photo_verify");
     const content = (json.choices?.[0]?.message?.content || "").trim();
     return /^PASS/i.test(content);
   } catch (e) {
