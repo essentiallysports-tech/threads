@@ -1,0 +1,16 @@
+{
+  "why": "Same bug threads#47 fixed on Dallas/Detroit/Ravens/etc, on a page that PR flagged as unaudited follow-up. Philadelphia Eagles Community bundles 'eagles'/'philadelphia eagles' as EXTRA keywords on all 4 skill-position player slots (Jalen Hurts, Saquon Barkley, DeVonta Smith, Dallas Goedert) instead of a dedicated team slot -- there was never a place to put is_team_identity=true. Confirmed live via a real candidate-pool replay (2026-09-30): 6 of 8 passing fresh candidates resolved primaryEntity='eagles' even when a specific registered player was ALSO named in the same headline (e.g. 'Eagles HC Nick Sirianni Caught Abusing Bears LB Live on Camera for Jalen Hurts Hit' resolved to 'eagles', not Sirianni or Hurts, both registered) -- same TOPIC_FREQUENCY_ENTITY_CAP/DOMINANT_NARRATIVE_CAP collapse and generic-team-photo risk as the Dallas incident. Consolidates the duplicated 'eagles'/'philadelphia eagles' keyword into one new team-identity slot; each player's OWN name and position nickname ('eagles qb', 'eagles rb', etc, which usually DOES mean that specific player) stay on their own slot, untouched. No code change needed -- is_team_identity and removeKeywords already deployed (threads#47).\n\nAlso confirmed live, separate and NOT fixed here (flagged for its own review): a story entirely about the Dallas Cowboys' cheerleading history ('Dee Brock, Who Founded the Dallas Cowboys Cheerleaders...') passed and would have posted on Philadelphia Eagles Community, purely because 'Dallas Cowboys' is one of this page's rival_entities -- zero actual Eagles connection in the story. rival_entities' own match has no 'is this genuinely a crossover with OUR subject, not just about the rival' check; likely affects some of the other 15 pages with rival_entities too.",
+  "pages": {
+    "p49": {
+      "addEntities": [
+        { "name": "Philadelphia Eagles", "keywords": ["philadelphia eagles", "eagles"], "weight": 20, "is_team_identity": true }
+      ],
+      "editEntities": [
+        { "name": "Jalen Hurts", "removeKeywords": ["philadelphia eagles", "eagles"] },
+        { "name": "Saquon Barkley", "removeKeywords": ["philadelphia eagles", "eagles"] },
+        { "name": "DeVonta Smith", "removeKeywords": ["philadelphia eagles", "eagles"] },
+        { "name": "Dallas Goedert", "removeKeywords": ["philadelphia eagles", "eagles"] }
+      ]
+    }
+  }
+}
