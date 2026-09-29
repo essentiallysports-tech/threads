@@ -612,6 +612,11 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   const haystack = `${candidate.subject} ${candidate.headline} ${includeRawText ? candidate.rawText || "" : ""}`.toLowerCase();
   const matched: string[] = [];
   const wholeWordNames = new Set<string>();
+  // ⛔ OPERATOR FIX (2026-09-29): see EntitySlot.is_team_identity's own
+  // comment (types.ts) for the real incident. Collected alongside
+  // wholeWordNames so the final sort can drop a team-identity slot's
+  // matches behind any specific person also named in the same candidate.
+  const teamIdentityNames = new Set<string>();
   for (const e of page.entities) {
     const individualNames = e.keywords.length > 0 ? e.keywords : [e.name];
     for (const name of individualNames) {
@@ -631,6 +636,7 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
       if (name.length > 2 && !isCategoryPlaceholder(name) && keywordIndex(haystack, name, e.whole_word) !== -1) {
         matched.push(name);
         if (e.whole_word) wholeWordNames.add(name);
+        if (e.is_team_identity) teamIdentityNames.add(name);
       }
     }
   }
@@ -655,13 +661,32 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   // match `requiresNamedEntity`'s existing non-flagship logic already knows
   // how to allow.
   for (const name of page.rival_entities || []) {
+    // NOT auto-marked team-identity: confirmed live this holds a genuine mix
+    // across pages — some real team names (p40/p48/p49's Packers/Vikings/
+    // Bears/Commanders, p60/p68's Michigan/Alabama), but just as often real
+    // individual rival PEOPLE an operator deliberately curated (p37's Jordan/
+    // Stephen Curry, p54's Max Holloway/Khabib, p55's Kayla Harrison/Amanda
+    // Nunes, p96's Zverev/Djokovic). Blanket-demoting this whole field
+    // wrongly outranked those real people below a same-story team-entity
+    // match (caught by the 2026-09-29 equivalence check below before this
+    // shipped) — only a page's own registered entities carry the explicit,
+    // per-slot is_team_identity flag, precisely because that judgment
+    // genuinely differs slot to slot and field to field.
     if (name.length > 2 && !isCategoryPlaceholder(name) && haystack.includes(name.toLowerCase())) matched.push(name);
   }
   const orderOf = (name: string) => {
     const idx = keywordIndex(orderingHaystack, name, wholeWordNames.has(name));
     return idx === -1 ? Infinity : idx;
   };
-  matched.sort((a, b) => orderOf(a) - orderOf(b));
+  // Team-identity matches always sort behind any specific-person match in
+  // the same candidate (see is_team_identity's comment) — within each of
+  // those two groups, still ordered by who the story leads with, exactly as
+  // before this fix.
+  matched.sort((a, b) => {
+    const ta = teamIdentityNames.has(a) ? 1 : 0;
+    const tb = teamIdentityNames.has(b) ? 1 : 0;
+    return ta !== tb ? ta - tb : orderOf(a) - orderOf(b);
+  });
   return matched;
 }
 
