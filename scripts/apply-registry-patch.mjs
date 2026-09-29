@@ -1,7 +1,7 @@
 // Applies a reviewed registry patch file (scripts/registry-patches/*.json) to
 // config/page-registry/pages/{id}.json. Each page entry may:
 //   addEntities:  [EntitySlot]                         appended (skipped if a slot with that name exists)
-//   editEntities: [{ name, addKeywords?, whole_word? }] modifies an existing slot
+//   editEntities: [{ name, addKeywords?, removeKeywords?, whole_word?, is_team_identity? }] modifies an existing slot
 //   renameEntity: [from, to]
 //   set:          { page_type?, ... }                   top-level fields
 //   setThreads:   { exclusive_articles?, utm_string? }  fields under `threads`
@@ -39,7 +39,16 @@ function apply(page, p) {
       if (e.keywords.some((x) => x.toLowerCase() === k.toLowerCase())) notes.push(`"${e.name}" already has "${k}"`);
       else { e.keywords.push(k); notes.push(`"${e.name}" +keyword "${k}"`); }
     }
+    for (const k of edit.removeKeywords || []) {
+      const before = e.keywords.length;
+      e.keywords = e.keywords.filter((x) => x.toLowerCase() !== k.toLowerCase());
+      notes.push(e.keywords.length < before ? `"${e.name}" -keyword "${k}"` : `"${e.name}" has no keyword "${k}" to remove`);
+    }
     if (edit.whole_word !== undefined && e.whole_word !== edit.whole_word) { e.whole_word = edit.whole_word; notes.push(`"${e.name}" whole_word=${edit.whole_word}`); }
+    if (edit.is_team_identity !== undefined && e.is_team_identity !== edit.is_team_identity) {
+      e.is_team_identity = edit.is_team_identity;
+      notes.push(`"${e.name}" is_team_identity=${edit.is_team_identity}`);
+    }
   }
   if (p.renameEntity) {
     const [from, to] = p.renameEntity;

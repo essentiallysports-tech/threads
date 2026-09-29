@@ -1,0 +1,28 @@
+{
+  "why": "Real live incident (Dallas Cowboys Community, 2026-09-29 03:11 run): 8 of 19 candidate attempts were distinct, real, current stories (Joey Porter Jr. contract talk, P.J. Locke's IR move, a Jerry Jones/Micah Parsons-brother feud, a rival Packers trade, a Jake Ferguson fine) all rejected TOPIC_FREQUENCY_ENTITY_CAP or DOMINANT_NARRATIVE_CAP because every one resolved primaryEntity='cowboys' -- most of these headlines open with 'Cowboys ...' before the specific name, and matchedEntityNames' ordering (checks.ts) picks whichever match occurs first in the text. Same mechanism also picks the photo-search subject, so a specific-player story renders with a generic team photo instead of the actual player. Sets is_team_identity=true (see EntitySlot's own comment, types.ts) on every bare team/org-identity slot added or widened by the 2026-09-25/26 keyword patches, on the pages that showed the same shape in their own live rejection logs. Also splits Jerry Jones and Joe Gibbs -- real, recurring individual newsmakers, not the team itself -- out of the team slot's keyword list into their own dedicated slot, matching how every other named person is already registered; otherwise they'd inherit the team-level deprioritization too.",
+  "pages": {
+    "p41": {
+      "editEntities": [
+        { "name": "Dallas Cowboys", "is_team_identity": true, "removeKeywords": ["jerry jones"] }
+      ],
+      "addEntities": [
+        { "name": "Jerry Jones", "keywords": ["jerry jones"], "weight": 18 }
+      ]
+    },
+    "p40": { "editEntities": [{ "name": "Detroit Lions", "is_team_identity": true }] },
+    "p48": { "editEntities": [{ "name": "Baltimore Ravens", "is_team_identity": true }] },
+    "p73": { "editEntities": [{ "name": "Buffalo Bills", "is_team_identity": true }] },
+    "p77": { "editEntities": [{ "name": "LSU Tigers", "is_team_identity": true }] },
+    "p60": { "editEntities": [{ "name": "Ohio State Buckeyes", "is_team_identity": true }] },
+    "p76": { "editEntities": [{ "name": "Georgia Bulldogs", "is_team_identity": true }] },
+    "p65": { "editEntities": [{ "name": "Hendrick Motorsports", "is_team_identity": true }] },
+    "p47": {
+      "editEntities": [
+        { "name": "Joe Gibbs Racing", "is_team_identity": true, "removeKeywords": ["joe gibbs"] }
+      ],
+      "addEntities": [
+        { "name": "Joe Gibbs", "keywords": ["joe gibbs"], "weight": 15 }
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "why": "Operator-authorized (2026-09-27 turn: 'yes lower budget on low yield pages'). Per-page lifetime-view data (Aug 28-Sep 25, excluding the last ~36h to avoid view-accumulation bias) showed these pages consistently near-zero yield with real, stable history predating any of the Sep25-29 patches: p47 JGR median 3 views/mean 4 (95 posts sampled), p65 Hendrick median 4/mean 7 (98), p46 Vintage NASCAR median 5/mean 20 (29), p66 NASCAR Crashes median 3/mean 10 (39, also has a separate broken Postiz channel), p68 College Football Forum median 5/mean 47 but at ~10 posts/day against an 8-12 budget -- high volume for near-zero return. The 5 weakest of the p91-97 fleet (excluding p92 Daytona and p96 World of Alcaraz, both good yield) showed median 2-7/mean 2-10. Real live incident this same day: NASCAR's own cross-page exclusivity ledger (crossPageLedger.ts) is now starving p95 specifically because 9 near-identical NASCAR-themed accounts compete for real ES NASCAR supply that doesn't support that many exclusive claims/day -- p95's own run logs show 6-10 of ~20-22 attempts blocked because a sibling (p91/p92/p93/p94/p65/p66) already claimed the same real article within 24h. Lowering these pages' ceiling doesn't fix that starvation (the cross-page ledger, not budget, is the binding constraint), but it stops burning real work re-sourcing and re-attempting toward a ceiling these pages can't reach anyway, freeing AI-gateway budget (a hard $12/day cap that has been crossed every day since Sep25, each time by mid-afternoon UTC) for the hero pages that actually convert it into views. p48/p60/p76/p77/p73 and the 6 general-news-converted pages are deliberately EXCLUDED here -- their volume surged after very recent keyword/page_type patches and there isn't yet fresh post-patch view data to judge; cutting them now would undo the fix that was just shipped for them.",
+  "pages": {
+    "p47": { "setThreads": { "daily_budget_min": 5, "daily_budget_max": 5 } },
+    "p65": { "setThreads": { "daily_budget_min": 5, "daily_budget_max": 5 } },
+    "p46": { "setThreads": { "daily_budget_min": 6, "daily_budget_max": 6 } },
+    "p66": { "setThreads": { "daily_budget_min": 3, "daily_budget_max": 3 } },
+    "p68": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 5 } },
+    "p91": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } },
+    "p93": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } },
+    "p94": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } },
+    "p95": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } },
+    "p97": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } }
+  }
+}

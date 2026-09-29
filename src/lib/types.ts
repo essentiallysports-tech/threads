@@ -12,6 +12,35 @@ export interface EntitySlot {
   // "Shaquille", "golf" -> "golfer"); this is for bare team nicknames that
   // also sit inside ordinary words ("lions" in "Billions").
   whole_word?: boolean;
+  // ⛔ OPERATOR FIX (2026-09-29, real live incident): this slot represents
+  // the team/org as a whole (e.g. "Dallas Cowboys", keyword "cowboys"), not
+  // one person — real live incident on Dallas Cowboys Community: 8 of 19
+  // candidate attempts in one run were distinct, real, current stories
+  // (Joey Porter Jr. contract talk, P.J. Locke's IR move, a Jerry Jones/
+  // Micah Parsons-brother feud, a rival trade) all rejected
+  // TOPIC_FREQUENCY_ENTITY_CAP or DOMINANT_NARRATIVE_CAP because they all
+  // resolved primaryEntity="cowboys" — every one of these headlines opens
+  // with "Cowboys ..." before the specific player's name, and
+  // matchedEntityNames' ordering (checks.ts) picks whichever registered
+  // match occurs FIRST in the text. The entity/dominant-narrative caps
+  // exist to stop a page looking repetitive by fixating on ONE PERSON — a
+  // team-identity slot is structurally never "one person," it's the page's
+  // own broad umbrella, so treating it as capped the same way collapses
+  // genuinely distinct daily news into one bucket and starves the page well
+  // under its real budget. Same root cause independently degrades photo
+  // quality: renderCard's searchTerms/hero-photo pick is the SAME ordered
+  // list, so a specific-player story like "Cowboys Make Double Roster Move
+  // After Placing P.J. Locke on IR" renders with a generic team photo
+  // instead of Locke. Opt-in (default false, zero behavior change for
+  // every slot that doesn't set it) rather than a blanket rule, matching
+  // this file's whole_word precedent: is_team_identity=true drops this
+  // specific slot to the END of matchedEntityNames' ordering whenever a
+  // more specific (non-team-identity) match is ALSO present in the same
+  // candidate, so a genuinely single-subject story about the team itself
+  // still resolves to the team (nothing else to prefer), but a story that
+  // also names a real person always prefers that person, for both the
+  // frequency/narrative caps AND the photo subject.
+  is_team_identity?: boolean;
 }
 
 export interface ThreadsConfig {
