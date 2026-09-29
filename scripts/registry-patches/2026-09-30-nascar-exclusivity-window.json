@@ -1,0 +1,10 @@
+{
+  "why": "Operator decision (2026-09-30): shorten the exclusivity window for the five general-NASCAR exclusive pages from 24h to 12h. ES publishes ~12 NASCAR articles/day (131 in Sep 19-29) for nine NASCAR accounts. Requires threads' exclusive_window_hours support (this PR's code); inert on older code. Replayed live against the real ledger: combined with this PR's pre-cap filter, each page's 20 candidate slots go from 10-12 refused / 4-6 usable articles to 0 refused / 10-13 usable. Nearly all of that gain comes from the filter (at 24h alone: 10-14 usable); the shorter window mainly makes the biggest stories another account posted 12-24h earlier eligible again. Any two exclusive NASCAR accounts still post one story at least 12h apart (the 2026-09-22 incident was five accounts within ~8 minutes). Revert by removing the field (default 24h), no deploy needed.",
+  "pages": {
+    "p91": { "setThreads": { "exclusive_window_hours": 12 } },
+    "p92": { "setThreads": { "exclusive_window_hours": 12 } },
+    "p93": { "setThreads": { "exclusive_window_hours": 12 } },
+    "p94": { "setThreads": { "exclusive_window_hours": 12 } },
+    "p95": { "setThreads": { "exclusive_window_hours": 12 } }
+  }
+}

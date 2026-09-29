@@ -64,6 +64,14 @@ export interface ThreadsConfig {
   // established pages (e.g. several general-NASCAR accounts); an unflagged
   // page is never blocked by the cross-page ledger.
   exclusive_articles?: boolean;
+  // How far back (hours) an exclusive_articles page looks for another page's
+  // claim on the same article. Unset = 24. Clamped to (0, 24] — the ledger
+  // only retains 24h of claims. Operator decision (2026-09-30): 12 on the
+  // five general-NASCAR pages, where ~12 real ES NASCAR articles/day are
+  // shared across nine NASCAR accounts; still spaces any two exclusive
+  // accounts' posts of one story at least 12h apart (the 2026-09-22
+  // incident was the same story on five accounts within ~8 minutes).
+  exclusive_window_hours?: number;
   // ⛔ OPERATOR FIX (2026-09-30, real live incident): per-page override of
   // sourcing.ts's EVERGREEN_NON_RETRO_MAX_AGE_DAYS (21) — how old a
   // registered entity's real ES article can be and still count as usable
