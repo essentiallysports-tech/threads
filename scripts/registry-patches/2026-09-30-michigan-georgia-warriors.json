@@ -1,0 +1,22 @@
+{
+  "why": "Continuing the Sep30 starved-page audit (user asked to go through Philadelphia Eagles and MMA Archives; this covers 3 more pages checked in the same pass).\n\nMichigan Football Fanatics (p35) had only ONE registered entity total (the bare team name) -- unlike every other team page, which registers 4-6 named players/coaches. Confirmed via real WP tag data: Kyle Whittingham (368 tagged articles, all genuinely about Michigan -- 'Kyle Whittingham Admits One Major Concern is Hurting Michigan', 'Michigan QB Room Takes Turn as Kyle Whittingham Makes Honest Tommy Carr Assessment') is Michigan's real, heavily-covered current head coach, and Bryce Underwood (597 tagged articles) is Michigan's starting QB -- both completely unregistered. This means (a) any headline naming one of them WITHOUT also saying 'Michigan' literally cannot pass at all, and (b) the evergreen tier (queryArticlesByEntity) has never been able to query either of their real archives.\n\nBulldogs Community Central (p76) had only 2 registered entities (the team + Kirby Smart). Gunner Stockton (239 tagged articles) is Georgia's real, heavily-covered starting QB, completely unregistered. Ryan Puglisi (43 tagged articles) is a real, smaller but genuine contributor.\n\nBay Area Hoops (p50): 'Golden State Warriors' is already its own dedicated entity slot (not bundled onto players, unlike the Eagles bug) -- a live replay of its real candidate pool didn't show the team beating a named player in this sample, but flagging it is_team_identity=true is the same safe, zero-risk hardening applied to every other page's dedicated team slot, closing the same latent risk before it shows up in a real incident.",
+  "pages": {
+    "p35": {
+      "addEntities": [
+        { "name": "Bryce Underwood", "keywords": ["bryce underwood"], "weight": 30 },
+        { "name": "Kyle Whittingham", "keywords": ["kyle whittingham"], "weight": 25 }
+      ]
+    },
+    "p76": {
+      "addEntities": [
+        { "name": "Gunner Stockton", "keywords": ["gunner stockton"], "weight": 25 },
+        { "name": "Ryan Puglisi", "keywords": ["ryan puglisi"], "weight": 12 }
+      ]
+    },
+    "p50": {
+      "editEntities": [
+        { "name": "Golden State Warriors", "is_team_identity": true }
+      ]
+    }
+  }
+}
