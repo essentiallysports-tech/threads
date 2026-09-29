@@ -64,6 +64,29 @@ export interface ThreadsConfig {
   // established pages (e.g. several general-NASCAR accounts); an unflagged
   // page is never blocked by the cross-page ledger.
   exclusive_articles?: boolean;
+  // ⛔ OPERATOR FIX (2026-09-30, real live incident): per-page override of
+  // sourcing.ts's EVERGREEN_NON_RETRO_MAX_AGE_DAYS (21) — how old a
+  // registered entity's real ES article can be and still count as usable
+  // evergreen supply. Real incident: Alex Eala Fan Club and Fearless Female
+  // Fighters (individual-athlete/small-roster pages, not team pages) went
+  // starved for days — real ES coverage of their registered entities exists
+  // (confirmed live: Amanda Nunes alone has 813 tagged articles), but an
+  // individual fighter/player's news is inherently bursty, not daily, so
+  // the newest 15-per-entity results (queryArticlesByEntity) are often
+  // ALL older than 21 days between fight camps/tournaments — the entire
+  // evergreen tier silently returns nothing for weeks, identical in shape
+  // to the 2026-09-15 retrospective-page fix (checks.ts's
+  // isTooRecentForRetrospectivePage) but for a page that isn't
+  // retrospective, just low-frequency. 21 days stays the default
+  // everywhere — it exists specifically to stop months-old news being
+  // pushed as current on a page with steady daily volume (the
+  // 2026-09-24 "College Football Program Bans Public From Attending
+  // Spring Game" incident this constant was built for), which this
+  // override never touches for any page that doesn't explicitly set it.
+  // Widens ONLY which real, on-topic, correctly-attributed articles are
+  // eligible for the evergreen tier — every relevance/accuracy/named-
+  // entity gate downstream is completely unchanged.
+  evergreen_max_age_days?: number;
   // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
   // appended on every post ALONGSIDE the existing per-story dynamic hashtag
   // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):

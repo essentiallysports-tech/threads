@@ -579,7 +579,14 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // comment). 21 days still blocks every example the team flagged (26-209
   // days old) while keeping recent-but-not-today entity stories.
   const retrospective = isRetrospectiveOnlyPage(page);
-  const freshCutoffMs = Date.now() - EVERGREEN_NON_RETRO_MAX_AGE_DAYS * 24 * 3600 * 1000;
+  // ⛔ OPERATOR FIX (2026-09-30): see ThreadsConfig.evergreen_max_age_days'
+  // own comment (types.ts) for the real incident — an individual-athlete
+  // page's registered entities can go weeks between real news, so the
+  // fleet-wide 21-day default silently starves the evergreen tier there.
+  // Undefined on every page that doesn't explicitly opt in, so this is a
+  // no-op everywhere else.
+  const maxAgeDays = page.threads?.evergreen_max_age_days ?? EVERGREEN_NON_RETRO_MAX_AGE_DAYS;
+  const freshCutoffMs = Date.now() - maxAgeDays * 24 * 3600 * 1000;
   const articles = perEntity.flat().filter((a) => {
     if (seen.has(a.url)) return false;
     seen.add(a.url);
