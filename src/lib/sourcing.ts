@@ -18,6 +18,7 @@ import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchRes
 import { fetchWithTimeout } from "./httpUtil";
 import { getPostContent } from "./beehiiv";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { crossPageConflict } from "./crossPageLedger";
 
 // ⛔ OPERATOR FIX (2026-08-23, real live incident): today's removal of the
 // artificial 5-entity cap on sourceFromEsEvergreenArticles (a real coverage
@@ -1345,5 +1346,21 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   });
   const renderable = deduped.filter((c) => (renderFailureCounts[c.key] || 0) < RENDER_FAILURE_EXCLUDE_THRESHOLD);
 
-  return renderable.slice(0, MAX_CANDIDATES_PER_PAGE);
+  // ⛔ OPERATOR FIX (2026-09-30, real live incident): for an
+  // exclusive_articles page, the cross-page ledger was only consulted per
+  // candidate in checkCandidate — AFTER this cap. Every exclusive NASCAR
+  // page ranks the same few big stories first, so the other accounts had
+  // usually claimed them already: replayed live, 10-12 of each of p91-p95's
+  // 20 slots were stories the ledger was certain to refuse, while 50+
+  // usable NASCAR articles sat below the cap (p95's real runs showed all 20
+  // attempts refused CROSS_PAGE_EXCLUSIVE). Same in-memory check, just
+  // before the cap so the slots go to stories the page can actually post.
+  // No-op for every page without exclusive_articles (crossPageConflict
+  // returns null), and checkCandidate still re-checks each candidate.
+  const claimable = renderable.filter((c) => !crossPageConflict(c.link, page));
+  if (claimable.length < renderable.length) {
+    console.error(`sourceCandidatePoolForPage: ${page.page_id} skipped ${renderable.length - claimable.length} candidates another page already claimed`);
+  }
+
+  return claimable.slice(0, MAX_CANDIDATES_PER_PAGE);
 }

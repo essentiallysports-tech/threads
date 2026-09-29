@@ -23,11 +23,20 @@
 // loadActiveThreadsPages), then kept current by claimArticle() at the
 // moment a post is actually scheduled. claimArticle's check-then-record has
 // no await in between, so it's atomic within the process.
+//
+// (2026-09-30) The 24h lookback is now per page: threads.exclusive_window_hours
+// (see types.ts) narrows it for pages that share a thin supply. The ledger
+// itself still keeps 24h of claims, the most any page can ask for.
 
 import { loadActiveThreadsPages, getPostedLog } from "./s3registry";
 import { PageConfig } from "./types";
 
 const WINDOW_MS = 24 * 3600 * 1000;
+
+function windowHoursFor(page: PageConfig): number {
+  const h = page.threads?.exclusive_window_hours;
+  return typeof h === "number" && h > 0 ? Math.min(h, 24) : 24;
+}
 
 interface LedgerEntry {
   pageId: string;
@@ -85,8 +94,9 @@ export function crossPageConflict(urlOrHtml: string | null | undefined, page: Pa
   if (!page.threads?.exclusive_articles) return null;
   const key = articleKey(urlOrHtml);
   if (!key) return null;
-  const other = (ledger.get(key) || []).find((e) => e.pageId !== page.page_id && now - e.at < WINDOW_MS);
-  return other ? `CROSS_PAGE_EXCLUSIVE_24H:${other.pageId}` : null;
+  const hours = windowHoursFor(page);
+  const other = (ledger.get(key) || []).find((e) => e.pageId !== page.page_id && now - e.at < hours * 3600 * 1000);
+  return other ? `CROSS_PAGE_EXCLUSIVE_${hours}H:${other.pageId}` : null;
 }
 
 // Check-and-record in one synchronous step, called right before the post is
