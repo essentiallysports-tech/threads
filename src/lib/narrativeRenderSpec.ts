@@ -19,6 +19,7 @@ import { fetchWithTimeout } from "./httpUtil";
 import { isGenericFramingText, classifyCaptionAgeTone } from "./checks";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 import { truncateAtWordBoundary } from "./headlineTruncation";
+import { shadowActive, runShadow, jsonField, danglingEndingRule } from "./aiShadow";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): same root cause and fix
@@ -63,7 +64,13 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
   return codeBlock ? codeBlock[1].trim() : t;
 }
 
-async function callGateway(prompt: string, apiKey: string, tag: string): Promise<string> {
+interface ShadowSpec {
+  decide: (raw: string) => string;
+  detail?: string;
+  extra?: Record<string, string>;
+}
+
+async function callGateway(prompt: string, apiKey: string, tag: string, shadow?: ShadowSpec): Promise<string> {
   // ⛔ OPERATOR FIX (2026-09-08, real live incident): checked here once,
   // covers all four callers of this shared helper — see aiGatewayBudget.ts.
   // Throwing (rather than returning a sentinel) means every existing
@@ -90,6 +97,10 @@ async function callGateway(prompt: string, apiKey: string, tag: string): Promise
   recordGatewaySpend(json.usage?.cost, tag);
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
+  // 24h Haiku side-by-side test (aiShadow.ts) — logged only, never used.
+  if (shadow && shadowActive()) {
+    runShadow({ tag, messages: [{ role: "user", content: prompt }], maxTokens: 300, temperature: 0.7, primaryAnswer: content, ...shadow });
+  }
   return stripWrappingQuotesAndMarkdown(content);
 }
 
@@ -240,7 +251,11 @@ export async function chooseLayoutViaAI(
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey || eligible.length <= 1) return fallback;
   try {
-    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), apiKey, "layout");
+    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), apiKey, "layout", {
+      decide: jsonField("layout"),
+      detail: candidate.headline,
+      extra: { eligible: eligible.join(",") },
+    });
     const parsed = JSON.parse(raw);
     if (typeof parsed?.layout === "string" && eligible.includes(parsed.layout)) return parsed.layout as TemplateId;
     console.error(`chooseLayoutViaAI: invalid pick "${parsed?.layout}" for ${page.page_id}, using fallback`);
@@ -287,7 +302,7 @@ export async function isGenuineComparisonViaAI(
     .filter(Boolean)
     .join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey, "comparison");
+    const raw = await callGateway(prompt, apiKey, "comparison", { decide: jsonField("genuine_comparison"), detail: candidate.headline });
     const parsed = JSON.parse(raw);
     return parsed?.genuine_comparison === true;
   } catch (e) {
@@ -331,7 +346,7 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
     `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
   ].join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey, "coherence");
+    const raw = await callGateway(prompt, apiKey, "coherence", { decide: jsonField("coherent"), detail: headline, extra: { rule: danglingEndingRule(headline) } });
     const parsed = JSON.parse(raw);
     return parsed?.coherent !== false; // any shape other than an explicit false is treated as "didn't flag it"
   } catch (e) {

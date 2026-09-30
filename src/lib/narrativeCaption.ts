@@ -15,6 +15,7 @@ import { buildCaption } from "./caption";
 import { fetchWithTimeout } from "./httpUtil";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
 import { classifyCaptionAgeTone } from "./checks";
+import { shadowWindowOpen, callGatewayRaw, HAIKU_MODEL } from "./aiShadow";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
@@ -526,6 +527,35 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     .join("\n");
 }
 
+// 24h Haiku side-by-side test (aiShadow.ts): when Sonnet's first draft runs
+// over the limit, Haiku is asked to shorten that same draft, in parallel
+// with Sonnet's own full rewrite. Only logged, never used — the question is
+// whether "Haiku trims Sonnet's draft" can replace "Sonnet rewrites the
+// whole caption" for a fraction of the cost.
+function startHaikuShorten(draft: string, charLimit: number): Promise<string | null> {
+  const prompt = [
+    `Here is a draft Threads post that is ${draft.length} characters, over the ${charLimit}-character limit:`,
+    `<<<`,
+    draft,
+    `>>>`,
+    `Shorten it to at most ${charLimit - 20} characters. Keep the same voice, the same opening hook, the same paragraph breaks (a blank line between paragraphs) and the same final call-to-action line. Cut or tighten the least important sentence(s) in the middle. Do not add any new facts, words or claims. Never use em dashes or en dashes.`,
+    `Output ONLY the shortened post, nothing else.`,
+  ].join("\n");
+  return callGatewayRaw(HAIKU_MODEL, [{ role: "user", content: prompt }], 400, 0.3, "shadow_caption_shorten")
+    .then((raw) => stripEmDashes(stripWrappingQuotesAndMarkdown(raw)))
+    .catch(() => null);
+}
+
+function logShortenShadow(haiku: Promise<string | null>, draft: string, charLimit: number, pageId: string, final: NarrativeCaptionResult): void {
+  void haiku.then((short) => {
+    const via = final.usedFallback ? "template" : final.violation === "TRIMMED_AFTER_RETRY" ? "trim" : "sonnet_retry";
+    const haikuViolation = short === null ? "FAILED" : violatesPolicy(short, charLimit) || "none";
+    console.error(
+      `AI_SHADOW tag=caption_shorten model=haiku page=${pageId} draft_len=${draft.length} haiku_len=${short?.length ?? -1} haiku_ok=${haikuViolation === "none" ? 1 : 0} haiku_violation=${haikuViolation} final_via=${via} final_len=${final.text.length} texts=${JSON.stringify({ draft, haiku: short, final: final.text })}`
+    );
+  });
+}
+
 export interface NarrativeCaptionResult {
   text: string;
   usedFallback: boolean;
@@ -551,6 +581,11 @@ export async function buildNarrativeCaptionText(
 
   let retryNote: string | undefined;
   let lastOverLimitText: string | null = null;
+  let haikuShorten: { promise: Promise<string | null>; draft: string } | null = null;
+  const finish = (r: NarrativeCaptionResult): NarrativeCaptionResult => {
+    if (haikuShorten) logShortenShadow(haikuShorten.promise, haikuShorten.draft, charLimit, page.page_id, r);
+    return r;
+  };
   // ⛔ OPERATOR FIX (2026-08-12, real live incident): was 3 attempts. Live
   // logs (p58/p60, 2026-08-12 10:00Z run) showed char-limit overshoot
   // failing 2-3 attempts in a row before the deterministic trimToFit
@@ -564,8 +599,11 @@ export async function buildNarrativeCaptionText(
       const prompt = buildPrompt(candidate, page, athleteNames, charLimit, retryNote);
       const text = await callGateway(prompt, apiKey);
       const violation = violatesPolicy(text, charLimit);
-      if (!violation) return { text, usedFallback: false };
+      if (!violation) return finish({ text, usedFallback: false });
       if (violation.startsWith("OVER_CHAR_LIMIT")) lastOverLimitText = text;
+      if (attempt === 0 && violation.startsWith("OVER_CHAR_LIMIT") && shadowWindowOpen()) {
+        haikuShorten = { promise: startHaikuShorten(text, charLimit), draft: text };
+      }
       retryNote =
         violation.startsWith("OVER_CHAR_LIMIT")
           ? `your last attempt was ${violation.split(":")[1]} characters, ${text.length - charLimit} OVER the ${charLimit} limit — cut a full sentence or trim the story section, don't just shorten word choices`
@@ -585,10 +623,10 @@ export async function buildNarrativeCaptionText(
   // still produce a genuinely coherent, non-truncated-mid-sentence result.
   if (lastOverLimitText) {
     const trimmed = trimToFit(lastOverLimitText, charLimit);
-    if (trimmed) return { text: trimmed, usedFallback: false, violation: "TRIMMED_AFTER_RETRY" };
+    if (trimmed) return finish({ text: trimmed, usedFallback: false, violation: "TRIMMED_AFTER_RETRY" });
   }
 
-  return { text: fallback, usedFallback: true, violation: "FAILED_AFTER_RETRY" };
+  return finish({ text: fallback, usedFallback: true, violation: "FAILED_AFTER_RETRY" });
 }
 
 // Preserves the CTA line (always the last non-empty paragraph) and trims
