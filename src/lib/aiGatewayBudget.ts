@@ -85,6 +85,19 @@ export async function isDailyBudgetExceeded(): Promise<boolean> {
   }
 }
 
+// Today's spend as a fraction of the daily cap — aiBudgetHold.ts's input.
+// Same fail-open posture as isDailyBudgetExceeded: an unreadable counter
+// reads as 0, never as "stop posting".
+export async function dailyBudgetFractionUsed(): Promise<number> {
+  try {
+    const record = await loadTodaySpend(todayISO());
+    return record.totalUsd / DAILY_BUDGET_USD;
+  } catch (e) {
+    console.error(`dailyBudgetFractionUsed: check failed, treating as unspent: ${(e as Error).message}`);
+    return 0;
+  }
+}
+
 // Called after a successful gateway response with its real usage.cost.
 export async function recordGatewaySpend(usd: number | undefined, tag = "untagged"): Promise<void> {
   if (!usd || usd <= 0) return;

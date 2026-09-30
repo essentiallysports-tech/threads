@@ -44,6 +44,7 @@ import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText, verifyPhotoSubject, verifyGenericPhotoSubject } from "../lib/cardTextQC";
 import { truncateAtWordBoundary } from "../lib/headlineTruncation";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "../lib/aiGatewayBudget";
+import { aiBudgetHoldReason } from "../lib/aiBudgetHold";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
@@ -255,6 +256,13 @@ export async function sourceOneCandidate(page: PageConfig, dateISO: string, post
 // gate. sourceOneCandidate above is kept only because nothing else still
 // calls it; new call sites should use this.
 export async function sourceCandidatePool(page: PageConfig, dateISO: string, postedLog: PostedLogEntry[]): Promise<Candidate[]> {
+  // A held page (see aiBudgetHold.ts) skips sourcing entirely, web search
+  // included — it would have nothing to post anyway.
+  const hold = await aiBudgetHoldReason(page, postedLog);
+  if (hold) {
+    console.error(`sourceCandidatePool: ${page.page_id} holding for the rest of today (${hold})`);
+    return [];
+  }
   // Seeded here (20-min timeout, always the first per-page activity) rather
   // than in checkCandidate, which is a 10s local activity.
   await ensureCrossPageLedgerSeeded();
@@ -272,6 +280,10 @@ export interface CheckedCandidate {
 // activity/workflow boundary — see workflows/dailyRunWorkflow.ts, which
 // enforces it as a run-level hard stop, not a per-candidate drop).
 export async function checkCandidate(candidate: Candidate, page: PageConfig, postedLog: PostedLogEntry[]): Promise<CheckedCandidate> {
+  // Re-checked per candidate: the budget can cross a threshold mid-run,
+  // after this page's pool was already sourced.
+  const hold = await aiBudgetHoldReason(page, postedLog);
+  if (hold) return { candidate, pass: false, reason: hold };
   const result = runDeterministicChecks(candidate, page, postedLog);
   if (result.pass) {
     // In-memory lookup only; the authoritative claim happens in postToThreads.

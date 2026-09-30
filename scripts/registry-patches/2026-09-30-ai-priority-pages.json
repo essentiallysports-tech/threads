@@ -1,0 +1,13 @@
+{
+  "why": "Operator decision 2026-09-30: give the 8 pages that earn the link clicks first claim on the daily AI-gateway budget (see src/lib/aiBudgetHold.ts). GA4 autopost sessions Sep 25-29: p78 Alex Eala 4,983; p41 Dallas 2,692; p40 Detroit 2,584; p74 Essentially Golf 1,777; p92 Daytona 656; p54 Conor McGregor 194; p71 All Things Rogan 81; p61 Colorado Prime Time 47 = 13,014 of 13,476 (97%), from 26% of posts. Once 70% of the day's budget is spent, every other page stops after its 3rd post of the UTC day, so these 8 keep full-quality AI captions/QC through US prime time instead of the fail-open template. Revert = remove threads.ai_priority from these pages.",
+  "pages": {
+    "p78": { "setThreads": { "ai_priority": true } },
+    "p41": { "setThreads": { "ai_priority": true } },
+    "p40": { "setThreads": { "ai_priority": true } },
+    "p74": { "setThreads": { "ai_priority": true } },
+    "p92": { "setThreads": { "ai_priority": true } },
+    "p54": { "setThreads": { "ai_priority": true } },
+    "p71": { "setThreads": { "ai_priority": true } },
+    "p61": { "setThreads": { "ai_priority": true } }
+  }
+}
