@@ -95,6 +95,12 @@ export interface ThreadsConfig {
   // eligible for the evergreen tier — every relevance/accuracy/named-
   // entity gate downstream is completely unchanged.
   evergreen_max_age_days?: number;
+  // (2026-09-30, operator decision) first claim on the day's AI-gateway
+  // budget — see aiBudgetHold.ts. Once most of the budget is spent, pages
+  // without this flag stop for the day after their 3rd post, so the rest of
+  // the budget goes to the pages that actually earn the link clicks (Sep
+  // 25-29: 8 pages, ~97% of GA4 Threads sessions). Unset = not priority.
+  ai_priority?: boolean;
   // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
   // appended on every post ALONGSIDE the existing per-story dynamic hashtag
   // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):
