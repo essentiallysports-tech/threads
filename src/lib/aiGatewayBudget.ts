@@ -40,7 +40,13 @@ import { getObject, putObject } from "./s3registry";
 // file's own dateISO-keyed daily counter; this cap is this codebase's own
 // graceful, daily-resetting stop, independent of whatever that ceiling is
 // set to on a given day.
-const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 12);
+// ⛔ OPERATOR DECISION (2026-09-30): lowered 12 -> 10. Taken together with
+// the caption-after-render fix (threads#51, ~20% less AI work per post) and
+// the priority-page hold (threads#52, aiBudgetHold.ts), which stops every
+// page before the degraded fail-open mode, so a lower cap never means
+// templated/un-QC'd posts.
+const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 10);
+console.error(`aiGatewayBudget: daily cap $${DAILY_BUDGET_USD} (${process.env.AI_GATEWAY_DAILY_BUDGET_USD ? "from AI_GATEWAY_DAILY_BUDGET_USD" : "code default"})`);
 const SPEND_KEY_PREFIX = "pool/ai_gateway_spend_";
 const REFRESH_INTERVAL_MS = 60_000; // re-check S3 (for the OTHER worker process's spend) at most once/minute — every call re-fetching would be its own waste
 
@@ -113,6 +119,15 @@ export async function recordGatewaySpend(usd: number | undefined, tag = "untagge
     record.lastUpdated = new Date().toISOString();
     cached = { dateISO, record, loadedAt: Date.now() };
     await putObject(`${SPEND_KEY_PREFIX}${dateISO}.json`, JSON.stringify(record));
+    // Every 100th call: the running per-task split, so it's readable from the
+    // worker log without S3 access.
+    if (record.callCount % 100 === 0) {
+      const split = Object.entries(byTag)
+        .sort((a, b) => b[1].usd - a[1].usd)
+        .map(([k, v]) => `${k}=$${v.usd.toFixed(3)}/${v.calls}`)
+        .join(" ");
+      console.error(`aiGatewayBudget: $${record.totalUsd.toFixed(3)} of $${DAILY_BUDGET_USD} over ${record.callCount} calls today — ${split}`);
+    }
     if (record.totalUsd >= DAILY_BUDGET_USD && record.totalUsd - usd < DAILY_BUDGET_USD) {
       console.error(`aiGatewayBudget: daily budget of $${DAILY_BUDGET_USD} crossed (now $${record.totalUsd.toFixed(4)}, ${record.callCount} calls) — further AI-gateway calls will short-circuit until ${dateISO} rolls over`);
     }
