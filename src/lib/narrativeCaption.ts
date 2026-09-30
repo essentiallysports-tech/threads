@@ -224,7 +224,7 @@ async function callGateway(prompt: string, apiKey: string): Promise<string> {
   );
   if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-  recordGatewaySpend(json.usage?.cost);
+  recordGatewaySpend(json.usage?.cost, "caption");
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
   return stripEmDashes(stripWrappingQuotesAndMarkdown(content));

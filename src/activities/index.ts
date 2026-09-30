@@ -365,7 +365,7 @@ export async function checkDuplicateStory(
   // comment says to.
   if (await isDailyBudgetExceeded()) return { pass: true, reason: null };
   const result = await duplicateStoryCheck(candidate, primaryEntityName, postedLog);
-  recordGatewaySpend(result.costUsd);
+  recordGatewaySpend(result.costUsd, "duplicate_story");
   return result;
 }
 
@@ -378,7 +378,7 @@ export async function checkDuplicateStory(
 export async function checkPersonalLifeContent(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
   if (await isDailyBudgetExceeded()) return { pass: true, reason: null };
   const result = await personalLifeContentCheck(candidate, page);
-  recordGatewaySpend(result.costUsd);
+  recordGatewaySpend(result.costUsd, "personal_life");
   return result;
 }
 

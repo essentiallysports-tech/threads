@@ -48,6 +48,11 @@ interface SpendRecord {
   totalUsd: number;
   callCount: number;
   lastUpdated: string;
+  // (2026-09-30) per-call-type split of the same totals, keyed by the tag
+  // each call site passes to recordGatewaySpend — the only way to see which
+  // AI job actually drives the daily spend, instead of estimating it from
+  // token counts. Absent on records written before this existed.
+  byTag?: Record<string, { usd: number; calls: number }>;
 }
 
 let cached: { dateISO: string; record: SpendRecord; loadedAt: number } | null = null;
@@ -81,13 +86,17 @@ export async function isDailyBudgetExceeded(): Promise<boolean> {
 }
 
 // Called after a successful gateway response with its real usage.cost.
-export async function recordGatewaySpend(usd: number | undefined): Promise<void> {
+export async function recordGatewaySpend(usd: number | undefined, tag = "untagged"): Promise<void> {
   if (!usd || usd <= 0) return;
   const dateISO = todayISO();
   try {
     const record = await loadTodaySpend(dateISO);
     record.totalUsd += usd;
     record.callCount += 1;
+    const byTag = (record.byTag ??= {});
+    const t = (byTag[tag] ??= { usd: 0, calls: 0 });
+    t.usd += usd;
+    t.calls += 1;
     record.lastUpdated = new Date().toISOString();
     cached = { dateISO, record, loadedAt: Date.now() };
     await putObject(`${SPEND_KEY_PREFIX}${dateISO}.json`, JSON.stringify(record));

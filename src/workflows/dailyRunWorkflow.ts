@@ -1,4 +1,4 @@
-import { proxyActivities, proxyLocalActivities, log, workflowInfo } from "@temporalio/workflow";
+import { proxyActivities, proxyLocalActivities, log, workflowInfo, patched } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { PageRunResult, PageConfig, Candidate, PostedLogEntry } from "../lib/types";
 import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday } from "../lib/checks";
@@ -758,7 +758,19 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
           continue;
         }
 
-        const caption = await buildCaptionText(candidate, state.page, athleteNames);
+        // ⛔ COST FIX (2026-09-30): the caption used to be written here,
+        // before renderCard — but ~59% of render attempts end without a card
+        // (S3 render_failures counters vs posted logs since 2026-09-09), and
+        // every one of those had already paid for a caption (the single most
+        // expensive AI call per attempt, ~$0.008-0.017 with its over-length
+        // retry) that could never be posted. The caption's inputs (candidate,
+        // page, athleteNames) don't depend on anything renderCard does, and
+        // nothing reads it until readyToPost below, so it's now written only
+        // once a card actually exists — same caption, same prompt, same
+        // inputs, just never for a candidate that can't post. patched() keeps
+        // replay of any execution already in flight on the old order.
+        const captionAfterRender = patched("caption-after-render");
+        let caption = captionAfterRender ? "" : await buildCaptionText(candidate, state.page, athleteNames);
 
         let cardUrl: string | null = null;
         let sourcePhotoUrl: string | null = null;
@@ -796,6 +808,8 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
           state.attemptFailures.push(`${candidate.key}:NO_CARD_RENDER_FAILED`);
           continue;
         }
+
+        if (captionAfterRender) caption = await buildCaptionText(candidate, state.page, athleteNames);
 
         const sportGroup = matchedSportGroup(candidate, state.page);
 

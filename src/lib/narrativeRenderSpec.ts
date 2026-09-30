@@ -63,7 +63,7 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
   return codeBlock ? codeBlock[1].trim() : t;
 }
 
-async function callGateway(prompt: string, apiKey: string): Promise<string> {
+async function callGateway(prompt: string, apiKey: string, tag: string): Promise<string> {
   // ⛔ OPERATOR FIX (2026-09-08, real live incident): checked here once,
   // covers all four callers of this shared helper — see aiGatewayBudget.ts.
   // Throwing (rather than returning a sentinel) means every existing
@@ -87,7 +87,7 @@ async function callGateway(prompt: string, apiKey: string): Promise<string> {
   );
   if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-  recordGatewaySpend(json.usage?.cost);
+  recordGatewaySpend(json.usage?.cost, tag);
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
   return stripWrappingQuotesAndMarkdown(content);
@@ -240,7 +240,7 @@ export async function chooseLayoutViaAI(
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
   if (!apiKey || eligible.length <= 1) return fallback;
   try {
-    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), apiKey);
+    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), apiKey, "layout");
     const parsed = JSON.parse(raw);
     if (typeof parsed?.layout === "string" && eligible.includes(parsed.layout)) return parsed.layout as TemplateId;
     console.error(`chooseLayoutViaAI: invalid pick "${parsed?.layout}" for ${page.page_id}, using fallback`);
@@ -287,7 +287,7 @@ export async function isGenuineComparisonViaAI(
     .filter(Boolean)
     .join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey);
+    const raw = await callGateway(prompt, apiKey, "comparison");
     const parsed = JSON.parse(raw);
     return parsed?.genuine_comparison === true;
   } catch (e) {
@@ -331,7 +331,7 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
     `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
   ].join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey);
+    const raw = await callGateway(prompt, apiKey, "coherence");
     const parsed = JSON.parse(raw);
     return parsed?.coherent !== false; // any shape other than an explicit false is treated as "didn't flag it"
   } catch (e) {
@@ -364,7 +364,7 @@ export async function buildNarrativeRenderCopy(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const prompt = buildPrompt(candidate, page, athleteNames, layout, fallback, retryNote);
-      const raw = await callGateway(prompt, apiKey);
+      const raw = await callGateway(prompt, apiKey, "render_copy");
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
