@@ -30,6 +30,7 @@ import {
   FrequencyCheckResult,
   classifyCaptionAgeTone,
   isEsOwnedLink,
+  setChecksAiCaller,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -46,6 +47,14 @@ import { truncateAtWordBoundary } from "../lib/headlineTruncation";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "../lib/aiGatewayBudget";
 import { aiBudgetHoldReason } from "../lib/aiBudgetHold";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
+import { callModel } from "../lib/aiClient";
+
+// checks.ts's two AI judgments (duplicate story, personal-life content) go
+// through the same provider switch as every other AI call — see
+// setChecksAiCaller in checks.ts for why it's injected rather than imported.
+setChecksAiCaller((prompt, o) =>
+  callModel({ tag: o.tag, model: "sonnet", content: prompt, maxTokens: o.maxTokens, temperature: o.temperature, timeoutMs: o.timeoutMs })
+);
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
 // cardRegistry, which was Orshot-specific and is no longer part of the

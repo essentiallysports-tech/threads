@@ -1536,6 +1536,19 @@ const AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // isPersonalLifeContentViaAI (p44-only, low call volume) below. Budget
 // headroom confirmed ($2.56 of $12 daily cap) before reverting.
 const AI_GATEWAY_MODEL = "anthropic/claude-sonnet-4-5";
+
+// (2026-10-01) checks.ts is bundled into the Temporal workflow, so it can't
+// import the Bedrock SDK (aiClient.ts). The activity layer
+// (activities/index.ts) registers aiClient's callModel here instead; both
+// functions below use it when set, which is always the case in the worker's
+// activity context. That caller records its own spend, so these functions
+// then report no costUsd (the activity wrappers would otherwise count it
+// twice). The direct gateway fetch below is kept only as the unset fallback.
+export type ChecksAiCaller = (prompt: string, opts: { tag: string; maxTokens: number; temperature: number; timeoutMs: number }) => Promise<string>;
+let checksAiCaller: ChecksAiCaller | null = null;
+export function setChecksAiCaller(fn: ChecksAiCaller): void {
+  checksAiCaller = fn;
+}
 // ⛔ OPERATOR FIX (2026-08-31, policy): 48h -> 72h — an identical story is
 // fine to repost once real time has passed, but the cutoff should match the
 // 72h general freshness cap (dailyRunWorkflow.ts) rather than sit shorter
@@ -1576,7 +1589,7 @@ async function isDuplicateStoryViaAIUncached(candidateHeadline: string, recentHe
   // (isCoherentHeadlineViaAI, factCheckClaim) — an infra hiccup on this
   // specific check must never cost the whole run's volume; a real link/
   // dedup incident is worse than an occasional missed semantic duplicate.
-  if (!apiKey) return { duplicate: false };
+  if (!apiKey && !checksAiCaller) return { duplicate: false };
   const prompt = [
     `A sports fan page is about to post this NEW headline:`,
     `"${candidateHeadline}"`,
@@ -1588,6 +1601,11 @@ async function isDuplicateStoryViaAIUncached(candidateHeadline: string, recentHe
     `Output ONLY a JSON object: {"duplicate": true, "matched": "<the exact headline number/text it duplicates>"} or {"duplicate": false}. No markdown, no explanation.`,
   ].join("\n");
   try {
+    if (checksAiCaller) {
+      const content = await checksAiCaller(prompt, { tag: "duplicate_story", maxTokens: 200, temperature: 0.3, timeoutMs: 30_000 });
+      const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, ""));
+      return { duplicate: parsed?.duplicate === true, matched: parsed?.matched };
+    }
     const res = await fetchWithTimeout(
       AI_GATEWAY_URL,
       {
@@ -1656,7 +1674,7 @@ export async function duplicateStoryCheck(
 // import anything) does the actual budget-check-before/record-spend-after.
 async function isPersonalLifeContentViaAI(headline: string, rawText: string): Promise<{ personalLife: boolean; costUsd?: number }> {
   const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return { personalLife: false }; // fail OPEN — same policy as every other AI-judgment gate in this pipeline
+  if (!apiKey && !checksAiCaller) return { personalLife: false }; // fail OPEN — same policy as every other AI-judgment gate in this pipeline
   const prompt = [
     `A sports news page only wants stories about athletes'/sports personalities' PROFESSIONAL activity — games, performance, trades, statements about their sport, on-field/on-court incidents, injuries affecting play, coaching/front-office moves, business dealings tied to their sports career, and similar.`,
     `It does NOT want stories that are PRIMARILY about someone's personal/off-field life — their marriage, dating life, divorce, family drama, parenting, personal wealth or lifestyle, home life, health matters unrelated to their sport, or other private matters — even when the person is a real, well-known athlete or sports personality.`,
@@ -1668,6 +1686,11 @@ async function isPersonalLifeContentViaAI(headline: string, rawText: string): Pr
     .filter(Boolean)
     .join("\n");
   try {
+    if (checksAiCaller) {
+      const content = await checksAiCaller(prompt, { tag: "personal_life", maxTokens: 60, temperature: 0, timeoutMs: 20_000 });
+      const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, ""));
+      return { personalLife: parsed?.personal_life === true };
+    }
     const res = await fetchWithTimeout(
       AI_GATEWAY_URL,
       {
