@@ -15,9 +15,9 @@ import {
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
-import { fetchWithTimeout } from "./httpUtil";
 import { getPostContent } from "./beehiiv";
-import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { isDailyBudgetExceeded } from "./aiGatewayBudget";
+import { callModel, aiConfigured } from "./aiClient";
 import { crossPageConflict } from "./crossPageLedger";
 
 // ⛔ OPERATOR FIX (2026-08-23, real live incident): today's removal of the
@@ -763,12 +763,10 @@ function sharesRealTopic(headlineA: string, headlineB: string, excludeTerms: str
 // to false on ANY failure/uncertainty — a wrongly-claimed same-story link
 // is worse than falling through to the newsletter subscribe fallback,
 // which is always safe because it never claims to be this exact story.
-const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const SAME_STORY_MODEL = "anthropic/claude-haiku-4-5";
+// Same-story matching runs on Haiku (callModel model: "haiku", aiClient.ts).
 
 async function isSameRealStory(headlineA: string, headlineB: string): Promise<boolean> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return false;
+  if (!aiConfigured()) return false;
   if (await isDailyBudgetExceeded()) return false; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
   const prompt = [
     `Are these two headlines reporting on the EXACT SAME specific real-world event, not just the same person/team/topic in general?`,
@@ -778,25 +776,7 @@ async function isSameRealStory(headlineA: string, headlineB: string): Promise<bo
     `Output ONLY a JSON object: {"same_story": true} or {"same_story": false}. No markdown, no explanation.`,
   ].join("\n");
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: SAME_STORY_MODEL,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 30,
-          temperature: 0,
-        }),
-      },
-      20_000
-    );
-    if (!res.ok) return false;
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "same_story");
-    const content = json.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return false;
+    const content = await callModel({ tag: "same_story", model: "haiku", content: prompt, maxTokens: 30, temperature: 0, timeoutMs: 20_000 });
     const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
     const parsed = JSON.parse(stripped);
     return parsed?.same_story === true;

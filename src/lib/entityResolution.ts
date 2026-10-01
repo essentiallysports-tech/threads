@@ -22,10 +22,9 @@
 // anyway.
 
 import { Candidate, PageConfig } from "./types";
-import { fetchWithTimeout } from "./httpUtil";
-import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { isDailyBudgetExceeded } from "./aiGatewayBudget";
+import { callModel, aiConfigured } from "./aiClient";
 
-const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ⛔ OPERATOR FIX (2026-09-10/11, real live incident): reverted to Sonnet —
 // the 2026-09-08 fleet-wide Haiku switch (cost-driven, no compensating
 // prompt/eval changes) landed the SAME DAY the AI Gateway key got fixed
@@ -39,7 +38,7 @@ const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // $12 daily cap the day this was found — full headroom for entity
 // resolution's ~3x-costlier Sonnet calls; operator explicitly signed off
 // on spending up to the existing cap to fix this.
-const MODEL = "anthropic/claude-sonnet-4-5";
+// (2026-10-01: the model is now picked in aiClient.ts — still Sonnet 4.5.)
 
 // ⛔ COST FIX (2026-09-17): same fix as narrativeCaption.ts's
 // CAPTION_STYLE_GUIDE (see that file's comment for the full rationale,
@@ -99,19 +98,18 @@ const entityCache = new Map<string, { at: number; value: Promise<string | null |
 const entitiesCache = new Map<string, { at: number; value: Promise<string[] | undefined> }>();
 
 export async function extractEntityViaAI(candidate: Candidate, page: PageConfig): Promise<string | null | undefined> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return undefined;
+  if (!aiConfigured()) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const cacheKey = `${page.page_id}::${candidate.key}`;
   const hit = entityCache.get(cacheKey);
   if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
-  const value = extractEntityViaAIUncached(candidate, page, apiKey);
+  const value = extractEntityViaAIUncached(candidate, page);
   entityCache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
 
-async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string): Promise<string | null | undefined> {
+async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig): Promise<string | null | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,
@@ -134,31 +132,7 @@ async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig
   // ENTITY_OUTPUT_FORMAT_SYSTEM above — identical on every call, cacheable.)
 
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: ENTITY_OUTPUT_FORMAT_SYSTEM, cache_control: { type: "ephemeral" } },
-            { role: "user", content: prompt },
-          ],
-          max_tokens: 100,
-          temperature: 0,
-        }),
-      },
-      30_000
-    );
-    if (!res.ok) {
-      console.error(`extractEntityViaAI: gateway ${res.status} for ${page.page_id}: ${(await res.text()).slice(0, 300)}`);
-      return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "entity_extract");
-    const content = json.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return undefined;
+    const content = await callModel({ tag: "entity_extract", model: "sonnet", system: ENTITY_OUTPUT_FORMAT_SYSTEM, content: prompt, maxTokens: 100, temperature: 0, timeoutMs: 30_000 });
 
     const parsed = JSON.parse(stripWrappingQuotesAndMarkdown(content));
     const entity = typeof parsed?.entity === "string" ? parsed.entity.trim() : null;
@@ -192,8 +166,7 @@ async function extractEntityViaAIUncached(candidate: Candidate, page: PageConfig
 // extended to return up to two verified names so it can also drive
 // comparison/quote-card entity resolution, not just the single-subject one.
 export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfig, maxEntities = 2): Promise<string[] | undefined> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return undefined;
+  if (!aiConfigured()) return undefined;
   if (await isDailyBudgetExceeded()) return undefined; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   // See extractEntityViaAI's matching comment — same redundant-re-evaluation
@@ -202,12 +175,12 @@ export async function extractEntitiesViaAI(candidate: Candidate, page: PageConfi
   const cacheKey = `${page.page_id}::${candidate.key}::${maxEntities}`;
   const hit = entitiesCache.get(cacheKey);
   if (hit && Date.now() - hit.at < ENTITY_CACHE_TTL_MS) return hit.value;
-  const value = extractEntitiesViaAIUncached(candidate, page, apiKey, maxEntities);
+  const value = extractEntitiesViaAIUncached(candidate, page, maxEntities);
   entitiesCache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
 
-async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConfig, apiKey: string, maxEntities: number): Promise<string[] | undefined> {
+async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConfig, maxEntities: number): Promise<string[] | undefined> {
   const facts = [
     `Headline: ${candidate.headline}`,
     candidate.subject && candidate.subject !== candidate.headline ? `Subject line: ${candidate.subject}` : null,
@@ -233,31 +206,7 @@ async function extractEntitiesViaAIUncached(candidate: Candidate, page: PageConf
   // ENTITIES_OUTPUT_FORMAT_SYSTEM above — identical on every call, cacheable.)
 
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: ENTITIES_OUTPUT_FORMAT_SYSTEM, cache_control: { type: "ephemeral" } },
-            { role: "user", content: prompt },
-          ],
-          max_tokens: 150,
-          temperature: 0,
-        }),
-      },
-      30_000
-    );
-    if (!res.ok) {
-      console.error(`extractEntitiesViaAI: gateway ${res.status} for ${page.page_id}: ${(await res.text()).slice(0, 300)}`);
-      return undefined; // infrastructure failure — no judgment was made, let the caller's own fallback try
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "entities_extract");
-    const content = json.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return undefined;
+    const content = await callModel({ tag: "entities_extract", model: "sonnet", system: ENTITIES_OUTPUT_FORMAT_SYSTEM, content: prompt, maxTokens: 150, temperature: 0, timeoutMs: 30_000 });
 
     const parsed = JSON.parse(stripWrappingQuotesAndMarkdown(content));
     const rawEntities = Array.isArray(parsed?.entities) ? parsed.entities : [];

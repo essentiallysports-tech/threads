@@ -22,10 +22,9 @@
 // does. Added as extra criteria in the SAME vision call (one call, more
 // checks) rather than a second, separate API round-trip.
 
-import { fetchWithTimeout } from "./httpUtil";
-import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { isDailyBudgetExceeded } from "./aiGatewayBudget";
+import { callModel, aiConfigured } from "./aiClient";
 
-const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
 // Haiku switch was never validated against production output before
 // shipping — entityResolution.ts's and checks.ts's matching comments
@@ -37,7 +36,7 @@ const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ships at all, not a cheap formatting task — so they get the same fix.
 // Daily AI Gateway spend was $3.20-7.01 against the $12 soft cap / real $13
 // hard cap the days around this fix, full headroom for Sonnet's ~3x cost.
-const MODEL = "anthropic/claude-sonnet-4-5";
+// (2026-10-01: the model is now picked in aiClient.ts — still Sonnet 4.5.)
 
 export interface CardTextQCResult {
   pass: boolean;
@@ -51,8 +50,7 @@ export async function verifyCardText(
   accent: string | null,
   photoSubjects: string[] = []
 ): Promise<CardTextQCResult> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return { pass: true, reason: null }; // can't verify without a key — a missing check shouldn't block every post
+  if (!aiConfigured()) return { pass: true, reason: null }; // can't verify without a key — a missing check shouldn't block every post
   if (await isDailyBudgetExceeded()) return { pass: true, reason: null }; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
@@ -72,39 +70,14 @@ export async function verifyCardText(
     .join("\n");
 
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                { type: "image_url", image_url: { url: cardUrl } },
-              ],
-            },
-          ],
-          max_tokens: 100,
-        }),
-      },
-      45_000
-    );
-    if (!res.ok) {
-      console.error(`verifyCardText: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      return { pass: true, reason: null }; // verification infra failure — don't block posting over it
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "card_text_qc");
-    const content = (json.choices?.[0]?.message?.content || "").trim();
+    const content = (
+      await callModel({ tag: "card_text_qc", model: "sonnet", content: [{ type: "text", text: prompt }, { type: "image", url: cardUrl }], maxTokens: 100, timeoutMs: 45_000 })
+    ).trim();
     if (/^PASS/i.test(content)) return { pass: true, reason: null };
     return { pass: false, reason: content.slice(0, 200) || "FAIL: no reason given" };
   } catch (e) {
     console.error(`verifyCardText: request failed: ${(e as Error).message}`);
-    return { pass: true, reason: null }; // network failure — don't block posting over it
+    return { pass: true, reason: null }; // verification infra failure — don't block posting over it
   }
 }
 
@@ -147,8 +120,7 @@ export async function verifyPhotoSubject(imageUrl: string, subjectName: string, 
 }
 
 async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string, caption?: string): Promise<boolean> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
+  if (!aiConfigured()) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
   if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
@@ -187,30 +159,13 @@ async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string,
   ].join("\n");
 
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageUrl } }] }],
-          max_tokens: 60,
-        }),
-      },
-      20_000
-    );
-    if (!res.ok) {
-      console.error(`verifyPhotoSubject: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      return true; // verification infra failure — don't block posting over it
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "photo_verify");
-    const content = (json.choices?.[0]?.message?.content || "").trim();
+    const content = (
+      await callModel({ tag: "photo_verify", model: "sonnet", content: [{ type: "text", text: prompt }, { type: "image", url: imageUrl }], maxTokens: 60, timeoutMs: 20_000 })
+    ).trim();
     return /^PASS/i.test(content);
   } catch (e) {
     console.error(`verifyPhotoSubject: request failed: ${(e as Error).message}`);
-    return true; // network failure — don't block posting over it
+    return true; // verification infra failure — don't block posting over it
   }
 }
 
@@ -240,8 +195,7 @@ export async function verifyGenericPhotoSubject(imageUrl: string, subjectName: s
 }
 
 async function verifyGenericPhotoSubjectUncached(imageUrl: string, subjectName: string): Promise<boolean> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
+  if (!aiConfigured()) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
   if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
 
   const prompt = [
@@ -252,29 +206,12 @@ async function verifyGenericPhotoSubjectUncached(imageUrl: string, subjectName: 
   ].join("\n");
 
   try {
-    const res = await fetchWithTimeout(
-      GATEWAY_URL,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageUrl } }] }],
-          max_tokens: 60,
-        }),
-      },
-      20_000
-    );
-    if (!res.ok) {
-      console.error(`verifyGenericPhotoSubject: gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      return true; // verification infra failure — don't block posting over it
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-    recordGatewaySpend(json.usage?.cost, "generic_photo_verify");
-    const content = (json.choices?.[0]?.message?.content || "").trim();
+    const content = (
+      await callModel({ tag: "generic_photo_verify", model: "sonnet", content: [{ type: "text", text: prompt }, { type: "image", url: imageUrl }], maxTokens: 60, timeoutMs: 20_000 })
+    ).trim();
     return /^PASS/i.test(content);
   } catch (e) {
     console.error(`verifyGenericPhotoSubject: request failed: ${(e as Error).message}`);
-    return true; // network failure — don't block posting over it
+    return true; // verification infra failure — don't block posting over it
   }
 }

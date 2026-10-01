@@ -15,13 +15,10 @@
 
 import { Candidate, PageConfig } from "./types";
 import { TemplateId } from "./renderSpec";
-import { fetchWithTimeout } from "./httpUtil";
 import { isGenericFramingText, classifyCaptionAgeTone } from "./checks";
-import { isDailyBudgetExceeded, recordGatewaySpend } from "./aiGatewayBudget";
+import { callModel, aiConfigured } from "./aiClient";
 import { truncateAtWordBoundary } from "./headlineTruncation";
-import { shadowActive, runShadow, jsonField, danglingEndingRule } from "./aiShadow";
 
-const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): same root cause and fix
 // as narrativeCaption.ts's matching comment — the 2026-09-08 fleet-wide
 // Haiku switch was never validated against production output, and this
@@ -29,7 +26,7 @@ const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 // the same "reasons about what's dramatic/coherent" job proven to need a
 // stronger model. Daily AI Gateway spend ran $3.20-7.01 against the $12
 // soft / real $13 hard cap the days around this fix — full headroom.
-const MODEL = "anthropic/claude-sonnet-4-5";
+// (2026-10-01: the model is now picked in aiClient.ts — still Sonnet 4.5.)
 
 export interface RenderCopy {
   headline: string;
@@ -64,43 +61,12 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
   return codeBlock ? codeBlock[1].trim() : t;
 }
 
-interface ShadowSpec {
-  decide: (raw: string) => string;
-  detail?: string;
-  extra?: Record<string, string>;
-}
-
-async function callGateway(prompt: string, apiKey: string, tag: string, shadow?: ShadowSpec): Promise<string> {
-  // ⛔ OPERATOR FIX (2026-09-08, real live incident): checked here once,
-  // covers all four callers of this shared helper — see aiGatewayBudget.ts.
-  // Throwing (rather than returning a sentinel) means every existing
-  // caller's own catch block already handles this exactly like any other
-  // gateway failure, falling back to its own deterministic default with no
-  // per-call-site change needed.
-  if (await isDailyBudgetExceeded()) throw new Error("AI gateway daily budget exceeded — see aiGatewayBudget.ts");
-  const res = await fetchWithTimeout(
-    GATEWAY_URL,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 300,
-        temperature: 0.7,
-      }),
-    },
-    45_000
-  );
-  if (!res.ok) throw new Error(`AI gateway ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { cost?: number } };
-  recordGatewaySpend(json.usage?.cost, tag);
-  const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error(`AI gateway returned no text content: ${JSON.stringify(json).slice(0, 300)}`);
-  // 24h Haiku side-by-side test (aiShadow.ts) — logged only, never used.
-  if (shadow && shadowActive()) {
-    runShadow({ tag, messages: [{ role: "user", content: prompt }], maxTokens: 300, temperature: 0.7, primaryAnswer: content, ...shadow });
-  }
+async function callGateway(prompt: string, tag: string): Promise<string> {
+  // The daily budget breaker lives in callModel (aiClient.ts); throwing
+  // (rather than returning a sentinel) means every caller's own catch block
+  // handles it exactly like any other AI failure, falling back to its own
+  // deterministic default.
+  const content = await callModel({ tag, model: "sonnet", content: prompt, maxTokens: 300, temperature: 0.7, timeoutMs: 45_000 });
   return stripWrappingQuotesAndMarkdown(content);
 }
 
@@ -248,14 +214,9 @@ export async function chooseLayoutViaAI(
   usedTodayCounts: Record<string, number>,
   fallback: TemplateId
 ): Promise<TemplateId> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey || eligible.length <= 1) return fallback;
+  if (!aiConfigured() || eligible.length <= 1) return fallback;
   try {
-    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), apiKey, "layout", {
-      decide: jsonField("layout"),
-      detail: candidate.headline,
-      extra: { eligible: eligible.join(",") },
-    });
+    const raw = await callGateway(buildLayoutPrompt(candidate, eligible, usedTodayCounts), "layout");
     const parsed = JSON.parse(raw);
     if (typeof parsed?.layout === "string" && eligible.includes(parsed.layout)) return parsed.layout as TemplateId;
     console.error(`chooseLayoutViaAI: invalid pick "${parsed?.layout}" for ${page.page_id}, using fallback`);
@@ -288,8 +249,7 @@ export async function isGenuineComparisonViaAI(
   nameA: string,
   nameB: string
 ): Promise<boolean> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return false;
+  if (!aiConfigured()) return false;
   const prompt = [
     `Two names were both found in this story: "${nameA}" and "${nameB}".`,
     `Headline: ${stripHtml(candidate.headline)}`,
@@ -302,7 +262,7 @@ export async function isGenuineComparisonViaAI(
     .filter(Boolean)
     .join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey, "comparison", { decide: jsonField("genuine_comparison"), detail: candidate.headline });
+    const raw = await callGateway(prompt, "comparison");
     const parsed = JSON.parse(raw);
     return parsed?.genuine_comparison === true;
   } catch (e) {
@@ -326,8 +286,7 @@ export async function isGenuineComparisonViaAI(
 // other AI-augmented check in this pipeline; an unreachable check must
 // never be the reason a real, otherwise-fine post gets dropped.
 export async function isCoherentHeadlineViaAI(headline: string, facts: string): Promise<boolean> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return true;
+  if (!aiConfigured()) return true;
   const prompt = [
     `Here is a headline meant to be rendered as the giant on-image text of a sports infographic card:`,
     `"${headline}"`,
@@ -346,7 +305,7 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
     `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
   ].join("\n");
   try {
-    const raw = await callGateway(prompt, apiKey, "coherence", { decide: jsonField("coherent"), detail: headline, extra: { rule: danglingEndingRule(headline) } });
+    const raw = await callGateway(prompt, "coherence");
     const parsed = JSON.parse(raw);
     return parsed?.coherent !== false; // any shape other than an explicit false is treated as "didn't flag it"
   } catch (e) {
@@ -372,14 +331,13 @@ export async function buildNarrativeRenderCopy(
   layout: TemplateId,
   fallback: RenderCopy
 ): Promise<RenderCopyResult> {
-  const apiKey = process.env.VERCEL_AI_GATEWAY_KEY;
-  if (!apiKey) return { ...fallback, usedFallback: true, violation: "NO_API_KEY" };
+  if (!aiConfigured()) return { ...fallback, usedFallback: true, violation: "NO_API_KEY" };
 
   let retryNote: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const prompt = buildPrompt(candidate, page, athleteNames, layout, fallback, retryNote);
-      const raw = await callGateway(prompt, apiKey, "render_copy");
+      const raw = await callGateway(prompt, "render_copy");
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
