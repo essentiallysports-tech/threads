@@ -577,7 +577,7 @@ async function searchAndPick(term: string, recentlyUsed: Set<string>, sportHint?
   // since the vision check can't tell two same-sport players apart by face.
   const verified = results.filter((r) => metadataMatchesSubject(r, term, teamCheck) && !captionShowsSomeoneElse(r, term));
   if (verified.length === 0) return null; // every candidate's own metadata contradicts the subject we searched for
-  const captionByUrl = new Map(verified.map((r) => [r.url, `${r.title} ${r.caption || ""}`.trim()]));
+  const captionByUrl = new Map(verified.map((r) => [r.url, [r.title, r.caption, r.alt].filter(Boolean).join(" | ").trim()]));
   return pickReachableUrl(
     verified.map((r) => r.url),
     recentlyUsed,

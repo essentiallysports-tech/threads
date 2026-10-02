@@ -99,6 +99,7 @@ export interface EsImageResult {
   title: string;
   caption?: string;
   credit?: string;
+  alt?: string;
 }
 
 interface TypesenseImageDoc {
@@ -148,6 +149,7 @@ export async function searchImages(query: string, type: "agency" | "custom" | "a
     title: doc.title || "",
     caption: doc.exif_caption,
     credit: doc.exif_credit,
+    alt: doc.alt_text,
   }));
 }
 
@@ -229,7 +231,11 @@ export function hasConflictingTeamMention(text: string, sportGroup: string | und
 // captions name the pictured person first, and a relation word before the
 // subject's first mention means the subject is the OTHER person in the shot.
 // Fails open when there's no caption text or no subject mention.
-const OPPONENT_RELATION_RE = /\b(against|vs\.?|versus|v\.|defeats?|defeated|beats?|beaten|faces?|faced|loses to|lost to|falls to|fell to|plays?|played|takes on|took on)\b/i;
+// (2026-10-02) Added the win/handshake phrasings agency captions also use —
+// a real Alex Eala post shipped a photo captioned "Alycia Parks of United
+// States celebrates her victory over Alexandra Eala", which none of the
+// original words caught.
+const OPPONENT_RELATION_RE = /\b(against|vs\.?|versus|v\.|defeats?|defeated|beats?|beaten|faces?|faced|loses to|lost to|falls to|fell to|plays?|played|takes on|took on|(?:victory|win|wins|won|upset|triumph) over|edges|edged|eliminates|eliminated|knocks out|knocked out|ousts|ousted|stuns|stunned|shakes hands with|shake hands|hugs|hugged|embraces|embraced|consoles|consoled|congratulates|congratulated)\b/i;
 
 export function captionShowsSomeoneElse(result: EsImageResult, subjectName: string): boolean {
   const text = `${result.title} ${result.caption || ""}`.toLowerCase();
