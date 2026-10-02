@@ -91,6 +91,10 @@ export async function isDailyBudgetExceeded(): Promise<boolean> {
   }
 }
 
+export function dailyBudgetUsd(): number {
+  return DAILY_BUDGET_USD;
+}
+
 // Today's spend as a fraction of the daily cap — aiBudgetHold.ts's input.
 // Same fail-open posture as isDailyBudgetExceeded: an unreadable counter
 // reads as 0, never as "stop posting".
