@@ -286,7 +286,15 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
   if (!isGapDue(page, postedLog)) return sourceCandidatePoolForPage(page, dateISO, postedLog);
   const normalDays = page.threads?.evergreen_max_age_days ?? 21;
   // isGapDue is only true when page.threads.min_post_gap_hours is set, so threads exists here.
-  const widened: PageConfig = { ...page, threads: { ...page.threads!, evergreen_max_age_days: Math.max(normalDays, GAP_RESCUE_EVERGREEN_DAYS) } };
+  const widened: PageConfig = {
+    ...page,
+    threads: {
+      ...page.threads!,
+      evergreen_max_age_days: Math.max(normalDays, GAP_RESCUE_EVERGREEN_DAYS),
+      evergreen_rescue_end_days: normalDays,
+      rescue_candidate_cap: 40,
+    },
+  };
   const pool = await sourceCandidatePoolForPage(widened, dateISO, postedLog);
   const normalCutoff = Date.now() - normalDays * 24 * 3600 * 1000;
   let rescued = 0;
