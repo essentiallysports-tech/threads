@@ -119,53 +119,85 @@ export async function verifyPhotoSubject(imageUrl: string, subjectName: string, 
   return value;
 }
 
-async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string, caption?: string): Promise<boolean> {
-  if (!aiConfigured()) return true; // can't verify without a key — a missing check shouldn't block every post, matches verifyCardText's own policy
-  if (await isDailyBudgetExceeded()) return true; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
+// ⛔ OPERATOR FIX (2026-10-02, real live incidents, team-reported twice):
+// two Alex Eala Fan Club cards showed other players. (1) The reference was a
+// doubles photo — caption "USA's Iva Jovic and Philippines' Alexandra Eala
+// during the doubles…" — which passed every check because Eala really is in
+// it; the image model then turned a two-person photo into a one-person card
+// and kept Jovic. (2) The reference was captioned "Alycia Parks … celebrates
+// her victory over Alexandra Eala" and went out while this check was failing
+// open on an exhausted AI budget. So this check no longer asks one vague
+// "plausibly them?" question with a PASS-when-unsure default. It asks for
+// facts as JSON, and the code decides:
+//   - a person's card needs a photo with exactly ONE person in focus;
+//   - when there's a caption, the first person it names as pictured must be
+//     the subject (agency captions name the pictured person first);
+//   - with no caption, "unsure" is a FAIL — the model can't identify people
+//     by face, so nothing else can vouch for who it is;
+//   - teams/organisations skip the one-person rule (team photos show several
+//     players);
+//   - and it fails CLOSED: no AI, no budget, an error or an unreadable answer
+//     all mean "don't use this photo". Posting nothing beats the wrong player.
+// The earlier intimate-contact (2026-09-09, Stafford) and vehicle-dominant
+// (2026-09-14, NASCAR) rules are kept as their own fields below.
+function surnameOf(name: string): string {
+  const parts = name.toLowerCase().replace(/[^a-z\s'-]/g, " ").split(/\s+/).filter((t) => t.length >= 2);
+  return parts[parts.length - 1] || name.toLowerCase();
+}
 
+interface PhotoSubjectFacts {
+  subject_is_team?: boolean;
+  people_in_focus?: number;
+  caption_names_pictured?: string[];
+  depicts_subject?: "yes" | "no" | "unsure";
+  intimate_contact?: boolean;
+  vehicle_dominant?: boolean;
+}
+
+export function decidePhotoSubject(facts: PhotoSubjectFacts, subjectName: string, hasCaption: boolean): { pass: boolean; reason: string } {
+  if (facts.intimate_contact) return { pass: false, reason: "intimate contact" };
+  if (facts.vehicle_dominant) return { pass: false, reason: "vehicle, not the person, is the subject" };
+  if (facts.depicts_subject === "no") return { pass: false, reason: "does not depict the subject" };
+  if (facts.subject_is_team) return { pass: true, reason: "team photo" };
+  const people = typeof facts.people_in_focus === "number" ? facts.people_in_focus : NaN;
+  if (people !== 1) return { pass: false, reason: `${Number.isNaN(people) ? "unknown" : people} people in focus — a one-person card needs one` };
+  const named = (facts.caption_names_pictured || []).filter((n) => typeof n === "string" && n.trim());
+  const surname = surnameOf(subjectName);
+  if (hasCaption && named.length > 0 && !named[0].toLowerCase().includes(surname)) return { pass: false, reason: `caption names ${named[0]} as pictured first` };
+  if (hasCaption && named.length > 0) return { pass: true, reason: "caption names the subject first" };
+  if (facts.depicts_subject === "yes") return { pass: true, reason: hasCaption ? "caption names no one; photo depicts the subject" : "no caption; photo depicts the subject" };
+  return { pass: false, reason: "can't confirm it's the subject" };
+}
+
+async function verifyPhotoSubjectUncached(imageUrl: string, subjectName: string, caption?: string): Promise<boolean> {
+  if (!aiConfigured()) return false; // fail closed — see the 2026-10-02 comment above
+  if (await isDailyBudgetExceeded()) return false; // fail closed — see the 2026-10-02 comment above
+
+  const hasCaption = !!caption && caption.trim().length > 0;
   const prompt = [
-    `This photo was found by searching a sports media library for "${subjectName}".`,
-    // 2026-09-25: the model can't identify real people by face, so two
-    // players of the same sport both "plausibly" pass on pixels alone — the
-    // library's own caption says who is actually pictured.
-    caption ? `The library's caption for this photo reads: "${caption.slice(0, 500)}". Agency captions name the pictured person first. Reply FAIL if the caption indicates the photo mainly shows a different named person (for example "<other player> ... against ${subjectName}"), even if ${subjectName} is mentioned.` : "",
-    `Look at it and answer: does it actually, plausibly depict ${subjectName} — a recognizable photo of them (portrait, action shot, court/field/press-conference appearance), or clearly their jersey/memorabilia in a relevant context?`,
-    `Reply FAIL if it instead shows unrelated people, a generic crowd/press/memorial scene with no clear visual connection to ${subjectName}, or anything else that just happens to be captioned with this name without the photo actually being "about" them.`,
-    // ⛔ OPERATOR FIX (2026-09-09, real live incident): a real card ("Stafford
-    // Speaks Out on Nacua's Uncertain Status" — a teammate injury/suspension
-    // story with zero connection to Stafford's personal life) used a photo
-    // of Stafford kissing his wife after a game. The photo genuinely does
-    // show Stafford — this check's ONLY existing criterion — so it passed;
-    // "is this the right person" and "is this an appropriate image for a
-    // sports news card" are different questions, and only the first was ever
-    // asked. Absolute rule, independent of subject-match correctness: never
-    // pass a kiss/making-out/intimate-romantic-contact photo, full stop —
-    // this check has no story context to judge a genuine exception (a real
-    // wedding/engagement story) against, so it doesn't try to.
-    `Reply FAIL, regardless of whether ${subjectName} is correctly identified, if the photo shows kissing, making out, or other intimate/romantic physical contact. Normal athletic contact (hugs, high-fives, team celebrations, handshakes, a coach's arm around a player) is NOT what this means and remains fine.`,
-    // ⛔ OPERATOR FIX (2026-09-14, real live incident, recurring): confirmed
-    // live — repeated card-QC failures on NASCAR driver pages (JGR Racing
-    // Digest, Hendrick Heroes) where the FINAL rendered card showed only a
-    // race car, no visible driver. Root cause: this check's own "jersey/
-    // memorabilia in a relevant context" pass condition above already lets
-    // through a photo whose dominant subject is the CAR (livery/number
-    // clearly reads as "theirs"), with the driver themselves small,
-    // obscured, or entirely out of frame — same class of bug as the
-    // Stafford-kissing-photo fix above: "is this associated with them" and
-    // "does this actually depict them as a person" are different
-    // questions, and a car-dominant photo only ever answered the first.
-    `Reply FAIL, even if a car/vehicle's number or livery clearly identifies it as ${subjectName}'s, if that vehicle (not a person) is the photo's dominant visual subject and ${subjectName} themselves isn't plainly visible and recognizable as a person in it. A photo of them clearly standing by, sitting in, or celebrating with/on the vehicle, where they themselves are the recognizable subject, remains fine — only reject when the person is small, obscured, or absent and the vehicle alone is carrying the "is this them" answer.`,
-    `Reply with EXACTLY one line: "PASS" or "FAIL: <short reason>". When genuinely uncertain, answer PASS — this check exists to catch obviously wrong/unrelated photos, not to make a strict facial-identity call you can't reliably make.`,
+    `This photo was found by searching a sports media library for "${subjectName}". It will be the reference image for a card about ${subjectName}.`,
+    hasCaption ? `The library's metadata for this photo (title | caption | alt text) reads: "${caption!.slice(0, 600)}". Agency captions name the pictured person first.` : `The photo has no caption in the library.`,
+    `Answer with facts about the photo as one JSON object, nothing else:`,
+    `{`,
+    `  "subject_is_team": true if "${subjectName}" is a team, club, league or organization rather than one individual person, else false,`,
+    `  "people_in_focus": the number of people who are clear main subjects of the photo — count every player/person in sharp focus in the foreground; do NOT count blurred background crowds, spectators, officials or ball kids,`,
+    `  "caption_names_pictured": ${hasCaption ? `the names of the people the caption says are pictured, in the order the caption names them (e.g. "A and B during the doubles" -> ["A", "B"]; "A celebrates her victory over B" -> ["A"]); [] if it names no one as pictured` : `[]`},`,
+    `  "depicts_subject": "yes" if the photo plausibly shows ${subjectName} (a person: them; a team: its players, jersey or branding in a relevant context), "no" if it clearly shows something unrelated (unrelated people, a generic crowd/press/memorial scene, a different team), "unsure" otherwise — you cannot identify real people by their face, so without a caption naming them say "unsure" unless the photo itself makes it unambiguous (e.g. their name or number clearly visible),`,
+    `  "intimate_contact": true if the photo shows kissing, making out or other intimate/romantic physical contact (normal athletic contact — hugs, high-fives, team celebrations, handshakes — is false),`,
+    `  "vehicle_dominant": true if a car/vehicle, not a person, is the photo's dominant subject and ${subjectName} isn't plainly visible as a person in it`,
+    `}`,
   ].join("\n");
 
   try {
-    const content = (
-      await callModel({ tag: "photo_verify", model: "sonnet", content: [{ type: "text", text: prompt }, { type: "image", url: imageUrl }], maxTokens: 60, timeoutMs: 20_000 })
-    ).trim();
-    return /^PASS/i.test(content);
+    const content = await callModel({ tag: "photo_verify", model: "sonnet", content: [{ type: "text", text: prompt }, { type: "image", url: imageUrl }], maxTokens: 200, timeoutMs: 20_000 });
+    const json = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
+    const facts = JSON.parse(json.slice(json.indexOf("{"), json.lastIndexOf("}") + 1)) as PhotoSubjectFacts;
+    const decision = decidePhotoSubject(facts, subjectName, hasCaption);
+    if (!decision.pass) console.error(`verifyPhotoSubject: FAIL "${subjectName}" (${decision.reason}) ${imageUrl.slice(-80)}`);
+    return decision.pass;
   } catch (e) {
-    console.error(`verifyPhotoSubject: request failed: ${(e as Error).message}`);
-    return true; // verification infra failure — don't block posting over it
+    console.error(`verifyPhotoSubject: check failed, rejecting the photo: ${(e as Error).message}`);
+    return false; // fail closed — see the 2026-10-02 comment above
   }
 }
 
