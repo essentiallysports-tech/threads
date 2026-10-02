@@ -1,0 +1,65 @@
+{
+  "why": "Operator rule 2026-10-02: 'in no 6 hour window should the top 10 pages by traffic have 0 posts ever.' Top 10 daily-run pages by GA4 Threads sessions Sep 25 - Oct 2 (p80 Sports News Daily excluded: it runs on the separate firehose workflow and had no 6h gap all week). threads.min_post_gap_hours=6 turns on paced daily caps, due-mode supply widening and the 90-100% AI budget reserve (threads#57); ai_priority=true so these pages are never held by the 70% budget rule. In the 7 days before, every one of these pages had 6-11 gaps of 6h+. Revert = remove both fields.",
+  "pages": {
+    "p78": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p40": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p41": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p74": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p92": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p53": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p54": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p51": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p71": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    },
+    "p61": {
+      "setThreads": {
+        "min_post_gap_hours": 6,
+        "ai_priority": true
+      }
+    }
+  }
+}

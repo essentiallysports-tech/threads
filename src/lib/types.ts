@@ -101,6 +101,15 @@ export interface ThreadsConfig {
   // the budget goes to the pages that actually earn the link clicks (Sep
   // 25-29: 8 pages, ~97% of GA4 Threads sessions). Unset = not priority.
   ai_priority?: boolean;
+  // (2026-10-02, operator rule) "in no 6 hour window should the top 10 pages
+  // by traffic have 0 posts ever." A page with this set never spends its
+  // whole daily cap early (dailyRunWorkflow.ts pacedCapFor keeps one post in
+  // reserve per (gap - 1) hours left in the UTC day), and once it has gone
+  // (gap - 1.5) hours without a post it is "due" (checks.ts isGapDue): its
+  // next runs go first, can widen supply (see sourceCandidatePool and
+  // runDeterministicChecks) and may use the last 10% of the AI budget.
+  // Relevance and accuracy gates are never relaxed. Unset = no guarantee.
+  min_post_gap_hours?: number;
   // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
   // appended on every post ALONGSIDE the existing per-story dynamic hashtag
   // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):
@@ -199,6 +208,10 @@ export interface Candidate {
   // WordPress API actually returned a real date; absent for every other
   // source and for the rare case that date was itself missing.
   realPublishedAt?: string; // ISO, the article's REAL publish date (not synthetic)
+  // (2026-10-02) set on an evergreen candidate that only qualified because a
+  // gap-guarded page was due (widened age window) — classifyCaptionAgeTone
+  // frames it as a throwback rather than as news.
+  rescue?: boolean;
   thumbnailUrl?: string | null;
   rawText?: string; // whatever text is available to build a caption from
   // ⛔ OPERATOR FIX (2026-08-08): "only ES article/newsletter link allowed in

@@ -17,13 +17,19 @@
 // candidate, so it's still in tomorrow's pool.
 import { dailyBudgetFractionUsed } from "./aiGatewayBudget";
 import { PageConfig, PostedLogEntry } from "./types";
+import { isGapDue } from "./checks";
 
 const PRIORITY_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_PRIORITY_RESERVE_FRACTION || 0.7);
 const MIN_POSTS_BEFORE_HOLD = 3;
+// (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) the last
+// 10% of the day's budget is kept for gap-guarded pages that are due, so the
+// "never 6h without a post" guarantee doesn't run out of AI late in the day.
+const GAP_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_GAP_RESERVE_FRACTION || 0.9);
 
 export async function aiBudgetHoldReason(page: PageConfig, postedLog: PostedLogEntry[]): Promise<string | null> {
   const used = await dailyBudgetFractionUsed();
   if (used >= 1) return "AI_BUDGET_EXHAUSTED_HOLD";
+  if (used >= GAP_RESERVE_FRACTION && !isGapDue(page, postedLog)) return "AI_BUDGET_RESERVED_FOR_DUE_PAGES";
   if (used < PRIORITY_RESERVE_FRACTION || page.threads?.ai_priority) return null;
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today)).length;

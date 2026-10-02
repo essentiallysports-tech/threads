@@ -31,6 +31,8 @@ import {
   classifyCaptionAgeTone,
   isEsOwnedLink,
   setChecksAiCaller,
+  isGapDue,
+  hoursSinceLastPost,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -275,8 +277,30 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
   // Seeded here (20-min timeout, always the first per-page activity) rather
   // than in checkCandidate, which is a 10s local activity.
   await ensureCrossPageLedgerSeeded();
-  return sourceCandidatePoolForPage(page, dateISO, postedLog);
+  // (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) a
+  // gap-guarded page that is due also draws on older ES articles about its
+  // own registered entities (evergreen tier, up to GAP_RESCUE_EVERGREEN_DAYS
+  // old). Anything older than the page's normal window is marked `rescue`
+  // so the caption and card frame it as a throwback, not as news. Every
+  // relevance/accuracy gate still applies to these candidates.
+  if (!isGapDue(page, postedLog)) return sourceCandidatePoolForPage(page, dateISO, postedLog);
+  const normalDays = page.threads?.evergreen_max_age_days ?? 21;
+  // isGapDue is only true when page.threads.min_post_gap_hours is set, so threads exists here.
+  const widened: PageConfig = { ...page, threads: { ...page.threads!, evergreen_max_age_days: Math.max(normalDays, GAP_RESCUE_EVERGREEN_DAYS) } };
+  const pool = await sourceCandidatePoolForPage(widened, dateISO, postedLog);
+  const normalCutoff = Date.now() - normalDays * 24 * 3600 * 1000;
+  let rescued = 0;
+  for (const c of pool) {
+    if (c.source === "evergreen_search" && c.realPublishedAt && Date.parse(c.realPublishedAt) < normalCutoff) {
+      c.rescue = true;
+      rescued++;
+    }
+  }
+  console.error(`sourceCandidatePool: ${page.page_id} gap-guard due (${hoursSinceLastPost(postedLog).toFixed(1)}h since last post) — ${pool.length} candidates, ${rescued} older throwback items`);
+  return pool;
 }
+
+const GAP_RESCUE_EVERGREEN_DAYS = 120;
 
 export interface CheckedCandidate {
   candidate: Candidate;
@@ -357,11 +381,11 @@ export async function checkTopicFrequency(
   // is unsatisfiable until N>=4, so a 2 or 3-entity page is just as
   // structurally guaranteed to fail as a literal single-entity one. Same
   // reasoning for the sport-group league cap on a single-sport-group page.
-  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog, page.entities.length <= 3, page.sport_groups.length <= 1);
+  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog, page.entities.length <= 3, page.sport_groups.length <= 1, isGapDue(page, postedLog));
 }
 
 export async function checkDominantNarrative(primaryEntityName: string | null, postedLog: PostedLogEntry[], page: PageConfig): Promise<FrequencyCheckResult> {
-  return dominantNarrativeCheck(primaryEntityName, postedLog, page.entities.length <= 3);
+  return dominantNarrativeCheck(primaryEntityName, postedLog, page.entities.length <= 3, isGapDue(page, postedLog));
 }
 
 // ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): see
