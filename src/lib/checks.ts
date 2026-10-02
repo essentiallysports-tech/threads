@@ -1395,7 +1395,8 @@ export function topicFrequencyCheck(
   // share that one sport_group, so this 5/24h cap permanently caps such a
   // page's 6th+ post of the day regardless of daily_budget_max. Skipped the
   // same way, for the same reason.
-  isSingleSportGroupPage = false
+  isSingleSportGroupPage = false,
+  gapDue = false // (2026-10-02) a due gap-guarded page gets one more same-entity post per 24h
 ): FrequencyCheckResult {
   const now = Date.now();
   const last24h = postedLog.filter((p) => withinHours(p, 24, now));
@@ -1419,7 +1420,7 @@ export function topicFrequencyCheck(
     // applied to dominantNarrativeCheck below (identical root cause).
     const normalized = primaryEntityName.toLowerCase().trim();
     const entityCount = last24h.filter((p) => p.entity?.toLowerCase().trim() === normalized).length;
-    if (entityCount >= 3) return { pass: false, reason: `TOPIC_FREQUENCY_ENTITY_CAP:${primaryEntityName}` };
+    if (entityCount >= (gapDue ? 4 : 3)) return { pass: false, reason: `TOPIC_FREQUENCY_ENTITY_CAP:${primaryEntityName}` };
   }
   if (primarySportGroup && !isSingleSportGroupPage) {
     const sportCount = last24h.filter((p) => p.sportGroup === primarySportGroup).length;
@@ -1436,8 +1437,10 @@ export function topicFrequencyCheck(
 export function dominantNarrativeCheck(
   primaryEntityName: string | null,
   postedLog: PostedLogEntry[],
-  isSingleEntityPage = false
+  isSingleEntityPage = false,
+  gapDue = false // (2026-10-02) not applied while a gap-guarded page is due
 ): FrequencyCheckResult {
+  if (gapDue) return { pass: true, reason: null };
   // ⛔ OPERATOR FIX (2026-08-23): see topicFrequencyCheck's comment above —
   // same root bug. On a single-entity page every post necessarily matches
   // the page's one registered entity, so this ratio is mathematically ~100%
@@ -2232,6 +2235,9 @@ export const BREAKING_ELIGIBLE_MAX_HOURS = 48;
 export const RETRO_TONE_MIN_DAYS = 180;
 
 export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
+  // (2026-10-02) a gap-guard rescue item is older than its page's normal
+  // window by definition — frame it as a throwback, never as news.
+  if (candidate.rescue && candidate.source === "evergreen_search") return "retro";
   // sourceFromEsEvergreenArticles (sourcing.ts) deliberately stamps
   // publishedAt as "now" — ES-MCP's older-article results carry no real
   // date, and this tier is a 5-YEAR lookback by design (genuinely-old ES
@@ -2420,6 +2426,43 @@ export function isTooRecentForRetrospectivePage(candidate: Candidate, page: Page
 // (entity match, political content, generic framing, etc.) are untouched —
 // this only ever relaxes "have we shown this before," never "is this
 // actually a good, on-topic candidate."
+// (2026-10-02, operator rule) see ThreadsConfig.min_post_gap_hours. Pure
+// functions of the posted log and the clock, so they're safe to call from
+// workflow code (Temporal makes Date.now() deterministic there).
+export function hoursSinceLastPost(postedLog: PostedLogEntry[], now = Date.now()): number {
+  let latest = 0;
+  for (const p of postedLog) {
+    const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
+    if (!isNaN(t) && t > latest) latest = t;
+  }
+  return latest ? (now - latest) / 3_600_000 : Infinity;
+}
+
+// ⛔ OPERATOR RULE (2026-10-02): "in no 6 hour window should the top 10
+// pages by traffic have 0 posts ever." Measured over the week before: every
+// top page had 6-11 stretches of 6h+ with no post, mostly because a page
+// spent its whole daily cap in the first UTC hours (Golf: 12 runs posting,
+// then 12 runs "skipped_capped 12/12") and then waited for midnight. For a
+// page with threads.min_post_gap_hours, keep one post of the daily cap in
+// reserve for every (gap - 1) hours left in the UTC day, so there's always
+// allowance left for the later windows (dailyRunWorkflow.ts still derives
+// the per-run cap from the full daily cap). Pages without the setting get
+// their cap back unchanged.
+export function pacedDailyCap(page: PageConfig, cap: number, nowMs: number): number {
+  const gap = page.threads?.min_post_gap_hours;
+  if (!gap || gap <= 1) return cap;
+  const d = new Date(nowMs);
+  const hoursLeft = 24 - (d.getUTCHours() + d.getUTCMinutes() / 60);
+  const reserve = hoursLeft <= 1 ? 0 : Math.ceil(hoursLeft / (gap - 1));
+  return Math.max(1, cap - reserve);
+}
+
+export function isGapDue(page: PageConfig, postedLog: PostedLogEntry[], now = Date.now()): boolean {
+  const gap = page.threads?.min_post_gap_hours;
+  if (!gap || gap <= 0) return false;
+  return hoursSinceLastPost(postedLog, now) >= Math.max(1, gap - 1.5);
+}
+
 export function isPageStarvedToday(postedLog: PostedLogEntry[]): boolean {
   return postedLog.filter((p) => withinHours(p, 24, Date.now())).length < 3;
 }
@@ -2492,9 +2535,13 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // original 24h window for healthy pages. The one real defect kept fixed:
   // a starved page no longer skips the link check entirely — it gets a 12h
   // floor, so a new page can't post the same article twice an hour apart.
-  const linkWindowHours = isStarvedToday ? 12 : 24;
+  // (2026-10-02) a gap-guarded page that is due (isGapDue) may re-use an
+  // article posted 8h+ ago — only under a different angle key, because the
+  // ALREADY_POSTED check above still blocks the same key for 14 days.
+  const due = isGapDue(page, postedLog);
+  const linkWindowHours = due ? 8 : isStarvedToday ? 12 : 24;
   if (duplicateLinkRecently(candidate, postedLog, linkWindowHours)) {
-    return { pass: false, reason: isStarvedToday ? "DUPLICATE_LINK_12H" : "DUPLICATE_LINK_24H" };
+    return { pass: false, reason: due ? "DUPLICATE_LINK_8H" : isStarvedToday ? "DUPLICATE_LINK_12H" : "DUPLICATE_LINK_24H" };
   }
   return { pass: true, reason: null };
 }

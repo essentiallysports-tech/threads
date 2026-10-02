@@ -1,7 +1,7 @@
 import { proxyActivities, proxyLocalActivities, log, workflowInfo, patched } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { PageRunResult, PageConfig, Candidate, PostedLogEntry } from "../lib/types";
-import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday } from "../lib/checks";
+import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday, isGapDue, pacedDailyCap } from "../lib/checks";
 
 // ⛔ OPERATOR FIX (2026-08-22, real live incident): checkCandidate,
 // checkTopicFrequency, and checkDominantNarrative were all proxied as full
@@ -371,6 +371,9 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   function perRunCapFor(cap: number): number {
     return Math.min(PER_RUN_PAGE_CAP, Math.max(2, Math.ceil(cap / 4)));
   }
+  // (2026-10-02) see pacedDailyCap in checks.ts — the "never 6h without a
+  // post" operator rule for pages with threads.min_post_gap_hours.
+  const gapPacing = patched("gap-guard-pacing");
 
   // ⛔ OPERATOR FIX (2026-08-19, real live incident, severe): confirmed live
   // via Temporal's own reverse-history lookup — the "mystery" workflow
@@ -530,6 +533,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     postedLog: PostedLogEntry[];
     postedTodayCount: number;
     cap: number;
+    perRunCap: number;
     thisRunEntries: PostedLogEntry[]; // synthetic entries for candidates already picked THIS run — fed back into checks so a second pull from the same page's pool can't repeat/oversaturate a subject the first pull already used
     triedKeys: Set<string>;
     postedThisRun: number;
@@ -559,7 +563,8 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     // by default — this crashed silently in a retry loop until caught here.
     const postedToday = postedLog.filter((p) => (p.posted_at || "").startsWith(dateISO)).length;
     postedTodaySoFar += postedToday;
-    const cap = page.threads?.daily_budget_max ?? opts.dailyBudgetMax;
+    const fullCap = page.threads?.daily_budget_max ?? opts.dailyBudgetMax;
+    const cap = gapPacing ? pacedDailyCap(page, fullCap, runStartMs) : fullCap;
 
     if (postedToday >= cap) {
       results.push({ page_id: page.page_id, outcome: "skipped_capped", reason: `${postedToday}/${cap}` });
@@ -571,6 +576,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
       postedLog,
       postedTodayCount: postedToday,
       cap,
+      perRunCap: perRunCapFor(fullCap),
       thisRunEntries: [],
       triedKeys: new Set(),
       postedThisRun: 0,
@@ -578,6 +584,11 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
       hadAnyCandidateInitially: false,
     });
   }
+
+  // (2026-10-02) gap-guarded pages that are due go first, so the run's time
+  // and attempt budgets reach them before anything else. Stable sort: every
+  // other page keeps its order.
+  if (gapPacing) states.sort((a, b) => Number(isGapDue(b.page, b.postedLog, runStartMs)) - Number(isGapDue(a.page, a.postedLog, runStartMs)));
 
   const nowISO = new Date(workflowInfo().startTime).toISOString();
 
@@ -592,7 +603,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // first ordered, see sourcing.ts).
   async function attemptPageCandidates(state: PageRunState, pool: Candidate[]): Promise<void> {
     for (const candidate of pool) {
-      if (state.postedThisRun >= perRunCapFor(state.cap) || state.postedTodayCount >= state.cap) return;
+      if (state.postedThisRun >= state.perRunCap || state.postedTodayCount >= state.cap) return;
       // "15 min run, skip what fails" — a page's own candidate loop (up to
       // PER_RUN_PAGE_CAP tries, each a full source→check→render→QC chain)
       // must not keep grinding once the run's overall time budget is spent,
@@ -882,7 +893,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   // skipping any candidate key already tried this run — and, like pass 1,
   // every page in a pass runs concurrently rather than one at a time.
   const anyPageBelowDailyMin = () =>
-    states.some((s) => s.postedTodayCount < Math.min(MIN_POSTS_PER_PAGE_PER_DAY, s.cap) && s.postedThisRun < perRunCapFor(s.cap));
+    states.some((s) => s.postedTodayCount < Math.min(MIN_POSTS_PER_PAGE_PER_DAY, s.cap) && s.postedThisRun < s.perRunCap);
 
   let repairPass = 0;
   while (
@@ -897,7 +908,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     // this is what actually gives a structurally-slower page priority for a
     // concurrency slot instead of losing the race to faster pages every time.
     const eligible = states
-      .filter((s) => s.postedThisRun < perRunCapFor(s.cap) && s.postedTodayCount < s.cap)
+      .filter((s) => s.postedThisRun < s.perRunCap && s.postedTodayCount < s.cap)
       .sort((a, b) => a.postedTodayCount - b.postedTodayCount);
     if (eligible.length === 0) break; // every remaining page is genuinely exhausted — nothing left to repair
 
