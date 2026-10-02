@@ -2,6 +2,7 @@
 // config/page-registry/pages/{id}.json. Each page entry may:
 //   addEntities:  [EntitySlot]                         appended (skipped if a slot with that name exists)
 //   editEntities: [{ name, addKeywords?, removeKeywords?, whole_word?, is_team_identity? }] modifies an existing slot
+//   removeEntities: [name]                              drops a slot (e.g. a player who left the team)
 //   renameEntity: [from, to]
 //   set:          { page_type?, ... }                   top-level fields
 //   setThreads:   { exclusive_articles?, utm_string? }  fields under `threads`
@@ -49,6 +50,11 @@ function apply(page, p) {
       e.is_team_identity = edit.is_team_identity;
       notes.push(`"${e.name}" is_team_identity=${edit.is_team_identity}`);
     }
+  }
+  for (const name of p.removeEntities || []) {
+    const before = page.entities.length;
+    page.entities = page.entities.filter((e) => e.name.toLowerCase() !== name.toLowerCase());
+    notes.push(page.entities.length < before ? `-slot "${name}"` : `no slot "${name}" to remove`);
   }
   if (p.renameEntity) {
     const [from, to] = p.renameEntity;

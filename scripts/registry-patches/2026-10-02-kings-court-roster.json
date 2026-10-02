@@ -1,0 +1,8 @@
+{
+  "why": "Roster accuracy, 2026-10-02. DeMar DeRozan is no longer a Sacramento King: ES reported the Kings waiving him (2026-07-07, 'Kyle Lowry Teases DeMar DeRozan Reunion as Sacramento Kings Waive NBA Star') and his Denver Nuggets signing (2026-08-22, 'Insider Reveals Denver Nuggets Plans for DeMar DeRozan After $3.9 Million Signing'). His slot still carried the keywords 'sacramento kings'/'kings', so Kings Court Chronicles would keep framing a Nuggets player as Kings content. Revert = re-add the slot from registry-backups/.",
+  "pages": {
+    "p51": {
+      "removeEntities": ["DeMar DeRozan"]
+    }
+  }
+}
