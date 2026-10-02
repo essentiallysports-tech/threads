@@ -110,6 +110,16 @@ export interface ThreadsConfig {
   // runDeterministicChecks) and may use the last 10% of the AI budget.
   // Relevance and accuracy gates are never relaxed. Unset = no guarantee.
   min_post_gap_hours?: number;
+  // Internal, never set in the registry: while a gap-guarded page is due,
+  // sourceCandidatePool sets this to the page's normal evergreen window, and
+  // the evergreen tier then searches articles OLDER than that many days
+  // (newest-first within that older range) instead of the newest overall —
+  // the newest are, by definition, the ones already posted.
+  evergreen_rescue_end_days?: number;
+  // Internal, never set in the registry: while a gap-guarded page is due, the
+  // pool may hold this many candidates (normally 20), with the page's own
+  // throwback items placed ahead of web/social search results.
+  rescue_candidate_cap?: number;
   // Fixed, page-level hashtag set (e.g. ["#GoBucks", "#BuckeyeNation"]) —
   // appended on every post ALONGSIDE the existing per-story dynamic hashtag
   // from buildTopicHashtag, never replacing it. Confirmed live (2026-08-24):

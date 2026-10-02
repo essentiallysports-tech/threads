@@ -530,10 +530,18 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // line means "most recent" now means the freshest article that can
   // actually PASS the gate, reaching into the real archive instead of
   // skimming only the newest name-drops off the top.
+  // (2026-10-02, gap guard) see ThreadsConfig.evergreen_rescue_end_days — a
+  // due page's rescue search skips past the newest (already posted) slice,
+  // the same shape as the retrospective-page fix above. Confirmed live on
+  // the first run: Alex Eala's 15 newest were all inside its normal window
+  // and already posted, so the rescue pool came back with 0 items.
+  const rescueEndDays = page.threads?.evergreen_rescue_end_days;
   const dateEnd = isRetrospectiveOnlyPage(page)
     ? new Date(new Date(`${dateISO}T00:00:00Z`).getTime() - RETROSPECTIVE_MAX_AGE_DAYS * 24 * 3600 * 1000)
         .toISOString()
         .slice(0, 10)
+    : rescueEndDays
+    ? new Date(new Date(`${dateISO}T00:00:00Z`).getTime() - rescueEndDays * 24 * 3600 * 1000).toISOString().slice(0, 10)
     : dateISO;
   // ⛔ OPERATOR FIX (2026-08-23, real live incident): this was the only one
   // of the three ES-article tiers still capped to the first 5 entities —
@@ -1342,5 +1350,15 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     console.error(`sourceCandidatePoolForPage: ${page.page_id} skipped ${renderable.length - claimable.length} candidates another page already claimed`);
   }
 
+  // (2026-10-02, gap guard) a due page's own throwback items (rescue) go ahead
+  // of web/social search results, and the pool may be larger — confirmed
+  // live on Kings Court Chronicles: 20 off-topic search results filled the
+  // pool before any of its rescue items were reached.
+  const rescueCap = page.threads?.rescue_candidate_cap;
+  if (rescueCap) {
+    const isSearch = (c: Candidate) => c.source === "web_search" || c.source === "social_search";
+    const ordered = [...claimable.filter((c) => !isSearch(c)), ...claimable.filter(isSearch)];
+    return ordered.slice(0, rescueCap);
+  }
   return claimable.slice(0, MAX_CANDIDATES_PER_PAGE);
 }
