@@ -1,0 +1,8 @@
+{
+  "why": "Operator target 2026-10-03: 150k autopost clicks Sep 7 - Oct 8 (102k on Oct 3, ~8.7k/day needed vs ~3.85k/day over the last 7 days). Raises daily_budget_max on the pages whose posts convert: Alex Eala Fan Club 8 -> 12 (854 GA4 autopost sessions/post over the last 7 days; throwbacks now give it 20+ postable candidates), Dallas Cowboys Community 12 -> 16 (39/post, at cap 2 of 7 days), Kings Court Chronicles 12 -> 16 (now the LeBron page; the team's manual LeBron posts drew 3,080 sessions on Oct 2). AI cap stays $10: low-yield pages hold after 3 posts/day during the sprint (threads#64). Revert = set them back after Oct 8 if wanted.",
+  "pages": {
+    "p78": { "setThreads": { "daily_budget_max": 12 } },
+    "p41": { "setThreads": { "daily_budget_max": 16 } },
+    "p51": { "setThreads": { "daily_budget_max": 16 } }
+  }
+}

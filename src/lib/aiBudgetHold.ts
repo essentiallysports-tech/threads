@@ -21,6 +21,18 @@ import { isGapDue, hoursSinceLastPost } from "./checks";
 
 const PRIORITY_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_PRIORITY_RESERVE_FRACTION || 0.7);
 const MIN_POSTS_BEFORE_HOLD = 3;
+
+// ⛔ OPERATOR DECISION (2026-10-03): a 150k-click target for Sep 7 - Oct 8 (102k
+// on Oct 3), with the daily AI cap kept at $10. The top pages earn the clicks
+// (GA4 autopost sessions per post, last 7 days: Eala 854, Detroit 75, Dallas 39,
+// Golf 33, Daytona 19; every other page under 8, most under 3), so until the
+// sprint ends a page without threads.ai_priority holds after its 3rd post of
+// the day from the START of the day, not only once 70% of the budget is gone —
+// the AI budget goes to the pages that convert. Ends on its own at SPRINT_END.
+export const SPRINT_END_MS = Date.parse("2026-10-09T00:00:00Z");
+export function clickSprintActive(nowMs = Date.now()): boolean {
+  return nowMs < SPRINT_END_MS;
+}
 // (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) part of
 // the day's budget is kept for gap-guarded pages that are due, so the "never
 // 6h without a post" guarantee doesn't run out of AI late in the day. The
@@ -51,8 +63,10 @@ export async function aiBudgetHoldReason(page: PageConfig, postedLog: PostedLogE
     const priorityMayPost = !!page.threads?.ai_priority && hoursSinceLastPost(postedLog, nowMs) >= PRIORITY_RESERVE_MIN_GAP_HOURS;
     if (!priorityMayPost) return "AI_BUDGET_RESERVED_FOR_DUE_PAGES";
   }
-  if (used < PRIORITY_RESERVE_FRACTION || page.threads?.ai_priority) return null;
+  if (page.threads?.ai_priority) return null;
+  if (used < PRIORITY_RESERVE_FRACTION && !clickSprintActive(nowMs)) return null;
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today)).length;
-  return postedToday >= MIN_POSTS_BEFORE_HOLD ? "AI_BUDGET_RESERVED_FOR_PRIORITY_PAGES" : null;
+  if (postedToday < MIN_POSTS_BEFORE_HOLD) return null;
+  return used < PRIORITY_RESERVE_FRACTION ? "CLICK_SPRINT_BUDGET_FOR_TOP_PAGES" : "AI_BUDGET_RESERVED_FOR_PRIORITY_PAGES";
 }
