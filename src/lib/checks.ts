@@ -1910,6 +1910,19 @@ export function leadsWithExcludedSubject(candidate: Candidate, page: PageConfig)
   return !Number.isFinite(firstOwn) || firstExcluded < firstOwn;
 }
 
+// (2026-10-03, throwbacks) an old article only works as a throwback when it's a
+// moment, a feud, a quote or a milestone — the 21-120-day posts that earned
+// clicks were match drama and fighter stories. Time-bound news (an injury
+// update, a roster cut, a contract, a trade rumour, a "Week 1" preview) is
+// just stale news with a retro card on it — the same class the team flagged
+// on 2026-09-24 ("months old articles being pushed").
+const TIME_BOUND_NEWS_RE =
+  /\b(injur(y|ed|ies)|ruled out|questionable|doubtful|day-to-day|status update|cuts?|waive[sd]?|released|sign(s|ed|ing)?|re-signs?|contract|extension|trade[sd]?|rumou?rs?|reportedly|ahead of|this week|tonight|tomorrow|week \d+|preseason|training camp|53-man|roster|depth chart|odds|prediction|preview|schedule|tickets?|how to watch|start time|lineup|draft pick)\b/i;
+
+export function isTimeBoundNews(candidate: Candidate): boolean {
+  return TIME_BOUND_NEWS_RE.test(candidate.headline || "");
+}
+
 export async function personalLifeContentCheck(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
   // The fan-page hero check rides along here so it adds no new workflow step
   // (replay-safe): checkPersonalLifeContent is already called for every
@@ -2693,6 +2706,9 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   }
   if (leadsWithExcludedSubject(candidate, page)) {
     return { pass: false, reason: "EXCLUDED_SUBJECT" };
+  }
+  if (candidate.rescue && isTimeBoundNews(candidate)) {
+    return { pass: false, reason: "STALE_NEWS_AS_THROWBACK" };
   }
   const fixedSlot = checkFixedSportSlot(candidate, page, postedLog);
   if (!fixedSlot.pass) {

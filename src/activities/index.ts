@@ -34,6 +34,7 @@ import {
   isGapDue,
   hoursSinceLastPost,
   photoSearchName,
+  isRetrospectiveOnlyPage,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -284,16 +285,21 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
   // old). Anything older than the page's normal window is marked `rescue`
   // so the caption and card frame it as a throwback, not as news. Every
   // relevance/accuracy gate still applies to these candidates.
-  if (!isGapDue(page, postedLog)) return sourceCandidatePoolForPage(page, dateISO, postedLog);
+  // (2026-10-03, operator decision) and every gap-guarded (top-10) page keeps a
+  // throwback slot open all day, not only when it's overdue — see
+  // throwbackSlotOpen below.
+  const due = isGapDue(page, postedLog);
+  const throwback = !due && throwbackSlotOpen(page, postedLog);
+  if (!due && !throwback) return sourceCandidatePoolForPage(page, dateISO, postedLog);
   const normalDays = page.threads?.evergreen_max_age_days ?? 21;
-  // isGapDue is only true when page.threads.min_post_gap_hours is set, so threads exists here.
+  // isGapDue/throwbackSlotOpen are only true when page.threads.min_post_gap_hours is set, so threads exists here.
   const widened: PageConfig = {
     ...page,
     threads: {
       ...page.threads!,
       evergreen_max_age_days: Math.max(normalDays, GAP_RESCUE_EVERGREEN_DAYS),
       evergreen_rescue_end_days: normalDays,
-      rescue_candidate_cap: 40,
+      rescue_candidate_cap: due ? 40 : 30,
     },
   };
   const pool = await sourceCandidatePoolForPage(widened, dateISO, postedLog);
@@ -305,11 +311,33 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
       rescued++;
     }
   }
-  console.error(`sourceCandidatePool: ${page.page_id} gap-guard due (${hoursSinceLastPost(postedLog).toFixed(1)}h since last post) — ${pool.length} candidates, ${rescued} older throwback items`);
+  const mode = due ? `gap-guard due (${hoursSinceLastPost(postedLog).toFixed(1)}h since last post)` : "throwback slot open";
+  console.error(`sourceCandidatePool: ${page.page_id} ${mode} — ${pool.length} candidates, ${rescued} older throwback items`);
   return pool;
 }
 
 const GAP_RESCUE_EVERGREEN_DAYS = 120;
+
+// ⛔ OPERATOR DECISION (2026-10-03): "getting clicks on old ES articles is also
+// getting clicks, if we present throwback articles as good retro/throwback
+// content." Measured over Sep 19 - Oct 3: pipeline posts of ES articles 21-120
+// days old earned 19.2 GA4 sessions per post, level with fresh news (20.4) and
+// far above 2-21-day-old news (2.8-4.7); 120+ days did poorly (1.3). But the
+// throwback pool only opened when a top page was already overdue, so the whole
+// fleet posted 39 in 14 days. Every gap-guarded (top-10) page now keeps it open
+// all day, up to about 1 in THROWBACK_SHARE of its posts today. Throwbacks are
+// framed as such (retro card and caption tone, via Candidate.rescue) and still
+// go through every relevance/accuracy/photo gate; fresh news still ranks ahead
+// of them in the pool. A post counts as a throwback when it used the retro card.
+const THROWBACK_SHARE = 3;
+
+function throwbackSlotOpen(page: PageConfig, postedLog: PostedLogEntry[]): boolean {
+  if (!page.threads?.min_post_gap_hours || isRetrospectiveOnlyPage(page)) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today));
+  const throwbacksToday = postedToday.filter((e) => e.template === "retro").length;
+  return throwbacksToday < Math.max(1, Math.floor((postedToday.length + 1) / THROWBACK_SHARE));
+}
 
 export interface CheckedCandidate {
   candidate: Candidate;

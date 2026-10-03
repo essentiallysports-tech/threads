@@ -13,7 +13,7 @@ import {
   RETROSPECTIVE_MAX_AGE_DAYS,
 } from "./checks";
 import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
-import { queryRecentArticles, queryArticlesByEntity, EsArticleResult } from "./esDirect";
+import { queryRecentArticles, queryArticlesByEntity, queryArticlesByCategory, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
 import { getPostContent } from "./beehiiv";
 import { isDailyBudgetExceeded } from "./aiGatewayBudget";
@@ -563,13 +563,25 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // regardless of how deep the real archive underneath is, identical in
   // shape to the retrospective-page fix just above. Raised to 15 for real
   // headroom against normal exhaustion; still bounded, still 2-at-a-time.
-  const EVERGREEN_ARTICLES_PER_ENTITY = 15;
-  const perEntity = await mapWithConcurrency(entityNames, 2, (name) =>
-    queryArticlesByEntity(name, dateStart, dateEnd, EVERGREEN_ARTICLES_PER_ENTITY).catch((e) => {
+  // (2026-10-03, throwbacks) when the search is reaching past the page's normal
+  // window (a top page's throwback slot or gap-guard rescue — see
+  // sourceCandidatePool in activities/index.ts), it goes deeper: 50 per entity
+  // instead of 15, and a team entity's ES CATEGORY as well as its tag (ES files
+  // team coverage under categories — see queryArticlesByCategory).
+  const throwbackSearch = !!rescueEndDays && !isRetrospectiveOnlyPage(page);
+  const EVERGREEN_ARTICLES_PER_ENTITY = throwbackSearch ? 50 : 15;
+  const perEntity = await mapWithConcurrency(entityNames, 2, async (name) => {
+    const byTag = await queryArticlesByEntity(name, dateStart, dateEnd, EVERGREEN_ARTICLES_PER_ENTITY).catch((e) => {
       console.error(`sourceFromEsEvergreenArticles: queryArticlesByEntity failed for ${page.page_id} entity="${name}": ${(e as Error).message}`);
-      return [];
-    })
-  );
+      return [] as EsArticleResult[];
+    });
+    if (!throwbackSearch) return byTag;
+    const byCategory = await queryArticlesByCategory(name, dateStart, dateEnd, EVERGREEN_ARTICLES_PER_ENTITY).catch((e) => {
+      console.error(`sourceFromEsEvergreenArticles: queryArticlesByCategory failed for ${page.page_id} entity="${name}": ${(e as Error).message}`);
+      return [] as EsArticleResult[];
+    });
+    return [...byTag, ...byCategory];
+  });
   const seen = new Set<string>();
   // ⛔ OPERATOR FIX (2026-09-24, real live incident): on a news page this
   // tier resurfaced dated NEWS as if it were current — College Football
