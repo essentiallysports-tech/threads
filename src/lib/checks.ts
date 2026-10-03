@@ -689,9 +689,18 @@ export function surnameNamesSomeoneElse(
 // is searched as the registered full name ("Keegan Murray") — a surname-only
 // photo search is what found Bill Murray (see the 2026-10-02 comment above).
 // Every other matched name (a full name, a team keyword) is unchanged.
+// (2026-10-03) the same goes for a bare first-name keyword ("lebron" ->
+// "LeBron James", "bronny" -> "Bronny James"): one name token of a person's
+// slot is searched as their full name. Team slots are left as they are.
 export function photoSearchName(name: string, page: PageConfig): string {
-  const entity = page.entities.find((e) => isBareSurnameKeyword(e.name, name, e.is_team_identity));
-  return entity ? entity.name : name;
+  const kw = name.trim().toLowerCase();
+  const entity = page.entities.find((e) => {
+    if (isBareSurnameKeyword(e.name, name, e.is_team_identity)) return true;
+    if (e.is_team_identity || /\s/.test(kw)) return false;
+    const tokens = e.name.trim().toLowerCase().split(/\s+/).filter((t) => !/^(jr|sr|ii|iii|iv)\.?$/.test(t));
+    return tokens.length >= 2 && tokens[0] === kw;
+  });
+  return entity ? entity.name.trim() : name;
 }
 
 // ⛔ OPERATOR FIX (2026-08-10, real live incidents): an Islam Makhachev post
@@ -1842,7 +1851,71 @@ export interface PersonalLifeCheckResult {
 // only, not a general content-quality rule. Every other page's existing
 // content mix (which can legitimately include a player's family/personal
 // moments as human-interest sports coverage) is unaffected.
+// ⛔ PAGE-OWNER FEEDBACK (2026-10-03): Kings Court Chronicles is a LeBron James
+// fan page ("the ultimate home for the King"). Its owner flagged a story
+// framed as a shot at LeBron ("It's very sad" — Wembanyama refusing to follow
+// LeBron's lead on sportsbook deals): "this is against LeBron, posting it on
+// his fan page wouldn't be wise" — it belongs on the ES NBA Newsroom, which
+// carries LeBron as one of many entities and still gets the story. Opt-in per
+// page (threads.protect_flagship). Only stories that name the page's hero (its
+// highest-weight entity) are judged; anything else passes free. Fails open
+// like the personal-life check: this is about tone, not accuracy.
+export function pageHero(page: PageConfig): { name: string; keywords: string[] } | null {
+  if (!page.threads?.protect_flagship || page.entities.length === 0) return null;
+  const hero = [...page.entities].sort((a, b) => b.weight - a.weight)[0];
+  return { name: hero.name.trim(), keywords: hero.keywords.length > 0 ? hero.keywords : [hero.name] };
+}
+
+export async function flagshipStanceCheck(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
+  const hero = pageHero(page);
+  if (!hero) return { pass: true, reason: null };
+  const text = `${candidate.headline} ${candidate.rawText || ""}`.toLowerCase();
+  if (!hero.keywords.some((k) => k.length > 2 && text.includes(k.toLowerCase()))) return { pass: true, reason: null };
+  if (!checksAiCaller) return { pass: true, reason: null };
+  const prompt = [
+    `This post would go on a Threads fan page devoted to ${hero.name}. Its followers are ${hero.name}'s fans.`,
+    `Story headline: "${candidate.headline}"`,
+    candidate.rawText && candidate.rawText !== candidate.headline ? `Story text: "${candidate.rawText.slice(0, 800)}"` : "",
+    `Would ${hero.name}'s fans read this story as a shot at, criticism of, or a negative take on ${hero.name}? That includes someone calling him/her out, mocking or doubting him/her, a rival or analyst taking a dig, someone pointedly refusing to follow his/her lead or contrasting themselves favourably against him/her, or a controversy framed with ${hero.name} at fault.`,
+    `It does NOT include stories that celebrate, defend or neutrally report on ${hero.name} — a story where someone defends ${hero.name} against critics is fine, and so is ordinary news (a trade, a game, a record, a family moment).`,
+    `Output ONLY a JSON object: {"critical_of_hero": true} or {"critical_of_hero": false}. No markdown, no explanation.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  try {
+    const content = await checksAiCaller(prompt, { tag: "hero_stance", maxTokens: 40, temperature: 0, timeoutMs: 20_000 });
+    const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, ""));
+    return parsed?.critical_of_hero === true ? { pass: false, reason: "CRITICAL_OF_PAGE_HERO" } : { pass: true, reason: null };
+  } catch (e) {
+    console.error(`flagshipStanceCheck: failed, letting the story through: ${(e as Error).message}`);
+    return { pass: true, reason: null };
+  }
+}
+
+// ⛔ PAGE-OWNER FEEDBACK (2026-10-03): the Lakers page kept posting LeBron James
+// stories after his move to the 76ers ("he doesn't play in Lakers anymore").
+// threads.exclude_subjects lists people a page no longer covers; a headline
+// that LEADS with one of them — before any of the page's own registered names
+// — is someone else's story. A passing mention after the page's own subject
+// ("Rob Pelinka looks back on the LeBron era" on a page that registers
+// Pelinka) still passes.
+export function leadsWithExcludedSubject(candidate: Candidate, page: PageConfig): boolean {
+  const excluded = page.threads?.exclude_subjects || [];
+  if (excluded.length === 0) return false;
+  const headline = (candidate.headline || "").toLowerCase();
+  const firstExcluded = Math.min(...excluded.map((n) => keywordIndex(headline, n, true)).filter((i) => i >= 0));
+  if (!Number.isFinite(firstExcluded)) return false;
+  const own = page.entities.flatMap((e) => (e.keywords.length > 0 ? e.keywords : [e.name]));
+  const firstOwn = Math.min(...own.map((k) => keywordIndex(headline, k.trim(), true)).filter((i) => i >= 0));
+  return !Number.isFinite(firstOwn) || firstExcluded < firstOwn;
+}
+
 export async function personalLifeContentCheck(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
+  // The fan-page hero check rides along here so it adds no new workflow step
+  // (replay-safe): checkPersonalLifeContent is already called for every
+  // candidate, after the free gates and before the caption/render spend.
+  const stance = await flagshipStanceCheck(candidate, page);
+  if (!stance.pass) return stance;
   if (page.page_id !== "p44") return { pass: true, reason: null };
   const result = await isPersonalLifeContentViaAI(candidate.headline, candidate.rawText || "");
   if (result.personalLife) return { pass: false, reason: "PERSONAL_LIFE_CONTENT", costUsd: result.costUsd };
@@ -2617,6 +2690,9 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   }
   if (requiresNamedEntity(candidate, page, matchedEntityNames(candidate, page))) {
     return { pass: false, reason: "NO_NAMED_ENTITY" };
+  }
+  if (leadsWithExcludedSubject(candidate, page)) {
+    return { pass: false, reason: "EXCLUDED_SUBJECT" };
   }
   const fixedSlot = checkFixedSportSlot(candidate, page, postedLog);
   if (!fixedSlot.pass) {

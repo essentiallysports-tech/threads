@@ -1,0 +1,22 @@
+{
+  "why": "Page-owner feedback 2026-10-03 (Shalini, owner of @kingscourtchronicles): the account is a LeBron James fan page — bio 'Welcome to the ultimate home for the King', topics LeBron James / NBA / Lakers, and every SocialPilot post by the social team through Sep 26 was LeBron content (#LebronJames). The registry had it as a Sacramento Kings page (Sabonis/LaVine/DeRozan/Murray/Hunter/Monk), so the pipeline posted Kings and Nuggets stories there (23-122 views each; the Jamal Murray / Bill Murray card) while ES published ~0 Kings articles. All of the account's GA4 sessions (Sep 20 - Oct 3, utm_medium=kingscourt: 3,080 on Oct 2, 1,473 by 10:40 UTC Oct 3) landed on LeBron articles. ES has 19,173 LeBron-tagged articles, ~3 new a day. protect_flagship keeps stories that take a shot at LeBron off his fan page (they go to the ES NBA Newsroom, p53). Revert = restore p51 from registry-backups/.",
+  "pages": {
+    "p51": {
+      "addEntities": [
+        { "name": "LeBron James", "keywords": ["lebron james", "lebron", "king james"], "weight": 80 },
+        { "name": "Bronny James", "keywords": ["bronny james", "bronny"], "weight": 20 }
+      ],
+      "removeEntities": ["Domantas Sabonis", "Zach LaVine", "DeMar DeRozan", "Keegan Murray", "De'Andre Hunter", "Malik Monk"],
+      "set": {
+        "page_type": "entity",
+        "page_theme": "The ultimate home for the King: a LeBron James fan page — LeBron's career, his Philadelphia 76ers chapter, records, milestones and legacy, plus Bronny and the James family. Celebratory, pro-LeBron voice. Stories that criticise or take shots at LeBron belong on the ES NBA Newsroom, not here.",
+        "entity_name": "LeBron James",
+        "entity_keywords": ["lebron james", "lebron", "king james"],
+        "rival_entities": [],
+        "subreddits": ["nba"],
+        "twitter_handles": ["KingJames", "NBA"]
+      },
+      "setThreads": { "protect_flagship": true }
+    }
+  }
+}
