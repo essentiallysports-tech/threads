@@ -49,7 +49,7 @@ import { RenderSpec } from "../lib/renderSpec";
 import { verifyCardText, verifyPhotoSubject, verifyGenericPhotoSubject } from "../lib/cardTextQC";
 import { truncateAtWordBoundary } from "../lib/headlineTruncation";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "../lib/aiGatewayBudget";
-import { aiBudgetHoldReason } from "../lib/aiBudgetHold";
+import { aiBudgetHoldReason, clickSprintActive } from "../lib/aiBudgetHold";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
 import { callModel } from "../lib/aiClient";
 
@@ -330,13 +330,18 @@ const GAP_RESCUE_EVERGREEN_DAYS = 120;
 // go through every relevance/accuracy/photo gate; fresh news still ranks ahead
 // of them in the pool. A post counts as a throwback when it used the retro card.
 const THROWBACK_SHARE = 3;
+// During the Oct 8 click sprint (see aiBudgetHold.ts's clickSprintActive) up to
+// half of a top page's posts may be throwbacks, so pages short on fresh news
+// (Eala, Detroit) keep posting at their caps.
+const SPRINT_THROWBACK_SHARE = 2;
 
 function throwbackSlotOpen(page: PageConfig, postedLog: PostedLogEntry[]): boolean {
   if (!page.threads?.min_post_gap_hours || isRetrospectiveOnlyPage(page)) return false;
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today));
   const throwbacksToday = postedToday.filter((e) => e.template === "retro").length;
-  return throwbacksToday < Math.max(1, Math.floor((postedToday.length + 1) / THROWBACK_SHARE));
+  const share = clickSprintActive() ? SPRINT_THROWBACK_SHARE : THROWBACK_SHARE;
+  return throwbacksToday < Math.max(1, Math.floor((postedToday.length + 1) / share));
 }
 
 export interface CheckedCandidate {
