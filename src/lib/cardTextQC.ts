@@ -24,6 +24,7 @@
 
 import { isDailyBudgetExceeded } from "./aiGatewayBudget";
 import { callModel, aiConfigured } from "./aiClient";
+import { firstNamesCompatible } from "./checks";
 
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
 // Haiku switch was never validated against production output before
@@ -145,6 +146,26 @@ function surnameOf(name: string): string {
   return parts[parts.length - 1] || name.toLowerCase();
 }
 
+// (2026-10-02, real live incident) the surname alone isn't enough: Kings
+// Court Chronicles shipped a card of the actor Bill Murray for a "Murray"
+// story, and "Bill Murray" contains "murray". When both the caption's name
+// and the subject carry a first name, those must agree too (Alex/Alexandra,
+// Mike/Michael and initials pass; Bill/Keegan doesn't).
+function nameParts(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z\s.'-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !/^(jr|sr|ii|iii|iv)\.?$/.test(t));
+}
+function captionNameIsSubject(captionName: string, subjectName: string): boolean {
+  if (!captionName.toLowerCase().includes(surnameOf(subjectName))) return false;
+  const c = nameParts(captionName);
+  const s = nameParts(subjectName);
+  if (c.length < 2 || s.length < 2) return true; // one side is a bare surname — nothing more to compare
+  return firstNamesCompatible(c[0], s[0]);
+}
+
 interface PhotoSubjectFacts {
   subject_is_team?: boolean;
   people_in_focus?: number;
@@ -162,8 +183,7 @@ export function decidePhotoSubject(facts: PhotoSubjectFacts, subjectName: string
   const people = typeof facts.people_in_focus === "number" ? facts.people_in_focus : NaN;
   if (people !== 1) return { pass: false, reason: `${Number.isNaN(people) ? "unknown" : people} people in focus — a one-person card needs one` };
   const named = (facts.caption_names_pictured || []).filter((n) => typeof n === "string" && n.trim());
-  const surname = surnameOf(subjectName);
-  if (hasCaption && named.length > 0 && !named[0].toLowerCase().includes(surname)) return { pass: false, reason: `caption names ${named[0]} as pictured first` };
+  if (hasCaption && named.length > 0 && !captionNameIsSubject(named[0], subjectName)) return { pass: false, reason: `caption names ${named[0]} as pictured first` };
   if (hasCaption && named.length > 0) return { pass: true, reason: "caption names the subject first" };
   if (facts.depicts_subject === "yes") return { pass: true, reason: hasCaption ? "caption names no one; photo depicts the subject" : "no caption; photo depicts the subject" };
   return { pass: false, reason: "can't confirm it's the subject" };

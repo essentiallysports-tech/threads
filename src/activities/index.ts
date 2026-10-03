@@ -33,6 +33,7 @@ import {
   setChecksAiCaller,
   isGapDue,
   hoursSinceLastPost,
+  photoSearchName,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -934,8 +935,8 @@ async function renderCardInner(
 
   if ((template === "comparison" || template === "quote") && headlineNames.length >= 2) {
     const [subjectPhoto, speakerPhoto] = await Promise.all([
-      searchAndPick(headlineNames[0], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[0], page)),
-      searchAndPick(headlineNames[1], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[1], page)),
+      searchAndPick(photoSearchName(headlineNames[0], page), recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[0], page)),
+      searchAndPick(photoSearchName(headlineNames[1], page), recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(headlineNames[1], page)),
     ]);
     if (subjectPhoto && speakerPhoto) {
       // ⛔ OPERATOR FIX (2026-08-08, real live incident): quote_text used to
@@ -1008,7 +1009,7 @@ async function renderCardInner(
   // was never a real subject to search for.
   const photo =
     searchTerms.length > 0
-      ? await searchAndPick(searchTerms[0], recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(searchTerms[0], page))
+      ? await searchAndPick(photoSearchName(searchTerms[0], page), recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(searchTerms[0], page))
       : null;
   if (searchTerms.length > 0 && !photo) return { cardUrl: null, template: null, resolvedEntity: null }; // no real photo found for this candidate — never fabricate one
 

@@ -586,6 +586,114 @@ function keywordIndex(haystack: string, keyword: string, wholeWord = false): num
   return m ? m.index : -1;
 }
 
+// ⛔ OPERATOR FIX (2026-10-02, real live incident, team-reported class): a
+// bare-surname keyword ("murray" on Keegan Murray's slot) matches every
+// other person with that surname. Kings Court Chronicles posted "Jamal
+// Murray Reacts to Teammate's Stunning Transformation" — a Denver Nuggets
+// story — as Keegan Murray content, and the photo search for "murray" then
+// put the actor Bill Murray (courtside at a Kings game) on the card. A
+// surname hit belongs to someone else when the text names a DIFFERENT person
+// with that surname ("Jamal Murray") and never the registered full name —
+// the bare "Murray" mentions later in such an article are that other person
+// too. A bare or role-prefixed mention alone ("Kings Forward Murray") still
+// counts, as before.
+const NICKNAMES: Record<string, string[]> = {
+  michael: ["mike", "mikey"], william: ["bill", "billy", "will", "willie"], robert: ["bob", "bobby", "rob", "robbie"],
+  james: ["jim", "jimmy", "jamie"], joseph: ["joe", "joey"], anthony: ["tony"], thomas: ["tom", "tommy"],
+  richard: ["rick", "ricky", "dick", "rich"], david: ["dave"], steven: ["steve"], stephen: ["steph", "steve"],
+  edward: ["ed", "eddie", "ted"], charles: ["charlie", "chuck"], john: ["johnny", "jack"], alexandra: ["sasha"],
+  katherine: ["kate", "katie"], elizabeth: ["liz", "beth"], daniel: ["danny"], nicholas: ["nick"], kenneth: ["ken", "kenny"],
+};
+export function firstNamesCompatible(a: string, b: string): boolean {
+  const x = a.toLowerCase().replace(/[^a-z]/g, "");
+  const y = b.toLowerCase().replace(/[^a-z]/g, "");
+  if (!x || !y) return false;
+  if (x.length === 1 || y.length === 1) return x[0] === y[0]; // an initial ("K. Murray")
+  if (x.startsWith(y) || y.startsWith(x)) return true; // Alex/Alexandra, Zach/Zachary, Dom/Domantas
+  return (NICKNAMES[x] || []).includes(y) || (NICKNAMES[y] || []).includes(x);
+}
+
+// Capitalized words that open a headline clause in front of a surname
+// without being a first name ("Why Murray...", "Watch: ...", "Compare Jokic").
+const NOT_A_FIRST_NAME = new Set(
+  (
+    "the a an and as at after before by for from in into of on over to vs versus with without why how what when where who " +
+    "while if but or not than then is was are were has have had will can could would should may might must does did do " +
+    "star superstar guard forward center centre wing coach rookie veteran teammate teammates legend captain champion champ mvp ace big " +
+    "man qb quarterback receiver pitcher slugger driver fighter boxer golfer player pro former ex new young old sophomore phenom icon " +
+    "great hall famer hofer winger defenseman goalie keeper striker midfielder manager owner gm president insider analyst reporter " +
+    "watch video photos inside meet compare exclusive breaking report reports ranking ranked top best worst every all look see check " +
+    "remember revisiting behind beyond about against even only just still now today tonight yesterday sources source " +
+    "monday tuesday wednesday thursday friday saturday sunday week weekend game season"
+  ).split(/\s+/)
+);
+
+// A slot for a person, keyed by their bare surname ("Keegan Murray" ->
+// "murray"). Team slots are left alone — "Dallas Cowboys" -> "cowboys" is a
+// team nickname, preceded by all sorts of words in headlines. Every team slot
+// in the registry today ends in a plural nickname, and so does the one person
+// surname (Ty Gibbs) — leaving that one on the old behaviour costs nothing.
+function isBareSurnameKeyword(entityName: string, keyword: string, isTeamIdentity = false): boolean {
+  if (isTeamIdentity) return false;
+  const tokens = entityName.trim().split(/\s+/).filter((t) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(t));
+  if (tokens.length < 2 || /\s/.test(keyword.trim())) return false;
+  const last = tokens[tokens.length - 1].toLowerCase().replace(/[^a-z'-]/g, "");
+  return last === keyword.trim().toLowerCase() && !last.endsWith("s");
+}
+
+// True when `text` names a different person with this entity's surname and
+// never the entity itself — see the 2026-10-02 comment above. Headlines are
+// Title Case, so a capitalized word before the surname only counts as a
+// different FIRST NAME where a name would start a clause: the start of a
+// line, after ":" / quotes / "and" / "&", or after another team's possessive
+// ("Nuggets' Jamal Murray"). A possessive label right before the surname is
+// someone else's player unless it's this page's own ("Kings' Murray").
+export function surnameNamesSomeoneElse(
+  text: string,
+  entityName: string,
+  keyword: string,
+  contextWords: string[] = [],
+  isTeamIdentity = false
+): boolean {
+  if (!isBareSurnameKeyword(entityName, keyword, isTeamIdentity)) return false;
+  if (text.toLowerCase().includes(entityName.trim().toLowerCase())) return false;
+  const firstName = entityName.trim().split(/\s+/)[0];
+  const context = new Set(contextWords.flatMap((w) => w.toLowerCase().split(/\s+/)));
+  const surname = keyword.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![A-Za-z0-9])${surname}(?![a-z0-9])`, "gi");
+  const POSSESSIVE = /['’]s?$/i;
+  const CLAUSE_START = /(^|[:“”"(\[—–|;!?&]|\band|['’]s?)[ \t]*$/i;
+  let otherPerson = false;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const before = text.slice(Math.max(0, m.index - 80), m.index);
+    const lineStart = before.lastIndexOf("\n") + 1;
+    const line = before.slice(lineStart);
+    const prev = /([A-Za-z][A-Za-z.'’-]*)[ \t]+$/.exec(line);
+    if (!prev) continue; // starts its clause — a bare "Murray", could be ours
+    const raw = prev[1];
+    if (/[.]$/.test(raw) && raw.replace(/[^A-Za-z]/g, "").length > 2) continue; // ends a sentence
+    const word = raw.replace(POSSESSIVE, "").replace(/\.$/, "");
+    const w = word.toLowerCase();
+    if (!/^[A-Z]/.test(word) || NOT_A_FIRST_NAME.has(w) || context.has(w)) continue;
+    if (POSSESSIVE.test(raw) && raw.length > word.length) {
+      otherPerson = true; // "Nuggets' Murray"
+      continue;
+    }
+    if (firstNamesCompatible(w, firstName)) return false; // the entity itself ("K. Murray")
+    if (CLAUSE_START.test(line.slice(0, prev.index))) otherPerson = true; // "...: Jamal Murray", "Jamal Murray ..."
+  }
+  return otherPerson;
+}
+
+// The name to search photos for. A matched bare-surname keyword ("murray")
+// is searched as the registered full name ("Keegan Murray") — a surname-only
+// photo search is what found Bill Murray (see the 2026-10-02 comment above).
+// Every other matched name (a full name, a team keyword) is unchanged.
+export function photoSearchName(name: string, page: PageConfig): string {
+  const entity = page.entities.find((e) => isBareSurnameKeyword(e.name, name, e.is_team_identity));
+  return entity ? entity.name : name;
+}
+
 // ⛔ OPERATOR FIX (2026-08-10, real live incidents): an Islam Makhachev post
 // (headline: "...watching Ilia Topuria and Khamzat Chimaev both suffer
 // shocking losses" — no mention of Khabib anywhere) rendered a VS card
@@ -610,6 +718,8 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
   const includeRawText = opts.includeRawText ?? true;
   const orderingHaystack = `${candidate.headline} ${candidate.subject}`.toLowerCase();
   const haystack = `${candidate.subject} ${candidate.headline} ${includeRawText ? candidate.rawText || "" : ""}`.toLowerCase();
+  const textLines = [candidate.subject, candidate.headline, includeRawText ? candidate.rawText || "" : ""].join("\n");
+  const contextWords = [...page.entities.flatMap((e) => e.keywords), ...(page.sport_groups || [])];
   const matched: string[] = [];
   const wholeWordNames = new Set<string>();
   // ⛔ OPERATOR FIX (2026-09-29): see EntitySlot.is_team_identity's own
@@ -633,7 +743,12 @@ export function realRegisteredEntityMatches(candidate: Candidate, page: PageConf
       // card. isCategoryPlaceholder (renderSpec.ts) already exists to
       // reject exactly this class of generic label; a page's own
       // registered keywords are not exempt from it.
-      if (name.length > 2 && !isCategoryPlaceholder(name) && keywordIndex(haystack, name, e.whole_word) !== -1) {
+      if (
+        name.length > 2 &&
+        !isCategoryPlaceholder(name) &&
+        keywordIndex(haystack, name, e.whole_word) !== -1 &&
+        !surnameNamesSomeoneElse(textLines, e.name, name, contextWords, e.is_team_identity)
+      ) {
         matched.push(name);
         if (e.whole_word) wholeWordNames.add(name);
         if (e.is_team_identity) teamIdentityNames.add(name);
