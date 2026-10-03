@@ -578,6 +578,49 @@ export async function queryRecentArticles(sport: string | null, dateISO: string,
 // which is the deliberate, necessary cost of never again full-table-scanning
 // 657k posts on every call — not a bug to silently work around by falling
 // back to search=.
+// (2026-10-03, throwbacks) ES files team coverage under CATEGORIES, not tags:
+// "Detroit Lions" is a category with 2,095 articles but a tag with 23;
+// "Sacramento Kings" 1,210 vs 71. Only an EXACT category-name match counts —
+// pickBestTerm's highest-count fallback is fine for tags but would map a
+// player's name onto some loosely related category here.
+async function resolveExactCategoryId(name: string): Promise<number | null> {
+  const wanted = name.trim();
+  const cacheKey = `categories-exact:${wanted.toLowerCase()}`;
+  const hit = taxonomyIdCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < TAXONOMY_CACHE_TTL_MS) return hit.id;
+  if (circuitIsOpen()) return null;
+  try {
+    const terms = await searchWpTerms("categories", wanted);
+    const exact = terms.find((t) => t.name.trim().toLowerCase() === wanted.toLowerCase());
+    const id = exact ? exact.id : null;
+    taxonomyIdCache.set(cacheKey, { at: Date.now(), id });
+    circuitRecordSuccess();
+    return id;
+  } catch (e) {
+    circuitRecordFailure();
+    console.error(`resolveExactCategoryId: lookup failed for "${wanted}": ${(e as Error).message}`);
+    return null;
+  }
+}
+
+export async function queryArticlesByCategory(name: string, dateStart: string, dateEnd: string, limit = 20): Promise<EsArticleResult[]> {
+  const args = { kind: "category", name: name.trim(), dateStart, dateEnd, limit };
+  return cachedArticleQuery(args, async () => {
+    const categoryId = await resolveExactCategoryId(name);
+    if (categoryId === null) return [];
+    const params = new URLSearchParams({
+      _fields: FIELDS,
+      per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
+      orderby: "date",
+      order: "desc",
+      categories: String(categoryId),
+      after: `${dateStart}T00:00:00+00:00`,
+      before: `${dateEnd}T23:59:59+00:00`,
+    });
+    return toArticleResults(await fetchWpPosts(params));
+  });
+}
+
 export async function queryArticlesByEntity(entity: string, dateStart: string, dateEnd: string, limit = 20): Promise<EsArticleResult[]> {
   const args = { kind: "entity", entity, dateStart, dateEnd, limit };
   return cachedArticleQuery(args, async () => {
