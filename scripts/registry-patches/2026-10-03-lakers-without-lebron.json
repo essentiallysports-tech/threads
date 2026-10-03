@@ -1,0 +1,14 @@
+{
+  "why": "Page-owner feedback 2026-10-03: Purple & Gold Pride (Lakers page) posted a LeBron James story ('It's very sad' — LeBron on sportsbook deals, Wembanyama declining to follow him) — 'he doesn't play in Lakers anymore'. LeBron moved to the Philadelphia 76ers (ES: 'Ex-Knicks Specialist Joins LeBron James' 76ers Ahead of New Season', 2026-09-30), but the Lakers slot still carried the keywords 'lebron james'/'lebron'. Drops them, updates the theme, and lists LeBron in threads.exclude_subjects so a headline that leads with him is skipped (a Lakers story that mentions him after the page's own subject still passes). Revert = restore p37 from registry-backups/.",
+  "pages": {
+    "p37": {
+      "editEntities": [{ "name": "Los Angeles Lakers ", "removeKeywords": ["lebron james", "lebron"] }],
+      "set": {
+        "page_theme": "Lakers related entirely - team updates, backend stories and the Luka Doncic era: Luka Doncic, Austin Reaves, JJ Redick and Lakers legends. LeBron James now plays for the Philadelphia 76ers and is not covered here.",
+        "entity_keywords": ["lakers", "los angeles lakers", "luka doncic", "jj redick", "austin reaves"],
+        "twitter_handles": ["https://x.com/DanWoikeSports", "https://x.com/jovanbuha", "https://x.com/TrevorLane"]
+      },
+      "setThreads": { "exclude_subjects": ["lebron james", "lebron"] }
+    }
+  }
+}

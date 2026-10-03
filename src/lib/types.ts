@@ -110,6 +110,17 @@ export interface ThreadsConfig {
   // runDeterministicChecks) and may use the last 10% of the AI budget.
   // Relevance and accuracy gates are never relaxed. Unset = no guarantee.
   min_post_gap_hours?: number;
+  // (2026-10-03, page-owner feedback) a fan page devoted to one person (its
+  // highest-weight entity, e.g. LeBron on Kings Court Chronicles): stories
+  // that read to that person's fans as a shot at them are rejected here
+  // (CRITICAL_OF_PAGE_HERO) and left to the league newsroom page. See
+  // checks.ts's flagshipStanceCheck.
+  protect_flagship?: boolean;
+  // (2026-10-03, page-owner feedback) people this page no longer covers —
+  // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
+  // story whose headline leads with one of them is rejected
+  // (EXCLUDED_SUBJECT); a passing mention after the page's own subject is fine.
+  exclude_subjects?: string[];
   // Internal, never set in the registry: while a gap-guarded page is due,
   // sourceCandidatePool sets this to the page's normal evergreen window, and
   // the evergreen tier then searches articles OLDER than that many days
