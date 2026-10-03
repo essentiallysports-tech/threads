@@ -15,21 +15,42 @@
 //
 // A hold is NOT a render failure: nothing is recorded against the
 // candidate, so it's still in tomorrow's pool.
-import { dailyBudgetFractionUsed } from "./aiGatewayBudget";
+import { dailyBudgetFractionUsed, dailyBudgetUsd } from "./aiGatewayBudget";
 import { PageConfig, PostedLogEntry } from "./types";
-import { isGapDue } from "./checks";
+import { isGapDue, hoursSinceLastPost } from "./checks";
 
 const PRIORITY_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_PRIORITY_RESERVE_FRACTION || 0.7);
 const MIN_POSTS_BEFORE_HOLD = 3;
-// (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) the last
-// 10% of the day's budget is kept for gap-guarded pages that are due, so the
-// "never 6h without a post" guarantee doesn't run out of AI late in the day.
-const GAP_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_GAP_RESERVE_FRACTION || 0.9);
+// (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) part of
+// the day's budget is kept for gap-guarded pages that are due, so the "never
+// 6h without a post" guarantee doesn't run out of AI late in the day. The
+// reserve is sized to the hours LEFT in the UTC day, not a fixed last 10%:
+// the ten guarded pages need about one post each per 4.5h, at roughly
+// $0.10-0.15 of AI per post, so ~$0.25 an hour — a fixed $1 reached at a
+// mid-afternoon $9 (Oct 2 was at $6.84 by 12:08 UTC) can't carry them to
+// midnight. Inside the reserve, due pages post as before, priority pages
+// keep posting but at most every PRIORITY_RESERVE_MIN_GAP_HOURS (so the top
+// pages don't go quiet in the US afternoon/evening), and every other page
+// holds. Still capped at the daily budget: nothing here spends past it.
+const GAP_RESERVE_USD_PER_HOUR = Number(process.env.AI_GATEWAY_GAP_RESERVE_USD_PER_HOUR || 0.25);
+const GAP_RESERVE_MIN_FRACTION = 0.1;
+const GAP_RESERVE_MAX_FRACTION = 0.35;
+const PRIORITY_RESERVE_MIN_GAP_HOURS = 2;
 
-export async function aiBudgetHoldReason(page: PageConfig, postedLog: PostedLogEntry[]): Promise<string | null> {
+export function gapReserveFraction(nowMs = Date.now(), capUsd = dailyBudgetUsd()): number {
+  const d = new Date(nowMs);
+  const hoursLeft = 24 - (d.getUTCHours() + d.getUTCMinutes() / 60);
+  const fraction = (GAP_RESERVE_USD_PER_HOUR * hoursLeft) / capUsd;
+  return Math.min(GAP_RESERVE_MAX_FRACTION, Math.max(GAP_RESERVE_MIN_FRACTION, fraction));
+}
+
+export async function aiBudgetHoldReason(page: PageConfig, postedLog: PostedLogEntry[], nowMs = Date.now()): Promise<string | null> {
   const used = await dailyBudgetFractionUsed();
   if (used >= 1) return "AI_BUDGET_EXHAUSTED_HOLD";
-  if (used >= GAP_RESERVE_FRACTION && !isGapDue(page, postedLog)) return "AI_BUDGET_RESERVED_FOR_DUE_PAGES";
+  if (used >= 1 - gapReserveFraction(nowMs) && !isGapDue(page, postedLog, nowMs)) {
+    const priorityMayPost = !!page.threads?.ai_priority && hoursSinceLastPost(postedLog, nowMs) >= PRIORITY_RESERVE_MIN_GAP_HOURS;
+    if (!priorityMayPost) return "AI_BUDGET_RESERVED_FOR_DUE_PAGES";
+  }
   if (used < PRIORITY_RESERVE_FRACTION || page.threads?.ai_priority) return null;
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today)).length;
