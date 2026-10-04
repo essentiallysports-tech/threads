@@ -1,0 +1,10 @@
+{
+  "why": "2026-10-04: the page owner reported automated posts on @nba_circuit that 'aren't on the Threads dashboard'. They were - all 77 of the last 7 days' p53 posts went to @nba_circuit - but the dashboard labels pages from the registry, which still had the account's old handle (@nba_news_es) and name ('ES NBA Newsroom'). Audit of every page's releaseURLs found 5 stale handles. Display-only: the pipeline posts by postiz_integration_id and never reads account_handle or page_name. Revert = restore from registry-backups/.",
+  "pages": {
+    "p53": { "set": { "page_name": "NBA Circuit" }, "setThreads": { "account_handle": "nba_circuit" } },
+    "p52": { "setThreads": { "account_handle": "kobe_vault_" } },
+    "p65": { "setThreads": { "account_handle": "hendrickheroes_fanpage" } },
+    "p81": { "setThreads": { "account_handle": "hotmicsonly" } },
+    "p46": { "setThreads": { "account_handle": "vintage_nascarvault" } }
+  }
+}
