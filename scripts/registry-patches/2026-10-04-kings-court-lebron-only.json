@@ -1,0 +1,11 @@
+{
+  "why": "Page-owner feedback 2026-10-04: 'unrelated posts to lebron james are going out on Kings Court Chronicles'. Bronny James was added as a secondary entity on 2026-10-03, so Bronny-only Lakers stories (JJ Redick's message, his girlfriend's parents, the Lakers' directive) matched without LeBron. The page is LeBron-only; a Bronny story still qualifies when the headline frames it around LeBron. Revert = re-add the slot from registry-backups/.",
+  "pages": {
+    "p51": {
+      "removeEntities": ["Bronny James"],
+      "set": {
+        "page_theme": "The ultimate home for the King: a LeBron James fan page — LeBron's career, his Philadelphia 76ers chapter, records, milestones and legacy, and his family when the story is about LeBron. Every post is about LeBron himself. Celebratory, pro-LeBron voice. Stories that criticise or take shots at LeBron belong on the ES NBA Newsroom, not here."
+      }
+    }
+  }
+}

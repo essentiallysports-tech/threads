@@ -1866,6 +1866,31 @@ export function pageHero(page: PageConfig): { name: string; keywords: string[] }
   return { name: hero.name.trim(), keywords: hero.keywords.length > 0 ? hero.keywords : [hero.name] };
 }
 
+// ⛔ PAGE-OWNER FEEDBACK (2026-10-04): after Kings Court became the LeBron page,
+// "unrelated posts to lebron james are going out" — Bronny-only stories (JJ
+// Redick's message to Bronny, his girlfriend's parents, the Lakers' directive
+// to him) and roundups that list LeBron as one item of several ("LeBron's
+// Knicks Rejection, Curry Walks Off in Disbelief, Doncic Welcomes Leadership
+// Role & More"; "Horace Grant Talks LeBron James' Exit, Walker Kessler's Lakers
+// Fit, Caleb Wilson's Bulls Future"). On a protect_flagship page the hero must
+// be named in the HEADLINE (not just the article body), and a multi-story
+// roundup headline doesn't count as a story about him. flagshipStanceCheck's
+// AI call then judges whether the story is actually about him.
+const ROUNDUP_MORE_RE = /\b(?:&|and)\s+more\b/i;
+export function isRoundupHeadline(headline: string): boolean {
+  const unquoted = (headline || "").replace(/[“"][^”"]*[”"]/g, " ");
+  return ROUNDUP_MORE_RE.test(unquoted) || unquoted.split(",").length >= 3;
+}
+
+export function fanPageHeroMismatch(candidate: Candidate, page: PageConfig): string | null {
+  const hero = pageHero(page);
+  if (!hero) return null;
+  const headline = (candidate.headline || "").toLowerCase();
+  if (!hero.keywords.some((k) => k.length > 2 && keywordIndex(headline, k.trim(), true) !== -1)) return "NOT_ABOUT_PAGE_HERO";
+  if (isRoundupHeadline(candidate.headline || "")) return "ROUNDUP_ON_FAN_PAGE";
+  return null;
+}
+
 export async function flagshipStanceCheck(candidate: Candidate, page: PageConfig): Promise<PersonalLifeCheckResult> {
   const hero = pageHero(page);
   if (!hero) return { pass: true, reason: null };
@@ -1876,15 +1901,17 @@ export async function flagshipStanceCheck(candidate: Candidate, page: PageConfig
     `This post would go on a Threads fan page devoted to ${hero.name}. Its followers are ${hero.name}'s fans.`,
     `Story headline: "${candidate.headline}"`,
     candidate.rawText && candidate.rawText !== candidate.headline ? `Story text: "${candidate.rawText.slice(0, 800)}"` : "",
-    `Would ${hero.name}'s fans read this story as a shot at, criticism of, or a negative take on ${hero.name}? That includes someone calling him/her out, mocking or doubting him/her, a rival or analyst taking a dig, someone pointedly refusing to follow his/her lead or contrasting themselves favourably against him/her, or a controversy framed with ${hero.name} at fault.`,
-    `It does NOT include stories that celebrate, defend or neutrally report on ${hero.name} — a story where someone defends ${hero.name} against critics is fine, and so is ordinary news (a trade, a game, a record, a family moment).`,
-    `Output ONLY a JSON object: {"critical_of_hero": true} or {"critical_of_hero": false}. No markdown, no explanation.`,
+    `Answer two questions.`,
+    `1. about_hero: is this story actually ABOUT ${hero.name}? True when he/she is the main subject, or when it's about his/her immediate family framed around him/her (e.g. "${hero.name}'s wife ..."). False when ${hero.name} is only mentioned in passing, is one item in a roundup of several stories, or is a comparison point in a story that's really about someone else.`,
+    `2. critical_of_hero: would ${hero.name}'s fans read this story as a shot at, criticism of, or a negative take on ${hero.name}? That includes someone calling him/her out, mocking or doubting him/her, a rival or analyst taking a dig, someone pointedly refusing to follow his/her lead or contrasting themselves favourably against him/her, or a controversy framed with ${hero.name} at fault. It does NOT include stories that celebrate, defend or neutrally report on ${hero.name} — a story where someone defends ${hero.name} against critics is fine, and so is ordinary news (a trade, a game, a record, a family moment).`,
+    `Output ONLY a JSON object like {"about_hero": true, "critical_of_hero": false}. No markdown, no explanation.`,
   ]
     .filter(Boolean)
     .join("\n");
   try {
-    const content = await checksAiCaller(prompt, { tag: "hero_stance", maxTokens: 40, temperature: 0, timeoutMs: 20_000 });
+    const content = await checksAiCaller(prompt, { tag: "hero_stance", maxTokens: 60, temperature: 0, timeoutMs: 20_000 });
     const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, ""));
+    if (parsed?.about_hero === false) return { pass: false, reason: "NOT_ABOUT_PAGE_HERO" };
     return parsed?.critical_of_hero === true ? { pass: false, reason: "CRITICAL_OF_PAGE_HERO" } : { pass: true, reason: null };
   } catch (e) {
     console.error(`flagshipStanceCheck: failed, letting the story through: ${(e as Error).message}`);
@@ -2709,6 +2736,10 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   }
   if (candidate.rescue && isTimeBoundNews(candidate)) {
     return { pass: false, reason: "STALE_NEWS_AS_THROWBACK" };
+  }
+  const heroMismatch = fanPageHeroMismatch(candidate, page);
+  if (heroMismatch) {
+    return { pass: false, reason: heroMismatch };
   }
   const fixedSlot = checkFixedSportSlot(candidate, page, postedLog);
   if (!fixedSlot.pass) {
