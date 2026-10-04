@@ -33,6 +33,13 @@ export const SPRINT_END_MS = Date.parse("2026-10-09T00:00:00Z");
 export function clickSprintActive(nowMs = Date.now()): boolean {
   return nowMs < SPRINT_END_MS;
 }
+// (2026-10-04, operator decision) Oct 3 showed the sprint still starved the top
+// pages: the 25 low-yield pages made 83 posts that day (58 by 03:24 UTC on
+// Oct 4, all before the top pages' US daytime) and spent about half of the $10
+// budget on posts earning under 3 clicks each, which pushed the top pages into
+// the due-page reserve for most of the day. The operator chose 2 posts/day
+// for them until the sprint ends (cap stays $10).
+const SPRINT_MIN_POSTS_BEFORE_HOLD = 2;
 // (2026-10-02, operator rule — see ThreadsConfig.min_post_gap_hours) part of
 // the day's budget is kept for gap-guarded pages that are due, so the "never
 // 6h without a post" guarantee doesn't run out of AI late in the day. The
@@ -67,6 +74,6 @@ export async function aiBudgetHoldReason(page: PageConfig, postedLog: PostedLogE
   if (used < PRIORITY_RESERVE_FRACTION && !clickSprintActive(nowMs)) return null;
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today)).length;
-  if (postedToday < MIN_POSTS_BEFORE_HOLD) return null;
+  if (postedToday < (clickSprintActive(nowMs) ? SPRINT_MIN_POSTS_BEFORE_HOLD : MIN_POSTS_BEFORE_HOLD)) return null;
   return used < PRIORITY_RESERVE_FRACTION ? "CLICK_SPRINT_BUDGET_FOR_TOP_PAGES" : "AI_BUDGET_RESERVED_FOR_PRIORITY_PAGES";
 }
