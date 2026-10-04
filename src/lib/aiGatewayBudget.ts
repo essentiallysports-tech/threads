@@ -45,8 +45,17 @@ import { getObject, putObject } from "./s3registry";
 // the priority-page hold (threads#52, aiBudgetHold.ts), which stops every
 // page before the degraded fail-open mode, so a lower cap never means
 // templated/un-QC'd posts.
-const DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 10);
-console.error(`aiGatewayBudget: daily cap $${DAILY_BUDGET_USD} (${process.env.AI_GATEWAY_DAILY_BUDGET_USD ? "from AI_GATEWAY_DAILY_BUDGET_USD" : "code default"})`);
+const BASE_DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 10);
+// (2026-10-04, operator decision) $12/day for the Oct 8 click sprint (see
+// aiBudgetHold.ts's clickSprintActive), back to the base cap on its own from
+// 2026-10-09 00:00 UTC. An explicit AI_GATEWAY_DAILY_BUDGET_USD still wins.
+const SPRINT_DAILY_BUDGET_USD = 12;
+const SPRINT_BUDGET_END_MS = Date.parse("2026-10-09T00:00:00Z");
+function currentDailyBudgetUsd(nowMs = Date.now()): number {
+  if (process.env.AI_GATEWAY_DAILY_BUDGET_USD) return BASE_DAILY_BUDGET_USD;
+  return nowMs < SPRINT_BUDGET_END_MS ? SPRINT_DAILY_BUDGET_USD : BASE_DAILY_BUDGET_USD;
+}
+console.error(`aiGatewayBudget: daily cap $${currentDailyBudgetUsd()} (${process.env.AI_GATEWAY_DAILY_BUDGET_USD ? "from AI_GATEWAY_DAILY_BUDGET_USD" : "code default; sprint cap until 2026-10-09"})`);
 const SPEND_KEY_PREFIX = "pool/ai_gateway_spend_";
 const REFRESH_INTERVAL_MS = 60_000; // re-check S3 (for the OTHER worker process's spend) at most once/minute — every call re-fetching would be its own waste
 
@@ -84,7 +93,7 @@ async function loadTodaySpend(dateISO: string): Promise<SpendRecord> {
 export async function isDailyBudgetExceeded(): Promise<boolean> {
   try {
     const record = await loadTodaySpend(todayISO());
-    return record.totalUsd >= DAILY_BUDGET_USD;
+    return record.totalUsd >= currentDailyBudgetUsd();
   } catch (e) {
     console.error(`isDailyBudgetExceeded: check failed, allowing the call through: ${(e as Error).message}`);
     return false; // can't verify — fail open on the CHECK itself, same policy as every check this guards
@@ -92,7 +101,7 @@ export async function isDailyBudgetExceeded(): Promise<boolean> {
 }
 
 export function dailyBudgetUsd(): number {
-  return DAILY_BUDGET_USD;
+  return currentDailyBudgetUsd();
 }
 
 // Today's spend as a fraction of the daily cap — aiBudgetHold.ts's input.
@@ -101,7 +110,7 @@ export function dailyBudgetUsd(): number {
 export async function dailyBudgetFractionUsed(): Promise<number> {
   try {
     const record = await loadTodaySpend(todayISO());
-    return record.totalUsd / DAILY_BUDGET_USD;
+    return record.totalUsd / currentDailyBudgetUsd();
   } catch (e) {
     console.error(`dailyBudgetFractionUsed: check failed, treating as unspent: ${(e as Error).message}`);
     return 0;
@@ -130,10 +139,11 @@ export async function recordGatewaySpend(usd: number | undefined, tag = "untagge
         .sort((a, b) => b[1].usd - a[1].usd)
         .map(([k, v]) => `${k}=$${v.usd.toFixed(3)}/${v.calls}`)
         .join(" ");
-      console.error(`aiGatewayBudget: $${record.totalUsd.toFixed(3)} of $${DAILY_BUDGET_USD} over ${record.callCount} calls today — ${split}`);
+      console.error(`aiGatewayBudget: $${record.totalUsd.toFixed(3)} of $${currentDailyBudgetUsd()} over ${record.callCount} calls today — ${split}`);
     }
-    if (record.totalUsd >= DAILY_BUDGET_USD && record.totalUsd - usd < DAILY_BUDGET_USD) {
-      console.error(`aiGatewayBudget: daily budget of $${DAILY_BUDGET_USD} crossed (now $${record.totalUsd.toFixed(4)}, ${record.callCount} calls) — further AI-gateway calls will short-circuit until ${dateISO} rolls over`);
+    const cap = currentDailyBudgetUsd();
+    if (record.totalUsd >= cap && record.totalUsd - usd < cap) {
+      console.error(`aiGatewayBudget: daily budget of $${cap} crossed (now $${record.totalUsd.toFixed(4)}, ${record.callCount} calls) — further AI-gateway calls will short-circuit until ${dateISO} rolls over`);
     }
   } catch (e) {
     console.error(`recordGatewaySpend: failed to persist, spend tracking may undercount: ${(e as Error).message}`);
