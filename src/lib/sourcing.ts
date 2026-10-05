@@ -12,7 +12,7 @@ import {
   isTooRecentForRetrospectivePage,
   RETROSPECTIVE_MAX_AGE_DAYS,
 } from "./checks";
-import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts } from "./s3registry";
+import { getSharedPool, getAllEvergreenAngles, EvergreenAngle, getRenderFailureCounts, getObject } from "./s3registry";
 import { queryRecentArticles, queryArticlesByEntity, queryArticlesByCategory, EsArticleResult } from "./esDirect";
 import { sourceFromWebSearch, sourceFromEvergreenWebSearch, webSearch, searchResultsToCandidates } from "./webSearch";
 import { getPostContent } from "./beehiiv";
@@ -951,6 +951,131 @@ export async function resolveExternalLink(candidate: Candidate, page: PageConfig
 // newest-first is a real-data proxy for the reference pipeline's own
 // decay/scoring `best_of()` (which needs the Facebook T0-T2 scoring this
 // project doesn't have direct access to).
+// ⛔ OPERATOR DECISION (2026-10-05): "see what kinda posts have worked and double
+// down on similar post types." Measured on 21 days of top-10 posts joined to
+// GA4 autopost sessions (3,537 posts, 72,896 sessions), against each page's own
+// average: no story TYPE reliably wins — every "winning" type (callout, fine,
+// money, family, legend) falls below average once its top 1-3 posts are
+// removed. What wins is a hot STORYLINE for the 2-3 days it's developing:
+// Eala's $10K fine arc 2,498 clicks/post vs a 378 page average (6.6x); Dak /
+// Sarah Jane 413 vs 66 (6x); Shedeur 1,068-2,008 a post for three days, then ~0.
+// So: when one of a page's own posts passes HOT_VIEWS Threads views (from the
+// dashboard's 3-day snapshot, joined on post_id), candidates that share that
+// story's distinctive words go to the front of the page's queue for
+// HOT_WINDOW_HOURS. And four story types that sat below their page's average on
+// almost every page (injury, warnings/predictions, emotional, "fans react")
+// go to the back. Ordering only — every gate still applies.
+const HOT_VIEWS = 10_000;
+const HOT_WINDOW_HOURS = 72;
+const SNAPSHOT_KEY = "config/es-threads-dashboard/snapshots/3d.json";
+const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+let hotViewsCache: { at: number; byId: Map<string, { views: number; caption: string }> } | null = null;
+
+async function hotPostViews(): Promise<Map<string, { views: number; caption: string }>> {
+  if (hotViewsCache && Date.now() - hotViewsCache.at < SNAPSHOT_TTL_MS) return hotViewsCache.byId;
+  const byId = new Map<string, { views: number; caption: string }>();
+  try {
+    const raw = await getObject(SNAPSHOT_KEY);
+    // The snapshot is { data: { posts, ... } } (threads-dashboard's writeSnapshot); read either shape.
+    const parsed = raw ? JSON.parse(raw) : null;
+    const posts = ((parsed?.data ?? parsed)?.posts || []) as Array<{ id?: string; content?: string; metrics?: { views?: number } }>;
+    for (const p of posts) {
+      const v = p.metrics?.views;
+      if (p.id && typeof v === "number" && v >= HOT_VIEWS) byId.set(p.id, { views: v, caption: p.content || "" });
+    }
+  } catch (e) {
+    console.error(`hotPostViews: snapshot read failed, no storyline boost this run: ${(e as Error).message}`);
+  }
+  hotViewsCache = { at: Date.now(), byId };
+  return byId;
+}
+
+const STORYLINE_STOPWORDS = new Set(
+  (
+    "the a an and or but for with from into over under after before amid about against as at by in of on to up off out " +
+    "is are was were be been has have had will would could should can may might just still now new big more most " +
+    "this that these those his her their its him them they he she it who what when where why how than then " +
+    "says said say reveals revealed reveal makes made make gets got get takes took take gives gave give goes went " +
+    "shares shared share sends sent send drops dropped leaves left breaks broke issues issued comes came " +
+    "season game games team teams coach coaches star stars player players fans fan open week weeks year years " +
+    "match matches tournament league tour race series title champion championship cup playoff playoffs bowl " +
+    "win wins loss losses news update report reports amid ahead first last major huge real true full " +
+    "other others question questions day days being want wants wanted down right back time times life people world " +
+    "message moment thing things nobody everyone something look looks"
+  ).split(/\s+/)
+);
+
+function stem(word: string): string {
+  const w = word.toLowerCase();
+  for (const suf of ["ing", "ed", "es", "s", "e"]) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length);
+  return w;
+}
+
+// A storyline is the people/places the hot post was about. Names are taken
+// from its CAPTION, which is sentence case — a capitalized word mid-sentence
+// ("…calling out a $10,000 fine Alex Eala just got hit with at the China Open")
+// is a real name, unlike in ES's Title Case headlines. The page's own entities
+// and generic words never count, so a follow-up has to name the same people.
+function keepWord(w: string, own: Set<string>): string | null {
+  const lw = w.toLowerCase().replace(/['’]s$/, "");
+  if (lw.length < 4 || /^\d+$/.test(lw) || STORYLINE_STOPWORDS.has(lw) || own.has(lw)) return null;
+  return stem(lw);
+}
+
+function ownTokens(page: PageConfig): Set<string> {
+  return new Set(page.entities.flatMap((e) => [e.name, ...e.keywords]).flatMap((k) => k.toLowerCase().split(/[^a-z0-9']+/)).filter(Boolean));
+}
+
+export function captionNames(caption: string, page: PageConfig): Set<string> {
+  const own = ownTokens(page);
+  const names = new Set<string>();
+  for (const sentence of (caption || "").split(/[.!?]+\s+|\n+/)) {
+    const words = sentence.replace(/[“”"‘’]/g, " ").split(/[^A-Za-z0-9']+/).filter(Boolean);
+    words.forEach((w, i) => {
+      if (i === 0 || !/^[A-Z][a-z]/.test(w)) return;
+      const st = keepWord(w, own);
+      if (st) names.add(st);
+    });
+  }
+  return names;
+}
+
+export function storylineStems(headline: string, page: PageConfig): Set<string> {
+  const own = ownTokens(page);
+  const stems = new Set<string>();
+  for (const w of (headline || "").replace(/[“”"‘’]/g, " ").split(/[^A-Za-z0-9']+/).filter(Boolean)) {
+    const st = keepWord(w, own);
+    if (st) stems.add(st);
+  }
+  return stems;
+}
+
+async function hotStorylines(page: PageConfig, postedLog: PostedLogEntry[]): Promise<Array<{ names: Set<string>; views: number; headline: string }>> {
+  const hot = await hotPostViews();
+  if (hot.size === 0) return [];
+  const since = Date.now() - HOT_WINDOW_HOURS * 3600 * 1000;
+  const out: Array<{ names: Set<string>; views: number; headline: string }> = [];
+  for (const e of postedLog) {
+    const h = e.post_id ? hot.get(e.post_id) : undefined;
+    if (!h || !e.headline || !e.posted_at || Date.parse(e.posted_at) < since) continue;
+    const names = captionNames(h.caption, page);
+    if (names.size > 0) out.push({ names, views: h.views, headline: e.headline });
+  }
+  return out;
+}
+
+export function sharesStoryline(headline: string, page: PageConfig, arcs: Array<{ names: Set<string> }>): boolean {
+  if (arcs.length === 0) return false;
+  const mine = storylineStems(headline, page);
+  return arcs.some((a) => [...mine].some((w) => a.names.has(w)));
+}
+
+const LOSING_STORY_TYPE_RE =
+  /\b(injur(y|ed|ies)|hospital|surgery|warns?|warning|predicts?|prediction|emotional|tears?|cries|cried|heartbreak|heartfelt|fans?\s+(react|reacts|reaction|slam|slams|flood|go wild|erupt)|viral|internet reacts|social media reacts)\b/i;
+export function isLosingStoryType(headline: string): boolean {
+  return LOSING_STORY_TYPE_RE.test(headline || "");
+}
+
 export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: string, postedLog: PostedLogEntry[]): Promise<Candidate[]> {
   const todaysEntries = postedLog.filter((p) => (p.posted_at || "").startsWith(dateISO));
   const newsletterCount = todaysEntries.filter((p) => p.reply_url?.includes("utm_content=reply_link")).length;
@@ -1219,8 +1344,21 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // boundary here — same as every other signal in this file — never a hard
   // filter, so a national page can't drop to zero candidates just because
   // none of them clear it on a given run.
+  const arcs = await hotStorylines(page, postedLog);
+  const arcScore = (c: Candidate): number => (sharesStoryline(c.headline, page, arcs) ? 1 : 0);
+  const losingScore = (c: Candidate): number => (isLosingStoryType(c.headline) ? 1 : 0);
+  if (arcs.length > 0) {
+    const boosted = unposted.filter((c) => arcScore(c) === 1).length;
+    console.error(
+      `sourceCandidatePoolForPage: ${page.page_id} hot storyline(s) — ${arcs.map((a) => `${Math.round(a.views / 1000)}k views "${a.headline.slice(0, 60)}"`).join("; ")} — ${boosted} follow-up candidate(s) moved up`
+    );
+  }
   if (page.page_type === "national") {
     unposted = unposted.sort((a, b) => {
+      const losingDiff = losingScore(a) - losingScore(b);
+      if (losingDiff !== 0) return losingDiff;
+      const arcDiff = arcScore(b) - arcScore(a);
+      if (arcDiff !== 0) return arcDiff;
       const aScore = computeNationalStoryScore(a).total;
       const bScore = computeNationalStoryScore(b).total;
       const aAbove = aScore >= page.national_threshold ? 1 : 0;
@@ -1245,6 +1383,10 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       }
       const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
       if (entityDiff !== 0) return entityDiff;
+      const losingDiff = losingScore(a) - losingScore(b);
+      if (losingDiff !== 0) return losingDiff;
+      const arcDiff = arcScore(b) - arcScore(a);
+      if (arcDiff !== 0) return arcDiff;
       const rankDiff = tierRank(b) - tierRank(a);
       if (rankDiff !== 0) return rankDiff;
       const aFlat = isFlatStatDump(a) ? 0 : 1;
