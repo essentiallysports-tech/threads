@@ -1876,7 +1876,9 @@ export function pageHero(page: PageConfig): { name: string; keywords: string[] }
 // be named in the HEADLINE (not just the article body), and a multi-story
 // roundup headline doesn't count as a story about him. flagshipStanceCheck's
 // AI call then judges whether the story is actually about him.
-const ROUNDUP_MORE_RE = /\b(?:&|and)\s+more\b/i;
+// "& More" only counts at the END of a headline ("…, Doncic Welcomes Leadership
+// Role & More") — mid-sentence "Taylor Rooks and More React to…" is one story.
+const ROUNDUP_MORE_RE = /\b(?:&|and)\s+more[\s.!?…]*$/i;
 export function isRoundupHeadline(headline: string): boolean {
   const unquoted = (headline || "").replace(/[“"][^”"]*[”"]/g, " ");
   return ROUNDUP_MORE_RE.test(unquoted) || unquoted.split(",").length >= 3;
@@ -1902,7 +1904,7 @@ export async function flagshipStanceCheck(candidate: Candidate, page: PageConfig
     `Story headline: "${candidate.headline}"`,
     candidate.rawText && candidate.rawText !== candidate.headline ? `Story text: "${candidate.rawText.slice(0, 800)}"` : "",
     `Answer two questions.`,
-    `1. about_hero: is this story actually ABOUT ${hero.name}? True when he/she is the main subject, or when it's about his/her immediate family framed around him/her (e.g. "${hero.name}'s wife ..."). False when ${hero.name} is only mentioned in passing, is one item in a roundup of several stories, or is a comparison point in a story that's really about someone else.`,
+    `1. about_hero: is this story actually ABOUT ${hero.name}? True when it's about something ${hero.name} did, said, earned or decided (e.g. "${hero.name} shows support for a young player", a fact-check of his/her earnings), about how others see him/her (praise, a defence of him/her, "X says Y would be benched if ${hero.name} were in his prime"), or about his/her immediate family framed around him/her ("${hero.name}'s wife ..."). False only when ${hero.name} is a bystander in someone else's story — mentioned in passing as context ("... amid ${hero.name} & others"), a former teammate's own news, or one item in a roundup of several stories.`,
     `2. critical_of_hero: would ${hero.name}'s fans read this story as a shot at, criticism of, or a negative take on ${hero.name}? That includes someone calling him/her out, mocking or doubting him/her, a rival or analyst taking a dig, someone pointedly refusing to follow his/her lead or contrasting themselves favourably against him/her, or a controversy framed with ${hero.name} at fault. It does NOT include stories that celebrate, defend or neutrally report on ${hero.name} — a story where someone defends ${hero.name} against critics is fine, and so is ordinary news (a trade, a game, a record, a family moment).`,
     `Output ONLY a JSON object like {"about_hero": true, "critical_of_hero": false}. No markdown, no explanation.`,
   ]
