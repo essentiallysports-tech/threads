@@ -7,6 +7,7 @@
 // to undo.
 //
 // Usage: node --env-file=.env.local scripts/pause-threads-pages.mjs
+//        PAGE_IDS=p91,p93 node --env-file=.env.local scripts/pause-threads-pages.mjs   (just those)
 //        STATUS=active node --env-file=.env.local scripts/pause-threads-pages.mjs   (undo)
 
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -14,7 +15,9 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3
 const s3 = new S3Client({ region: process.env.AWS_REGION || "us-east-1" });
 const BUCKET = process.env.S3_BUCKET || "essentiallysports-images-v2prod";
 const PREFIX = "config/page-registry/";
-const IDS = ["p91", "p92", "p93", "p94", "p95", "p96", "p97"];
+// PAGE_IDS=p91,p93 pauses just those pages; the default is the original
+// 2026-09-24 rollback set.
+const IDS = (process.env.PAGE_IDS || "p91,p92,p93,p94,p95,p96,p97").split(",").map((s) => s.trim()).filter(Boolean);
 const STATUS = process.env.STATUS || "paused";
 
 async function get(key) {
