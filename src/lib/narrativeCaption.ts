@@ -187,6 +187,50 @@ function stripEmDashes(text: string): string {
     .replace(/,(\s*\n)/g, "$1");
 }
 
+// ⛔ OPERATOR FIX (2026-10-07): "the rest must be a drop in the kind of posts we
+// are doing." Measured on the dashboard's 30-day snapshot, week by week across
+// the Sep 21 reach drop: captions opening "<Name> just …" went 18% -> 34% ->
+// 44% -> 45% of all posts network-wide; captions with an emoji went 29% -> 15%
+// -> 7% -> 5% -> 0% (every page's registry asks for emoji_count_min 1); quote
+// openers 11% -> 2%; median views 34 -> 16. The prompt already bans the
+// "[Name] just" skeleton, and the model ignores it ~45% of the time — like em
+// dashes before it, this needs enforcing in code, not asking in the prompt.
+// Each post gets an assigned opening style (rotated by story key, so the
+// network's posts stop converging on one shape), and violatesPolicy now
+// rejects the "[Name] just" opener and a missing emoji.
+const OPENING_STYLES = [
+  `lead with the STAKES: what this changes or what's on the line, in one punchy sentence that names who it's about.`,
+  `lead with a SCENE: put the reader in the moment it happened, naming who was involved.`,
+  `lead with a confident fan's TAKE: a real opinion on it in one line, naming who it's about.`,
+  `lead with the CONTRAST: what everyone expected versus what actually happened, naming who.`,
+  `lead with a NUMBER or detail that makes the story land (not the headline stat the card shows), naming who.`,
+  `lead with ONE genuine question a fan would actually be asking about this (never "what do you think?"), then name who it's about.`,
+];
+const QUOTE_STYLE = `lead with the most striking real QUOTE from the facts, in quotation marks, then say who said it.`;
+
+function hashKey(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+export function openingStyleFor(candidate: Candidate): string {
+  const hasQuote = /[“"][^”"]{8,}[”"]/.test(candidate.headline || "");
+  const styles = hasQuote ? [...OPENING_STYLES, QUOTE_STYLE, QUOTE_STYLE] : OPENING_STYLES;
+  return styles[hashKey(candidate.key || candidate.headline || "") % styles.length];
+}
+
+// "Dak Prescott just …", "Bryson just …", "The Cowboys just …"
+const NAME_JUST_OPENER_RE = /^\s*(?:the\s+)?[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*){0,3}\s+just\b/;
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+
+export function styleViolation(text: string, page: PageConfig): string | null {
+  const firstLine = text.trim().split("\n")[0] || "";
+  if (NAME_JUST_OPENER_RE.test(firstLine)) return "OPENER_SKELETON";
+  if ((page.threads?.emoji_count_min ?? 0) >= 1 && !EMOJI_RE.test(text)) return "MISSING_EMOJI";
+  return null;
+}
+
 function violatesPolicy(text: string, charLimit: number): string | null {
   if (!text.trim()) return "EMPTY";
   if (text.length > charLimit) return `OVER_CHAR_LIMIT:${text.length}/${charLimit}`;
@@ -380,6 +424,8 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     // the exact recurring phrases.
     `1. HOOK (1 line) — a genuine angle on the story, not a flat restatement of the headline. Doesn't need to be dramatic (not every story is), but it should give the reader something the headline alone doesn't — the stakes, the "why this matters" angle, or the specific human detail.`,
     `   HARD RULE: never open with "[Name] just [verb]" — that shape alone accounts for a large share of this account network's recent hooks and is an obvious tell. Also never use "said the quiet part out loud" or "hits different" — both are already overused network-wide. Vary the OPENING WORD/shape every time: sometimes lead with the stakes, sometimes a scene, sometimes a real number, sometimes a direct claim — never the same recognizable skeleton twice in a row.`,
+    `   THIS POST'S OPENING STYLE (assigned so the account network doesn't all sound alike): ${openingStyleFor(candidate)}`,
+    `   EMOJI: use ${Math.max(1, page.threads?.emoji_count_min ?? 0)}-${Math.max(1, page.threads?.emoji_count_max ?? 2)} emoji that fit the voice${(page.threads?.emoji_count_min ?? 0) >= 1 ? " (at least one is required)" : " (optional)"}.`,
     // ⛔ OPERATOR FIX (2026-09-11, real live incident, severe): confirmed
     // live via direct comparison on the SAME flagship page — posts opening
     // with a clear, specific, name-and-stakes hook (structurally close to a
@@ -525,6 +571,8 @@ export async function buildNarrativeCaptionText(
 
   let retryNote: string | undefined;
   let lastOverLimitText: string | null = null;
+  // A caption whose only problem is style (opener/emoji) beats the generic template.
+  let lastStyleOnlyText: string | null = null;
   // ⛔ OPERATOR FIX (2026-08-12, real live incident): was 3 attempts. Live
   // logs (p58/p60, 2026-08-12 10:00Z run) showed char-limit overshoot
   // failing 2-3 attempts in a row before the deterministic trimToFit
@@ -537,8 +585,9 @@ export async function buildNarrativeCaptionText(
     try {
       const prompt = buildPrompt(candidate, page, athleteNames, charLimit, retryNote);
       const text = await callGateway(prompt);
-      const violation = violatesPolicy(text, charLimit);
+      const violation = violatesPolicy(text, charLimit) ?? styleViolation(text, page);
       if (!violation) return { text, usedFallback: false };
+      if (violation === "OPENER_SKELETON" || violation === "MISSING_EMOJI") lastStyleOnlyText = text;
       if (violation.startsWith("OVER_CHAR_LIMIT")) lastOverLimitText = text;
       retryNote =
         violation.startsWith("OVER_CHAR_LIMIT")
@@ -562,6 +611,7 @@ export async function buildNarrativeCaptionText(
     if (trimmed) return { text: trimmed, usedFallback: false, violation: "TRIMMED_AFTER_RETRY" };
   }
 
+  if (lastStyleOnlyText) return { text: lastStyleOnlyText, usedFallback: false, violation: "STYLE_AFTER_RETRY" };
   return { text: fallback, usedFallback: true, violation: "FAILED_AFTER_RETRY" };
 }
 
