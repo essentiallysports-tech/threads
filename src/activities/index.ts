@@ -297,7 +297,7 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
     ...page,
     threads: {
       ...page.threads!,
-      evergreen_max_age_days: Math.max(normalDays, GAP_RESCUE_EVERGREEN_DAYS),
+      evergreen_max_age_days: Math.max(normalDays, page.threads?.throwback_max_age_days ?? GAP_RESCUE_EVERGREEN_DAYS),
       evergreen_rescue_end_days: normalDays,
       rescue_candidate_cap: due ? 40 : 30,
     },
