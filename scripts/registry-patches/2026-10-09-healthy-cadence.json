@@ -1,0 +1,13 @@
+{
+  "why": "Operator-approved 2026-10-09 after the deep analysis of low daily clicks: raising post volume on the top accounts collapsed their per-post reach. Sep 9-22 vs Sep 30-Oct 8: pages that raised volume >=1.5x kept 31% of their median views per post, pages that held or cut volume kept 78%. Dallas 3.4 -> 12 posts/day took median views 1,784 -> 21 and likes/post 16.7 -> 1.0; Golf 4 -> 14.3/day, 358 -> 126; Detroit 3.9 -> 6/day, 1,562 -> 412. Pages that cut volume gained (Michigan 24 -> 75, Ohio State 19 -> 38). Caps go back to roughly the cadence that earned clicks. Revert = restore from registry-backups/.",
+  "pages": {
+    "p41": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } },
+    "p74": { "setThreads": { "daily_budget_max": 5, "daily_budget_min": 5 } },
+    "p40": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } },
+    "p78": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } },
+    "p51": { "setThreads": { "daily_budget_max": 3, "daily_budget_min": 3 } },
+    "p92": { "setThreads": { "daily_budget_max": 5, "daily_budget_min": 5 } },
+    "p71": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } },
+    "p61": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } }
+  }
+}
