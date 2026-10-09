@@ -1,0 +1,15 @@
+{
+  "why": "Operator decision 2026-10-10: 'fewer posts isn't a good strategy, more posts mean more chances of getting clicks, get it back to what they were'. Restores the daily caps from before the 2026-10-06 (p53, p54) and 2026-10-09 (healthy-cadence) cuts.",
+  "pages": {
+    "p41": { "setThreads": { "daily_budget_max": 16, "daily_budget_min": 8 } },
+    "p74": { "setThreads": { "daily_budget_max": 16, "daily_budget_min": 8 } },
+    "p40": { "setThreads": { "daily_budget_max": 12, "daily_budget_min": 8 } },
+    "p78": { "setThreads": { "daily_budget_max": 12, "daily_budget_min": 6 } },
+    "p51": { "setThreads": { "daily_budget_max": 16, "daily_budget_min": 8 } },
+    "p92": { "setThreads": { "daily_budget_max": 12, "daily_budget_min": 8 } },
+    "p71": { "setThreads": { "daily_budget_max": 12, "daily_budget_min": 8 } },
+    "p61": { "setThreads": { "daily_budget_max": 8, "daily_budget_min": 8 } },
+    "p53": { "setThreads": { "daily_budget_max": 12, "daily_budget_min": 8 } },
+    "p54": { "setThreads": { "daily_budget_max": 8, "daily_budget_min": 8 } }
+  }
+}
