@@ -1,0 +1,4 @@
+{
+  "why": "2026-10-09: Alex Eala Fan Club (the fleet's top click earner) went 29h without a post. ES writes ~3 Eala articles a week, and last week's throwback push used up her 21-120-day archive (59 articles, 45 already posted; the rest filtered). 34 Eala articles older than 120 days had never been posted. throwback_max_age_days 730 lets her throwback search reach her full ES archive: dry run 19 throwbacks passing every gate (career moments: SEA Games gold, top-10 wins, Miami 2025). Revert = remove the field.",
+  "pages": { "p78": { "setThreads": { "throwback_max_age_days": 730 } } }
+}

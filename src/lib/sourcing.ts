@@ -569,7 +569,10 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
   // instead of 15, and a team entity's ES CATEGORY as well as its tag (ES files
   // team coverage under categories — see queryArticlesByCategory).
   const throwbackSearch = !!rescueEndDays && !isRetrospectiveOnlyPage(page);
-  const EVERGREEN_ARTICLES_PER_ENTITY = throwbackSearch ? 50 : 15;
+  // A page with a longer throwback reach (threads.throwback_max_age_days) goes
+  // to WordPress's 100-per-page maximum so the search gets past the newest,
+  // already-posted articles in that wider window.
+  const EVERGREEN_ARTICLES_PER_ENTITY = throwbackSearch ? (page.threads?.throwback_max_age_days ? 100 : 50) : 15;
   const perEntity = await mapWithConcurrency(entityNames, 2, async (name) => {
     const byTag = await queryArticlesByEntity(name, dateStart, dateEnd, EVERGREEN_ARTICLES_PER_ENTITY).catch((e) => {
       console.error(`sourceFromEsEvergreenArticles: queryArticlesByEntity failed for ${page.page_id} entity="${name}": ${(e as Error).message}`);

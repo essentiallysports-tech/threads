@@ -116,6 +116,12 @@ export interface ThreadsConfig {
   // (CRITICAL_OF_PAGE_HERO) and left to the league newsroom page. See
   // checks.ts's flagshipStanceCheck.
   protect_flagship?: boolean;
+  // (2026-10-09) how far back this page's throwback search reaches, in days
+  // (default 120 — see GAP_RESCUE_EVERGREEN_DAYS in activities/index.ts). For a
+  // page whose subject ES covers only a few times a week (Alex Eala: ~3
+  // articles/week), the 21-120-day archive runs out; her older career moments
+  // are still good throwback material.
+  throwback_max_age_days?: number;
   // (2026-10-03, page-owner feedback) people this page no longer covers —
   // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
   // story whose headline leads with one of them is rejected
