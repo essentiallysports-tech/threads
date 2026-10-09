@@ -19,7 +19,13 @@ import { dailyBudgetFractionUsed, dailyBudgetUsd } from "./aiGatewayBudget";
 import { PageConfig, PostedLogEntry } from "./types";
 import { isGapDue, hoursSinceLastPost } from "./checks";
 
-const PRIORITY_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_PRIORITY_RESERVE_FRACTION || 0.7);
+// (2026-10-10, operator decision) "post on all pages, not just top 10": the
+// 70% priority hold (pages without ai_priority stop after 3 posts once 70% of
+// the budget is spent) is off by default — 1 means it never triggers before
+// the budget itself runs out. The due-page reserve below still protects the
+// top 10's 6h rule late in the day. Set AI_GATEWAY_PRIORITY_RESERVE_FRACTION=0.7
+// to bring the hold back.
+const PRIORITY_RESERVE_FRACTION = Number(process.env.AI_GATEWAY_PRIORITY_RESERVE_FRACTION || 1);
 const MIN_POSTS_BEFORE_HOLD = 3;
 
 // ⛔ OPERATOR DECISION (2026-10-03): a 150k-click target for Sep 7 - Oct 8 (102k
