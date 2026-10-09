@@ -45,7 +45,9 @@ import { getObject, putObject } from "./s3registry";
 // the priority-page hold (threads#52, aiBudgetHold.ts), which stops every
 // page before the degraded fail-open mode, so a lower cap never means
 // templated/un-QC'd posts.
-const BASE_DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 10);
+// (2026-10-10, operator decision) $12/day so every page can post freely, not
+// just the top 10. AI_GATEWAY_DAILY_BUDGET_USD still overrides.
+const BASE_DAILY_BUDGET_USD = Number(process.env.AI_GATEWAY_DAILY_BUDGET_USD || 12);
 // (2026-10-04, operator decision) $12/day for the Oct 8 click sprint (see
 // aiBudgetHold.ts's clickSprintActive), back to the base cap on its own from
 // 2026-10-09 00:00 UTC. An explicit AI_GATEWAY_DAILY_BUDGET_USD still wins.
