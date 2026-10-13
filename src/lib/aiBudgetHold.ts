@@ -35,7 +35,10 @@ const MIN_POSTS_BEFORE_HOLD = 3;
 // sprint ends a page without threads.ai_priority holds after its 3rd post of
 // the day from the START of the day, not only once 70% of the budget is gone —
 // the AI budget goes to the pages that convert. Ends on its own at SPRINT_END.
-export const SPRINT_END_MS = Date.parse("2026-10-09T00:00:00Z");
+// (2026-10-13, operator decision) back on after clicks fell from ~2k/day to
+// ~500/day once it ended: CLICK_SPRINT_END (ISO time) sets when it stops;
+// unset keeps the original Oct 9 end, i.e. off.
+export const SPRINT_END_MS = Date.parse(process.env.CLICK_SPRINT_END || "2026-10-09T00:00:00Z");
 export function clickSprintActive(nowMs = Date.now()): boolean {
   return nowMs < SPRINT_END_MS;
 }
