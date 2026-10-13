@@ -2156,6 +2156,32 @@ export function checkFixedSportSlot(candidate: Candidate, page: PageConfig, post
 // Same key (exact story/edition) already posted on this page, ever within
 // the given window — replaces the old skill file's per-page idempotency
 // check with a real, deterministic array scan.
+function articleBaseKey(key: string | undefined): string {
+  return (key || "").split(":")[0].toLowerCase();
+}
+
+export function postedArticleWithinDays(candidate: Candidate, log: PostedLogEntry[], days: number): boolean {
+  const base = articleBaseKey(candidate.key);
+  if (!base) return false;
+  const cutoff = Date.now() - days * 86400 * 1000;
+  return log.some((p) => {
+    if (articleBaseKey(p.key) !== base) return false;
+    const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
+    return !isNaN(t) && t > cutoff;
+  });
+}
+
+// (2026-10-13, team-reported) a web/evergreen search result whose "headline" is
+// really a site or section title — "Lakers - Los Angeles Times", "SideLion
+// Report | Detroit Lions News, Rumors & Analysis" — isn't a story.
+const SITE_SUFFIX_RE = /\s[|–-]\s+[A-Z][\w.&']*(?:\s+[A-Z&][\w.&',]*){0,5}\s*$/;
+export function isSiteTitleNotAStory(candidate: Candidate): boolean {
+  if (candidate.source !== "web_search" && candidate.source !== "evergreen_search") return false;
+  const h = (candidate.headline || "").trim();
+  if (h.split(/\s+/).length < 5) return true;
+  return SITE_SUFFIX_RE.test(h) && !/[“"]/.test(h);
+}
+
 export function alreadyPostedRecently(candidate: Candidate, log: PostedLogEntry[], withinHours: number): boolean {
   const cutoff = Date.now() - withinHours * 3600 * 1000;
   // Confirmed live: real posted-log entries can be missing `posted_at`
@@ -2779,6 +2805,18 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // article posted 8h+ ago — only under a different angle key, because the
   // ALREADY_POSTED check above still blocks the same key for 14 days.
   const due = isGapDue(page, postedLog);
+  // ⛔ OPERATOR FIX (2026-10-13, team-reported): the same article was going out
+  // twice on most pages ~24-26h apart (LSU, Ohio State, Purple & Gold) — the
+  // link window below is 24h and the second "angle" of an article carries a
+  // different key ("<slug>:comparison"), so ALREADY_POSTED never matched. One
+  // article posts once per page per week, whatever the angle. Not relaxed for
+  // starved or gap-due pages.
+  if (postedArticleWithinDays(candidate, postedLog, 7)) {
+    return { pass: false, reason: "ALREADY_POSTED_ARTICLE_7D" };
+  }
+  if (isSiteTitleNotAStory(candidate)) {
+    return { pass: false, reason: "SITE_TITLE_NOT_A_STORY" };
+  }
   const linkWindowHours = due ? 8 : isStarvedToday ? 12 : 24;
   if (duplicateLinkRecently(candidate, postedLog, linkWindowHours)) {
     return { pass: false, reason: due ? "DUPLICATE_LINK_8H" : isStarvedToday ? "DUPLICATE_LINK_12H" : "DUPLICATE_LINK_24H" };

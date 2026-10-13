@@ -1,0 +1,4 @@
+{
+  "why": "Team-reported 2026-10-12/13: Purple & Gold Pride (Lakers) posted Warriors/Curry stories (Sonya Curry, Curry collision) and Ohio State Wireline posted Michigan stories (injury report, Whittingham) because rival_entities let rival-only stories qualify. Clears rivals on these two pages only. Revert = restore from registry-backups/.",
+  "pages": { "p37": { "set": { "rival_entities": [] } }, "p60": { "set": { "rival_entities": [] } } }
+}
