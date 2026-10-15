@@ -1,0 +1,4 @@
+{
+  "why": "2026-10-15, operator-approved: undo 2026-10-13-eala-throwback-120. On the 120-day window Eala's archive was already used up: 0 posts for 49h (Oct 13-15) and 0-7 autopost sessions/day. On 730 days (Oct 10-12) she posted 6/day and earned 53-215/day. Revert = set 120.",
+  "pages": { "p78": { "setThreads": { "throwback_max_age_days": 730 } } }
+}

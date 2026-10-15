@@ -2160,15 +2160,29 @@ function articleBaseKey(key: string | undefined): string {
   return (key || "").split(":")[0].toLowerCase();
 }
 
-export function postedArticleWithinDays(candidate: Candidate, log: PostedLogEntry[], days: number): boolean {
+export function postedArticleCountWithinDays(candidate: Candidate, log: PostedLogEntry[], days: number): number {
   const base = articleBaseKey(candidate.key);
-  if (!base) return false;
+  if (!base) return 0;
   const cutoff = Date.now() - days * 86400 * 1000;
-  return log.some((p) => {
+  return log.filter((p) => {
     if (articleBaseKey(p.key) !== base) return false;
     const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
     return !isNaN(t) && t > cutoff;
-  });
+  }).length;
+}
+
+export function postedArticleWithinDays(candidate: Candidate, log: PostedLogEntry[], days: number): boolean {
+  return postedArticleCountWithinDays(candidate, log, days) > 0;
+}
+
+// (2026-10-15, operator decision) a top page (threads.ai_priority) may post an
+// article a second time — the DUPLICATE_LINK_* windows below still keep the
+// repost 8-24h after the first. Lions' two biggest posts since Oct 8 were
+// reposts (OBJ 189k views, Ben Johnson 85k), and across the top pages a repeat
+// reached 5k+ views on 5.5% of posts vs 3.8% for first posts. Every other page
+// keeps the one-post-per-article week the team asked for on Oct 13.
+export function articleRepostsAllowed(page: PageConfig): number {
+  return page.threads?.ai_priority ? 1 : 0;
 }
 
 // (2026-10-13, team-reported) a web/evergreen search result whose "headline" is
@@ -2811,7 +2825,7 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // different key ("<slug>:comparison"), so ALREADY_POSTED never matched. One
   // article posts once per page per week, whatever the angle. Not relaxed for
   // starved or gap-due pages.
-  if (postedArticleWithinDays(candidate, postedLog, 7)) {
+  if (postedArticleCountWithinDays(candidate, postedLog, 7) > articleRepostsAllowed(page)) {
     return { pass: false, reason: "ALREADY_POSTED_ARTICLE_7D" };
   }
   if (isSiteTitleNotAStory(candidate)) {
