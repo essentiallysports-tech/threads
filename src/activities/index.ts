@@ -35,6 +35,7 @@ import {
   hoursSinceLastPost,
   photoSearchName,
   isRetrospectiveOnlyPage,
+  pageHero,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -571,15 +572,36 @@ function expectedTeamKeywordsFor(name: string, page: PageConfig): string[] {
 // every real candidate has recently been used, the least-bad option is a
 // repeat photo, not a dropped post.
 const RECENT_PHOTO_WINDOW = 15;
+// (2026-10-16) a page built around one person draws every card from that
+// person's small photo pool, so 15 posts went by in days: Alex Eala Fan Club
+// used two photos 13 times each in a month, one of them (Asian Games,
+// Hangzhou) on a "Miami" card. Remember about a month of posts instead.
+const FAN_PAGE_PHOTO_WINDOW = 60;
 
-function recentlyUsedPhotoUrls(postedLog: PostedLogEntry[]): Set<string> {
+function recentlyUsedPhotoUrls(postedLog: PostedLogEntry[], window = RECENT_PHOTO_WINDOW): Set<string> {
   return new Set(
     [...postedLog]
       .filter((p) => p.posted_at && p.source_photo_url)
       .sort((a, b) => new Date(b.posted_at!).getTime() - new Date(a.posted_at!).getTime())
-      .slice(0, RECENT_PHOTO_WINDOW)
+      .slice(0, window)
       .map((p) => p.source_photo_url!)
   );
+}
+
+// (2026-10-16) the one person a fan page is built around: its only registered
+// entity (Alex Eala Fan Club) or its protect_flagship hero (Kings Court).
+function fanPageHero(page: PageConfig): { name: string; keywords: string[] } | null {
+  if (page.entities.length === 1) {
+    const e = page.entities[0];
+    return { name: e.name.trim(), keywords: e.keywords.length > 0 ? e.keywords : [e.name] };
+  }
+  return pageHero(page);
+}
+
+function mentionsKeyword(text: string, keyword: string): boolean {
+  const k = keyword.trim();
+  if (k.length <= 2) return false;
+  return new RegExp(`(^|[^a-z0-9])${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^a-z0-9])`, "i").test(text);
 }
 
 // ⛔ OPERATOR FIX (2026-09-08, real live incident, "half of the images are
@@ -964,7 +986,8 @@ async function renderCardInner(
   // "retro" template, an internally contradictory card.
   const accentHex = isTradeStory && template !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
 
-  const recentPhotos = recentlyUsedPhotoUrls(postedLog);
+  const hero = fanPageHero(page);
+  const recentPhotos = recentlyUsedPhotoUrls(postedLog, hero ? FAN_PAGE_PHOTO_WINDOW : RECENT_PHOTO_WINDOW);
 
   if ((template === "comparison" || template === "quote") && headlineNames.length >= 2) {
     const [subjectPhoto, speakerPhoto] = await Promise.all([
@@ -1040,11 +1063,17 @@ async function renderCardInner(
   // with a genuine subject but a failed photo search is still dropped
   // below, same as before — this only skips the search itself when there
   // was never a real subject to search for.
+  // (2026-10-16) on a fan page, a story that names the page's person shows
+  // that person on the card — Eala's page ran Nadal-only cards (65 and 257
+  // views) for stories about Nadal's messages to her.
+  const storyText = `${candidate.headline} ${candidate.rawText ?? ""}`;
+  const heroInStory = hero !== null && hero.keywords.some((k) => mentionsKeyword(storyText, k));
+  const photoTerms = heroInStory && hero ? [hero.name, ...searchTerms.filter((n) => n !== hero.name)] : searchTerms;
   const photo =
-    searchTerms.length > 0
-      ? await searchAndPick(photoSearchName(searchTerms[0], page), recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(searchTerms[0], page))
+    photoTerms.length > 0
+      ? await searchAndPick(photoSearchName(photoTerms[0], page), recentPhotos, page.sport_groups[0], expectedTeamKeywordsFor(photoTerms[0], page))
       : null;
-  if (searchTerms.length > 0 && !photo) return { cardUrl: null, template: null, resolvedEntity: null }; // no real photo found for this candidate — never fabricate one
+  if (photoTerms.length > 0 && !photo) return { cardUrl: null, template: null, resolvedEntity: null }; // no real photo found for this candidate — never fabricate one
 
   // ⛔ OPERATOR FIX (2026-08-12): "use the MLB sport image or the team logo
   // rather than fabricating an image." When there's genuinely no person to
@@ -1058,7 +1087,7 @@ async function renderCardInner(
   // just because nothing here was checking.
   const genericSearchTerm = page.sport_groups[0] || page.page_theme;
   const genericPhoto =
-    searchTerms.length === 0
+    photoTerms.length === 0
       ? await searchImages(`${genericSearchTerm} logo`, "all", 8)
           .then((results) => results.filter((r) => metadataMatchesSubject(r, genericSearchTerm)))
           .then((verified) => pickReachableUrl(verified.map((r) => r.url), recentPhotos, (url) => verifyGenericPhotoSubject(url, genericSearchTerm)))
@@ -1089,7 +1118,7 @@ async function renderCardInner(
     layout: singleLayout,
     accent_hex: singleAccentHex,
     sepia: page.threads?.retro_sepia === true,
-    photo_subjects: searchTerms.length > 0 ? [searchTerms[0]] : [],
+    photo_subjects: photoTerms.length > 0 ? [photoTerms[0]] : [],
     reference_photo_url: photo || genericPhoto || null,
     is_quote: false,
     quote_text: null,
@@ -1118,7 +1147,7 @@ async function renderCardInner(
 
   const cardUrl = await renderAndVerifyText(spec, page.page_id);
   if (!cardUrl) return { cardUrl: null, template: null, resolvedEntity: null };
-  return { cardUrl, template: singleLayout, resolvedEntity: searchTerms[0] || null, sourcePhotoUrl: photo || genericPhoto || null };
+  return { cardUrl, template: singleLayout, resolvedEntity: photoTerms[0] || null, sourcePhotoUrl: photo || genericPhoto || null };
 }
 
 // ⛔ OPERATOR FIX (2026-09-09, real live incident, p37 "Purple & Gold
