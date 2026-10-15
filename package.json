@@ -11,7 +11,8 @@
     "run-once": "ts-node src/client.ts",
     "worker:firehose": "node dist/workerFirehose.js",
     "worker:firehose:dev": "ts-node src/workerFirehose.ts",
-    "run-once:firehose": "ts-node src/clientFirehose.ts"
+    "run-once:firehose": "ts-node src/clientFirehose.ts",
+    "luma:sessions": "ts-node src/lumaSessions.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.95",

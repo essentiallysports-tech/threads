@@ -45,6 +45,7 @@ import { verifyCardText, verifyPhotoSubject, verifyGenericPhotoSubject } from ".
 import { truncateAtWordBoundary } from "../lib/headlineTruncation";
 import { isDailyBudgetExceeded, recordGatewaySpend } from "../lib/aiGatewayBudget";
 import { extractEntitiesViaAI } from "../lib/entityResolution";
+import { listSessions, listSessionGuests, ListSessionsOptions, LumaSession, LumaSessionGuest } from "../lib/luma";
 
 // Card dimensions match the render spec's 3:4 portrait — kept here (not in
 // cardRegistry, which was Orshot-specific and is no longer part of the
@@ -1165,4 +1166,14 @@ export async function recordPosted(pageId: string, entry: PostedLogEntry): Promi
 
 export async function saveDryRunResults(dateISO: string, results: PageRunResult[]): Promise<void> {
   await writeDryRunResult(dateISO, results);
+}
+
+// Luma event sessions via Nango's proxy (see lib/luma.ts). Plain data in and
+// out so a workflow can call these through proxyActivities.
+export async function fetchLumaSessions(opts: ListSessionsOptions = {}): Promise<LumaSession[]> {
+  return listSessions(opts);
+}
+
+export async function fetchLumaSessionGuests(eventId: string, connectionId?: string): Promise<LumaSessionGuest[]> {
+  return listSessionGuests(eventId, connectionId);
 }
