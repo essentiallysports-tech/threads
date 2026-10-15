@@ -29,6 +29,9 @@ export type RenderSpec = {
   is_quote: boolean; // true for two-person exchange/rivalry quote cards
   quote_text: string | null;
   quote_attribution: string | null;
+  // (2026-10-16) retro layout only: true keeps the sepia/faded archival grade.
+  // Unset renders throwbacks in full colour — see ThreadsConfig.retro_sepia.
+  sepia?: boolean;
 };
 
 const BANNED_PROMPT_PHRASES = [/no\s+text(\s+overlays?)?/i, /no\s+watermarks?/i, /clean\s+photo\s+only/i, /without\s+(any\s+)?text/i, /text-?free/i];
@@ -141,8 +144,10 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
         ? `full-bleed dominant hero shot filling the lower ~65% of the frame, heroic low angle, knees-up, real blurred crowd/stadium background — this is a milestone/hero card, not a plain news card`
         : spec.layout === "dramatic_news"
         ? `tight upper-body shot with high-drama directional lighting and deep shadow, moody real in-context background — this is a dramatic single-subject news card, not a standard editorial card`
-        : spec.layout === "retro"
+        : spec.layout === "retro" && spec.sepia
         ? `knees-up framing in the lower two thirds, warm sepia/faded-archival color grade over the whole photo, soft vintage film grain, muted contrast — this is a retrospective/nostalgia throwback card, deliberately styled to look OLD and revisited, never current-day breaking-news styling`
+        : spec.layout === "retro"
+        ? `knees-up framing in the lower two thirds, natural full-colour press-photo look with vivid, true-to-life colour and contrast — a throwback story, but the card looks as sharp as a news card: no sepia, no faded or washed-out grade, no film grain`
         : `knees-up framing in the lower two thirds, natural candid press-photo look — this is a standard editorial card`;
     lines.push(
       `A premium sports fan-page infographic card, portrait 3:4, full-bleed, magazine-grade. Layout: ${spec.layout.toUpperCase().replace(/_/g, " ")}.`,

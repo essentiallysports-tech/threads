@@ -1088,6 +1088,7 @@ async function renderCardInner(
     story_type: singleCopy.story_type,
     layout: singleLayout,
     accent_hex: singleAccentHex,
+    sepia: page.threads?.retro_sepia === true,
     photo_subjects: searchTerms.length > 0 ? [searchTerms[0]] : [],
     reference_photo_url: photo || genericPhoto || null,
     is_quote: false,
