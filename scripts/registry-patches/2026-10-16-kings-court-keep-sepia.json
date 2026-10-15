@@ -1,0 +1,4 @@
+{
+  "why": "2026-10-16: throwback cards go full colour by default (threads.retro_sepia unset). Kings Court is the one page where sepia retro cards beat its other cards (median 282 vs 26 views, Sep 15-Oct 15), so it keeps them. Revert = remove the field.",
+  "pages": { "p51": { "setThreads": { "retro_sepia": true } } }
+}

@@ -122,6 +122,12 @@ export interface ThreadsConfig {
   // articles/week), the 21-120-day archive runs out; her older career moments
   // are still good throwback material.
   throwback_max_age_days?: number;
+  // (2026-10-16) keep the sepia/faded look on this page's throwback (retro)
+  // cards. Default off: across Sep 15-Oct 15 retro cards drew a lower median
+  // than the same page's other cards on most pages (Dallas 18 vs 43 views,
+  // Eala 442 vs 1,044, Rogan 85 vs 159) and hit 10k+ views half as often;
+  // Kings Court was the exception (282 vs 26).
+  retro_sepia?: boolean;
   // (2026-10-03, page-owner feedback) people this page no longer covers —
   // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
   // story whose headline leads with one of them is rejected
