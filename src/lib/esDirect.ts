@@ -306,6 +306,10 @@ export interface EsArticleResult {
   // "Throwback to..."). Full date now preserved so callers can tell real
   // age from tier-of-origin.
   dateGmt: string | null; // "YYYY-MM-DDTHH:MM:SS", genuinely UTC (WordPress's date_gmt)
+  // (2026-10-16) the article's own opening text (WordPress excerpt, plain
+  // text, trailing "[…]" removed). Only the caption and card-copy prompts
+  // read it — see Candidate.excerpt.
+  excerpt?: string | null;
 }
 
 interface WpPost {
@@ -395,16 +399,24 @@ function toArticleResults(posts: WpPost[]): EsArticleResult[] {
       url: p.link,
       publishedTime: utcTimeOfDay(p.date_gmt),
       dateGmt: p.date_gmt || null,
+      excerpt: cleanExcerpt(p.excerpt?.rendered),
     }));
 }
 
-// `excerpt` is fetched even though EsArticleResult doesn't carry it — parity
-// with esMcp.ts's original {title, url, publishedTime} contract, nothing
-// more, since sourcing.ts's own Candidate-building only ever reads those
-// three fields today (confirmed by reading it). Real excerpt text would be
-// a genuine, free quality improvement for caption-writing context, but
-// wiring it through is a separate change, not bundled into this parity
-// swap — see stripHtml, kept here for whoever picks that up next.
+const EXCERPT_MAX_CHARS = 700;
+
+function cleanExcerpt(html: string | undefined): string | null {
+  const text = stripHtml(html)
+    .replace(/\s*(\[(…|\.\.\.)\]|\[&hellip;\])\s*$/i, "")
+    .replace(/\s*(read more|continue reading)\W*$/i, "")
+    .trim();
+  if (text.length < 40) return null;
+  return text.length > EXCERPT_MAX_CHARS ? `${text.slice(0, EXCERPT_MAX_CHARS).replace(/\s+\S*$/, "")}…` : text;
+}
+
+// `excerpt` feeds EsArticleResult.excerpt (2026-10-16) — until then it was
+// fetched and dropped, so captions for ES articles were written from the
+// headline alone.
 const FIELDS = "title,excerpt,link,date_gmt";
 
 // Same request-memoization esMcp.ts had: resolveExternalLink runs once per

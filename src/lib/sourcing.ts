@@ -481,6 +481,7 @@ export async function sourceFromEsArticles(page: PageConfig, dateISO: string): P
       link: a.url,
       publishedAt,
       rawText: a.title,
+      excerpt: a.excerpt || undefined,
     };
     const angled: Candidate = { ...base, key: `${key}:${pickAngle(a.url)}`, angle: pickAngle(a.url) };
     return [base, angled];
@@ -631,6 +632,7 @@ async function sourceFromEsEvergreenArticles(page: PageConfig, dateISO: string):
       link: a.url,
       publishedAt: `${dateISO}T12:00:00Z`,
       rawText: a.title,
+      excerpt: a.excerpt || undefined,
       // ⛔ OPERATOR FIX (2026-09-11, real live incident): see EsArticleResult's
       // own comment (esDirect.ts) — publishedAt above is deliberately
       // synthetic (freshness-gate purposes), so this preserves the ARTICLE's
