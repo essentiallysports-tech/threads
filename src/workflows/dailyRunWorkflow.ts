@@ -187,13 +187,16 @@ function nextIstOccurrenceUtc(hhmm: string, fromUtc: Date): Date {
 // several accounts published at once — e.g. 08:14:09 on 2026-09-25, seven
 // accounts together, two of them (JGR Racing Digest, Hendrick Heroes) with
 // the same Legacy/RFK story. Synchronized posting across accounts is what
-// platform spam systems look for. Offsets each page 0-30 minutes, to the
+// platform spam systems look for. Offsets each page 0-60 minutes, to the
 // second, re-drawn every hour so no account settles on a fixed minute. Pure
 // function of page id + run hour, so replay-deterministic.
+// (2026-10-16) was 0-30 minutes: with runs finishing in the first ~10
+// minutes of the hour, every account published between :00 and :39 and
+// never in the last 20 minutes (1,267 posts Oct 8-15).
 function publishSpreadMs(pageId: string, hourKey: string): number {
   let h = 0x811c9dc5; // FNV-1a: the hour digit changes last, so it needs a hash that still mixes it well
   for (const ch of `${pageId}|${hourKey}`) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193);
-  return ((h >>> 0) % 1800) * 1000;
+  return ((h >>> 0) % 3600) * 1000;
 }
 
 // This function is the deterministic replacement for the old prose skill

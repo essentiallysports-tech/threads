@@ -60,9 +60,8 @@ export interface ThreadsConfig {
   posting_window_end?: string;
   utm_string?: string;
   // Only post articles no other page has posted in the last 24h — see
-  // crossPageLedger.ts. For pages whose natural candidate pool overlaps
-  // established pages (e.g. several general-NASCAR accounts); an unflagged
-  // page is never blocked by the cross-page ledger.
+  // crossPageLedger.ts. On by default since 2026-10-16 (a top page is only
+  // blocked by another top page's claim); false opts a page out.
   exclusive_articles?: boolean;
   // How far back (hours) an exclusive_articles page looks for another page's
   // claim on the same article. Unset = 24. Clamped to (0, 24] — the ledger
