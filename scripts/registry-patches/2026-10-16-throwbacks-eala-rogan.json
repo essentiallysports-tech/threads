@@ -1,0 +1,7 @@
+{
+  "why": "2026-10-16, operator request: reduce throwbacks on Eala and Rogan. At most one throwback in any 5 consecutive posts (<=20%). Their throwback share rose from 5% (Eala, Sep 15-Oct 2) and 8% (Rogan) to 70% and 46% (Oct 9-16); Eala's throwbacks drew a median of 442 views vs 1,112 for her news posts, and 1 of 44 reached 10k+ vs 10 of 45. Revert = remove the field.",
+  "pages": {
+    "p78": { "setThreads": { "throwback_every": 5 } },
+    "p71": { "setThreads": { "throwback_every": 5 } }
+  }
+}

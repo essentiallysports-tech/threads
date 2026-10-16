@@ -36,6 +36,7 @@ import {
   photoSearchName,
   isRetrospectiveOnlyPage,
   pageHero,
+  throwbackQuotaUsed,
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
@@ -290,8 +291,11 @@ export async function sourceCandidatePool(page: PageConfig, dateISO: string, pos
   // throwback slot open all day, not only when it's overdue — see
   // throwbackSlotOpen below.
   const due = isGapDue(page, postedLog);
+  // (2026-10-16) a due page whose throwback_every quota is used gets its normal
+  // pool — the gap guard no longer tops it up with throwbacks.
+  const dueThrowbacks = due && !throwbackQuotaUsed(page, postedLog);
   const throwback = !due && throwbackSlotOpen(page, postedLog);
-  if (!due && !throwback) return sourceCandidatePoolForPage(page, dateISO, postedLog);
+  if (!dueThrowbacks && !throwback) return sourceCandidatePoolForPage(page, dateISO, postedLog);
   const normalDays = page.threads?.evergreen_max_age_days ?? 21;
   // isGapDue/throwbackSlotOpen are only true when page.threads.min_post_gap_hours is set, so threads exists here.
   const widened: PageConfig = {
@@ -338,6 +342,7 @@ const SPRINT_THROWBACK_SHARE = 2;
 
 function throwbackSlotOpen(page: PageConfig, postedLog: PostedLogEntry[]): boolean {
   if (!page.threads?.min_post_gap_hours || isRetrospectiveOnlyPage(page)) return false;
+  if (page.threads.throwback_every) return !throwbackQuotaUsed(page, postedLog);
   const today = new Date().toISOString().slice(0, 10);
   const postedToday = postedLog.filter((e) => e.posted_at?.startsWith(today));
   const throwbacksToday = postedToday.filter((e) => e.template === "retro").length;

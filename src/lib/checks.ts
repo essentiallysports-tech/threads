@@ -2160,6 +2160,18 @@ function articleBaseKey(key: string | undefined): string {
   return (key || "").split(":")[0].toLowerCase();
 }
 
+// threads.throwback_every = N: true when one of the page's last N-1 posts was
+// a throwback, so another one now would put two inside N posts.
+export function throwbackQuotaUsed(page: PageConfig, postedLog: PostedLogEntry[]): boolean {
+  const n = page.threads?.throwback_every;
+  if (!n || n <= 1) return false;
+  return [...postedLog]
+    .filter((e) => e.posted_at)
+    .sort((a, b) => Date.parse(b.posted_at!) - Date.parse(a.posted_at!))
+    .slice(0, n - 1)
+    .some((e) => e.template === "retro");
+}
+
 export function postedArticleCountWithinDays(candidate: Candidate, log: PostedLogEntry[], days: number): number {
   const base = articleBaseKey(candidate.key);
   if (!base) return 0;
@@ -2825,6 +2837,9 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // different key ("<slug>:comparison"), so ALREADY_POSTED never matched. One
   // article posts once per page per week, whatever the angle. Not relaxed for
   // starved or gap-due pages.
+  if (classifyCaptionAgeTone(candidate) === "retro" && throwbackQuotaUsed(page, postedLog)) {
+    return { pass: false, reason: "THROWBACK_QUOTA" };
+  }
   if (postedArticleCountWithinDays(candidate, postedLog, 7) > articleRepostsAllowed(page)) {
     return { pass: false, reason: "ALREADY_POSTED_ARTICLE_7D" };
   }
