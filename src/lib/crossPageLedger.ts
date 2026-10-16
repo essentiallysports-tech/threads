@@ -27,6 +27,14 @@
 // (2026-09-30) The 24h lookback is now per page: threads.exclusive_window_hours
 // (see types.ts) narrows it for pages that share a thin supply. The ledger
 // itself still keeps 24h of claims, the most any page can ask for.
+//
+// (2026-10-16, operator decision) every page is exclusive by default
+// (threads.exclusive_articles: false opts out): across Sep 7-Oct 15, 16-31%
+// of posts shared an article with another of our accounts within 24h (31% the
+// week of the Sep 22 clone launch), the pattern of a coordinated network. To
+// avoid the 2026-09-25 starvation, a top page (threads.ai_priority) is refused
+// only by another top page's claim — a smaller page that posted the story
+// first never blocks it.
 
 import { loadActiveThreadsPages, getPostedLog } from "./s3registry";
 import { PageConfig } from "./types";
@@ -41,6 +49,15 @@ function windowHoursFor(page: PageConfig): number {
 interface LedgerEntry {
   pageId: string;
   at: number;
+  priority: boolean;
+}
+
+function isExclusive(page: PageConfig): boolean {
+  return page.threads?.exclusive_articles !== false;
+}
+
+function isPriority(page: PageConfig): boolean {
+  return page.threads?.ai_priority === true;
 }
 
 const ledger = new Map<string, LedgerEntry[]>();
@@ -53,9 +70,9 @@ export function articleKey(urlOrHtml: string | null | undefined): string | null 
   return m ? m[0].replace(/\/+$/, "").toLowerCase() : null;
 }
 
-function record(key: string, pageId: string, at: number): void {
+function record(key: string, pageId: string, at: number, priority: boolean): void {
   const entries = (ledger.get(key) || []).filter((e) => at - e.at < WINDOW_MS);
-  entries.push({ pageId, at });
+  entries.push({ pageId, at, priority });
   ledger.set(key, entries);
 }
 
@@ -65,15 +82,15 @@ export function ensureCrossPageLedgerSeeded(): Promise<void> {
   if (!seeding) {
     seeding = (async () => {
       const pages = await loadActiveThreadsPages();
-      const logs = await Promise.all(pages.map(async (p) => ({ pageId: p.page_id, log: await getPostedLog(p.page_id) })));
+      const logs = await Promise.all(pages.map(async (p) => ({ pageId: p.page_id, priority: isPriority(p), log: await getPostedLog(p.page_id) })));
       const cutoff = Date.now() - WINDOW_MS;
       let seeded = 0;
-      for (const { pageId, log } of logs) {
+      for (const { pageId, priority, log } of logs) {
         for (const e of log) {
           const key = articleKey(e.reply_url);
           const at = e.posted_at ? Date.parse(e.posted_at) : NaN;
           if (key && at > cutoff) {
-            record(key, pageId, at);
+            record(key, pageId, at, priority);
             seeded++;
           }
         }
@@ -91,22 +108,25 @@ export function ensureCrossPageLedgerSeeded(): Promise<void> {
 // dropped before it's rendered. Same page never conflicts with itself;
 // same-page repeats are runDeterministicChecks' job.
 export function crossPageConflict(urlOrHtml: string | null | undefined, page: PageConfig, now = Date.now()): string | null {
-  if (!page.threads?.exclusive_articles) return null;
+  if (!isExclusive(page)) return null;
   const key = articleKey(urlOrHtml);
   if (!key) return null;
   const hours = windowHoursFor(page);
-  const other = (ledger.get(key) || []).find((e) => e.pageId !== page.page_id && now - e.at < hours * 3600 * 1000);
+  const priority = isPriority(page);
+  const other = (ledger.get(key) || []).find(
+    (e) => e.pageId !== page.page_id && now - e.at < hours * 3600 * 1000 && (!priority || e.priority)
+  );
   return other ? `CROSS_PAGE_EXCLUSIVE_${hours}H:${other.pageId}` : null;
 }
 
 // Check-and-record in one synchronous step, called right before the post is
-// actually scheduled. Every page's post is recorded; only an
-// exclusive_articles page can be refused.
+// actually scheduled. Every page's post is recorded; a page with
+// exclusive_articles: false is never refused.
 export function claimArticle(urlOrHtml: string | null | undefined, page: PageConfig, at = Date.now()): string | null {
   const conflict = crossPageConflict(urlOrHtml, page, at);
   if (conflict) return conflict;
   const key = articleKey(urlOrHtml);
-  if (key) record(key, page.page_id, at);
+  if (key) record(key, page.page_id, at, isPriority(page));
   return null;
 }
 
