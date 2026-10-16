@@ -127,6 +127,12 @@ export interface ThreadsConfig {
   // Eala 442 vs 1,044, Rogan 85 vs 159) and hit 10k+ views half as often;
   // Kings Court was the exception (282 vs 26).
   retro_sepia?: boolean;
+  // (2026-10-16, operator decision) at most one throwback (retro) post in any
+  // N consecutive posts on this page, however it got into the pool (throwback
+  // slot, gap guard, or an old evergreen article). Eala's throwbacks went from
+  // 5% of her posts (Sep 15-Oct 2) to 70%, Rogan's from 8% to 46%; Eala's
+  // throwbacks drew a median of 442 views vs 1,112 for her news posts.
+  throwback_every?: number;
   // (2026-10-03, page-owner feedback) people this page no longer covers —
   // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
   // story whose headline leads with one of them is rejected
