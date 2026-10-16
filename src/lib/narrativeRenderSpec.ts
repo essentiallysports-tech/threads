@@ -91,7 +91,10 @@ function buildPrompt(
   // this prompt doesn't depend on which layout happened to be chosen.
   const facts = [
     `Headline: ${stripHtml(candidate.headline)}`,
-    candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.rawText && candidate.rawText !== candidate.headline ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.excerpt
+      ? `Opening of our own article (real, published text — use its specific names, numbers and quotes; add nothing it doesn't say): ${stripHtml(candidate.excerpt)}`
+      : null,
     athleteNames.length > 0 ? `Named people/teams in this story: ${athleteNames.join(", ")}` : null,
     classifyCaptionAgeTone(candidate) === "retro"
       ? `Timing: this is a genuinely OLD story (evergreen archive content of unconfirmed age, or confirmed 6+ months old) being resurfaced as callback/banter content — write the headline with retrospective "on this day"/"remember when" framing, NEVER present-tense urgency or as if this just happened.`
@@ -317,7 +320,10 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
 export function factsFor(candidate: Candidate, athleteNames: string[]): string {
   return [
     `Headline: ${stripHtml(candidate.headline)}`,
-    candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.rawText && candidate.rawText !== candidate.headline ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.excerpt
+      ? `Opening of our own article (real, published text — use its specific names, numbers and quotes; add nothing it doesn't say): ${stripHtml(candidate.excerpt)}`
+      : null,
     athleteNames.length > 0 ? `Named people/teams in this story: ${athleteNames.join(", ")}` : null,
   ]
     .filter(Boolean)

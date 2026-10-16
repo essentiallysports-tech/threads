@@ -252,6 +252,10 @@ export interface Candidate {
   rescue?: boolean;
   thumbnailUrl?: string | null;
   rawText?: string; // whatever text is available to build a caption from
+  // (2026-10-16) our own article's opening text (ES articles only). Read by
+  // the caption and card-copy prompts only, never by relevance/entity/
+  // political checks, so it can't change which stories pass.
+  excerpt?: string;
   // ⛔ OPERATOR FIX (2026-08-08): "only ES article/newsletter link allowed in
   // the reply" — for externally-discovered candidates (web_search/
   // social_search/evergreen_search), `link` gets resolved to an ES-owned

@@ -576,12 +576,12 @@ function expectedTeamKeywordsFor(name: string, page: PageConfig): string[] {
 // bigger window than slow ones. Still prefers a repeat over nothing: if
 // every real candidate has recently been used, the least-bad option is a
 // repeat photo, not a dropped post.
-const RECENT_PHOTO_WINDOW = 15;
-// (2026-10-16) a page built around one person draws every card from that
-// person's small photo pool, so 15 posts went by in days: Alex Eala Fan Club
-// used two photos 13 times each in a month, one of them (Asian Games,
-// Hangzhou) on a "Miami" card. Remember about a month of posts instead.
-const FAN_PAGE_PHOTO_WINDOW = 60;
+// (2026-10-16) was 15. Pages reused a photo they'd posted in the past month on
+// 23% of cards in the week of Sep 7 and 65% by Oct 5; a photo already used
+// twice reached 10k+ views on 1.6% of posts vs 3.1% for a fresh one. Alex Eala
+// Fan Club used two photos 13 times each in a month, one of them (Asian
+// Games, Hangzhou) on a "Miami" card.
+const RECENT_PHOTO_WINDOW = 60;
 
 function recentlyUsedPhotoUrls(postedLog: PostedLogEntry[], window = RECENT_PHOTO_WINDOW): Set<string> {
   return new Set(
@@ -992,7 +992,7 @@ async function renderCardInner(
   const accentHex = isTradeStory && template !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
 
   const hero = fanPageHero(page);
-  const recentPhotos = recentlyUsedPhotoUrls(postedLog, hero ? FAN_PAGE_PHOTO_WINDOW : RECENT_PHOTO_WINDOW);
+  const recentPhotos = recentlyUsedPhotoUrls(postedLog);
 
   if ((template === "comparison" || template === "quote") && headlineNames.length >= 2) {
     const [subjectPhoto, speakerPhoto] = await Promise.all([

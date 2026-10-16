@@ -238,7 +238,10 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
   // ambiguous-headline entity-role confusion instead of guessing.
   const facts = [
     `Headline: ${stripHtml(candidate.headline)}`,
-    candidate.rawText ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.rawText && candidate.rawText !== candidate.headline ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.excerpt
+      ? `Opening of our own article (real, published text — use its specific names, numbers and quotes; add nothing it doesn't say): ${stripHtml(candidate.excerpt)}`
+      : null,
     athleteNames.length > 0 ? `Key people/teams involved: ${athleteNames.join(", ")}` : null,
     page.page_theme ? `Established background on this page's ongoing storyline (use this to correctly resolve who did what to whom if the headline is ambiguous — this is real, verified context, not something to add new claims from): ${stripHtml(page.page_theme)}` : null,
     `Source: ${
