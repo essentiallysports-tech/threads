@@ -32,6 +32,11 @@ export type RenderSpec = {
   // (2026-10-16) retro layout only: true keeps the sepia/faded archival grade.
   // Unset renders throwbacks in full colour — see ThreadsConfig.retro_sepia.
   sepia?: boolean;
+  // (2026-10-17) ThreadsConfig.card_style "team": draw the card in the team
+  // graphics' layout (buildTeamTemplatePrompt). tag_text is the small label
+  // above the headline ("REPORT", "BREAKING", "THROWBACK").
+  team_style?: boolean;
+  tag_text?: string;
 };
 
 const BANNED_PROMPT_PHRASES = [/no\s+text(\s+overlays?)?/i, /no\s+watermarks?/i, /clean\s+photo\s+only/i, /without\s+(any\s+)?text/i, /text-?free/i];
@@ -100,8 +105,52 @@ export interface PromptOptions {
   subjectFromReference?: boolean;
 }
 
+// (2026-10-17, operator decision) the layout the team's own Threads graphics
+// use: the real photo edge to edge, a dark fade over the bottom, a 2-3 line
+// condensed headline of moderate size with one word in the page's color, a
+// small slanted tag above it (quote marks on a quote card) and a small
+// "MORE DETAILS IN COMMENTS" pill below. Replaces the giant headline and
+// full-width kicker bar.
+function buildTeamTemplatePrompt(spec: RenderSpec, options: PromptOptions): string {
+  const fromReference = options.subjectFromReference === true;
+  const nameRealPeople = options.nameRealPeople !== false && !fromReference;
+  const subject = spec.photo_subjects.join(" and ");
+  const quote = spec.is_quote && spec.quote_text;
+  const headlineText = quote ? `"${spec.quote_text}"` : spec.headline;
+  const accentNote =
+    spec.accent && !quote
+      ? ` Render the word "${spec.accent.toUpperCase()}" in #${spec.accent_hex} instead of white, in place inside the headline; it must not appear anywhere else on the card.`
+      : ``;
+  const grade = spec.layout === "retro" && spec.sepia ? `a warm, slightly faded archival grade` : `natural, vivid, true-to-life colour`;
+  return [
+    `A sports fan-page news graphic in the style of a professional sports media social post, portrait 3:4.`,
+    fromReference
+      ? `Use the supplied reference photo as-is: do not edit, alter or regenerate the person. Their face, body, pose and expression stay exactly as in the photo. The photo fills the ENTIRE card edge to edge (full-bleed), extended naturally where needed, with the subject's face in the upper half of the card.`
+      : spec.photo_subjects.length > 0
+      ? `Full-bleed photo of ${nameRealPeople ? `${subject}, real likeness` : `a professional athlete in this sport`}, candid press-photo moment, face in the upper half of the card.`
+      : spec.reference_photo_url
+      ? `Use the supplied real reference image (a team/league logo or sport scene) as the full-bleed background.`
+      : `A full-bleed real sports scene (stadium, field) with depth; no person.`,
+    `Photo look: ${grade}, sharp, real stadium/field context. Never a flat background, never a cut-out, never a plastic AI look.`,
+    `Over the bottom 40% of the card only, a smooth dark gradient (transparent at its top edge, near-black at the bottom) so the text reads. No boxes or panels behind the text.`,
+    `TEXT, perfectly spelled, all centered in the lower third of the card:`,
+    quote
+      ? `1. A small pair of bold quotation marks in #${spec.accent_hex} just above the quote.`
+      : `1. A small slanted rectangular tag in solid #${spec.accent_hex} with white bold italic capital letters: "${spec.tag_text || "REPORT"}", sitting just above the headline.`,
+    `2. The ${quote ? "quote" : "headline"} in a bold condensed sans-serif, ALL CAPS, white, set on 2 to 3 lines at a moderate size (each line roughly 6-7% of the card height), spanning about 85% of the card width: ${headlineText}.${accentNote}`,
+    quote && spec.quote_attribution ? `   Under it, a small white attribution line: "${spec.quote_attribution.toUpperCase()}"` : null,
+    `3. Under the ${quote ? "quote" : "headline"}, a small rounded pill in solid #${spec.accent_hex} with small white capital letters: "${spec.kicker}".`,
+    `A thin #${spec.accent_hex} line along the very bottom edge of the card.`,
+    `The text never covers the subject's face. Nothing else on the card: no logo, badge, emblem, watermark, extra words, or a second headline. Each text element appears exactly once.`,
+    `Story type: ${spec.story_type}.`,
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
 export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {}): string {
   const lines: string[] = [];
+  if (spec.team_style) return buildTeamTemplatePrompt(spec, options);
   const fromReference = options.subjectFromReference === true;
   const nameRealPeople = options.nameRealPeople !== false && !fromReference;
   const namedSubjects = spec.photo_subjects.join(" and ");

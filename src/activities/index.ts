@@ -134,8 +134,17 @@ const NEWSLETTER_SPORT_LABELS: Record<string, string> = {
 };
 const DAILY_NEWSLETTER_PUB_ID = "pub_902529ab-962e-41b8-b981-e9a33d055a65";
 
+// The small label above a team-style card's headline (renderSpec.ts's
+// buildTeamTemplatePrompt), in the team graphics' own words.
+function teamCardTag(candidate: Candidate, layout: TemplateId): string {
+  if (layout === "retro") return "THROWBACK";
+  const ageMs = Date.now() - Date.parse(candidate.realPublishedAt || candidate.publishedAt);
+  if (layout === "dramatic_news" && !isNaN(ageMs) && ageMs < 24 * 3600 * 1000) return "BREAKING";
+  return "REPORT";
+}
+
 function chooseKicker(candidate: Candidate, page: PageConfig): string {
-  if (candidate.linkContext !== "subscribe") return "FULL STORY IN REPLY";
+  if (candidate.linkContext !== "subscribe") return page.threads?.card_style === "team" ? "MORE DETAILS IN COMMENTS" : "FULL STORY IN REPLY";
   const pubId = page.threads?.beehiiv_publication_id;
   if (pubId === DAILY_NEWSLETTER_PUB_ID) return "JOIN OUR DAILY NEWSLETTER, LINK BELOW";
   const sport = pubId ? NEWSLETTER_SPORT_LABELS[pubId] : undefined;
@@ -833,7 +842,8 @@ async function renderAndVerifyText(spec: RenderSpec, pageId: string): Promise<st
     console.error(`renderAndVerifyText: produced no card for ${pageId}: ${JSON.stringify(outcome.render_attempts)}`);
     return null;
   }
-  const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent, spec.photo_subjects);
+  const labels = spec.team_style ? [spec.is_quote ? spec.quote_attribution : spec.tag_text].filter((l): l is string => !!l) : [];
+  const qc = await verifyCardText(outcome.card_url, spec.is_quote ? spec.quote_text || "" : spec.headline, spec.kicker, spec.accent, spec.photo_subjects, labels);
   if (qc.pass) return outcome.card_url;
   console.error(`renderAndVerifyText: failed text-QC for ${pageId}: ${qc.reason}`);
   return null;
@@ -991,7 +1001,9 @@ async function renderCardInner(
   // without this guard, a retro-toned trade throwback would still get
   // slammed with the urgent red trade color on top of the sepia/vintage
   // "retro" template, an internally contradictory card.
-  const accentHex = isTradeStory && template !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template];
+  const teamCard = page.threads?.card_style === "team";
+  const pageAccent = teamCard && /^[0-9a-f]{6}$/i.test(page.threads?.card_accent_hex || "") ? page.threads!.card_accent_hex! : null;
+  const accentHex = pageAccent ?? (isTradeStory && template !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[template]);
 
   const hero = fanPageHero(page);
   const recentPhotos = recentlyUsedPhotoUrls(postedLog);
@@ -1039,6 +1051,7 @@ async function renderCardInner(
         is_quote: isQuote,
         quote_text: isQuote ? quotedPhrase : null,
         quote_attribution: isQuote ? headlineNames[1] : null,
+        team_style: teamCard && isQuote,
       };
       // ⛔ OPERATOR FIX (2026-08-20, real live incident): last-resort safety
       // net — narrativeRenderSpec.ts's own retry loop already rejects this
@@ -1108,8 +1121,8 @@ async function renderCardInner(
   // recompute needed since the kicker is now the CTA (chooseKicker above),
   // never a layout-dependent story-category label.
   const singleLayout: TemplateId = template === "comparison" || template === "quote" ? "standard_editorial" : template;
-  const singleAccentHex = isTradeStory && singleLayout !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
-  const singleHeadline = shortHeadline(candidate.headline, 6, athleteNames);
+  const singleAccentHex = pageAccent ?? (isTradeStory && singleLayout !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout]);
+  const singleHeadline = shortHeadline(candidate.headline, teamCard ? 12 : 6, athleteNames);
   const singleCopy = await buildNarrativeRenderCopy(candidate, page, athleteNames, singleLayout, {
     headline: singleHeadline,
     accent: chooseAccentWord(singleHeadline),
@@ -1130,6 +1143,8 @@ async function renderCardInner(
     is_quote: false,
     quote_text: null,
     quote_attribution: null,
+    team_style: teamCard,
+    tag_text: teamCard ? teamCardTag(candidate, singleLayout) : undefined,
   };
 
   // ⛔ OPERATOR FIX (2026-08-20, real live incidents): "Dallas Goedert News &
