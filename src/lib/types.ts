@@ -133,6 +133,10 @@ export interface ThreadsConfig {
   // 5% of her posts (Sep 15-Oct 2) to 70%, Rogan's from 8% to 46%; Eala's
   // throwbacks drew a median of 442 views vs 1,112 for her news posts.
   throwback_every?: number;
+  // (2026-10-17, operator decision) "team": captions written in the voice of
+  // this page's own human editors, from its style profile (teamStyle.ts).
+  // Unset keeps the standard narrative caption.
+  caption_style?: "team";
   // (2026-10-03, page-owner feedback) people this page no longer covers —
   // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
   // story whose headline leads with one of them is rejected
