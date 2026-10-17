@@ -1,0 +1,7 @@
+{
+  "why": "Operator-approved 2026-10-03. Essentially Golf (p74) and Daytona Racing Digest (p92) hit their daily caps on 5/7 and 3/7 of the last 7 days (and were skipped_capped in 13 and 17 of 22 runs since Oct 2 12:30) while earning 33.4 and 19.4 autopost GA4 sessions per post, the 4th and 5th best in the fleet. Raises daily_budget_max 12 -> 16 and 8 -> 12. Revert = set them back.",
+  "pages": {
+    "p74": { "setThreads": { "daily_budget_max": 16 } },
+    "p92": { "setThreads": { "daily_budget_max": 12 } }
+  }
+}
