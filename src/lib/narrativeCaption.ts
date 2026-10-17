@@ -14,6 +14,8 @@ import { Candidate, PageConfig } from "./types";
 import { buildCaption } from "./caption";
 import { callModel, aiConfigured } from "./aiClient";
 import { classifyCaptionAgeTone } from "./checks";
+import type { TeamStyleProfile } from "./teamStyle";
+import { styleDraw } from "./teamStyle";
 
 // ⛔ OPERATOR FIX (2026-09-12, real live incident): the 2026-09-08 fleet-wide
 // Haiku switch (cost-driven, no compensating prompt/eval work) is the
@@ -203,6 +205,183 @@ async function callGateway(prompt: string): Promise<string> {
   // retry note) stays uncached since it's genuinely unique every time.
   const content = await callModel({ tag: "caption", model: "sonnet", system: CAPTION_STYLE_GUIDE, content: prompt, maxTokens: 400, temperature: 0.8, timeoutMs: 45_000 });
   return stripEmDashes(stripWrappingQuotesAndMarkdown(content));
+}
+
+// (2026-10-17, operator decision) threads.caption_style "team": write like the
+// page's own human editors — see teamStyle.ts for the numbers behind it. The
+// model writes only the body; the page's "more in the comments" line (on some
+// posts, at the team's own rate) and hashtags are appended deterministically
+// so they always use the team's wording and never double up.
+const TEAM_STYLE_GUIDE = [
+  `You write posts for a sports fan page on Threads, in the voice of the page's own human editors. Their real posts are given as examples: match their length, rhythm, energy and emoji use. Copy the voice, never their facts. Every fact you state must come from the story facts given.`,
+  ``,
+  `Rules:`,
+  `- One to three short sentences: one complete thought, written the way a fan tells other fans. Pride, admiration, humor, disbelief or a clear take, whichever fits this story and this page.`,
+  `- The post is about what the HEADLINE says happened: that is the story. Use the article opening only for supporting detail, never to switch to a side story.`,
+  `- Lead with who it's about and what actually happened, in plain words. Use the specific names, numbers and quotes from the facts.`,
+  `- The post stands on its own. No teasers or cliffhangers, never hold a detail back, never mention "the reply", and never say there's more somewhere.`,
+  `- Do NOT ask people to like, comment, share, tag someone, follow or react. A genuine, specific question to fans is fine when you're asked for one.`,
+  `- No hashtags, no links, no markdown: those are added separately.`,
+  `- Never use em dashes or en dashes.`,
+  `- Never write about the page itself or whether a story fits it.`,
+  ``,
+  `Output ONLY the post text.`,
+].join("\n");
+
+function exampleBody(text: string): string {
+  return text
+    .split("\n")
+    .filter((l) => !/^\s*(#\w+\s*)+$/.test(l) && !/\bcomments?\b/i.test(l))
+    .join("\n")
+    .replace(/(^|\s)#\w+/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildTeamPrompt(
+  candidate: Candidate,
+  page: PageConfig,
+  athleteNames: string[],
+  profile: TeamStyleProfile,
+  bodyLimit: number,
+  wantQuestion: boolean,
+  retryNote?: string
+): string {
+  const examples = profile.examples
+    .map((e) => exampleBody(e.text))
+    .filter((t) => t.length >= 30)
+    .slice(0, 8)
+    .map((t, i) => `${i + 1}. ${t}`)
+    .join("\n\n");
+  const target = Math.min(profile.median_chars || 220, bodyLimit);
+  const facts = [
+    `Headline: ${stripHtml(candidate.headline)}`,
+    candidate.rawText && candidate.rawText !== candidate.headline ? `Additional detail: ${stripHtml(candidate.rawText)}` : null,
+    candidate.excerpt ? `Opening of our own article (real, published text): ${stripHtml(candidate.excerpt)}` : null,
+    athleteNames.length > 0 ? `Key people/teams involved: ${athleteNames.join(", ")}` : null,
+    page.page_theme ? `Background on this page's ongoing storyline (only to resolve who did what, never to add claims): ${stripHtml(page.page_theme)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const emoji =
+    profile.emoji_rate >= 0.5
+      ? `Use one or two emoji that fit, the way the examples do.`
+      : profile.emoji_rate >= 0.2
+      ? `An emoji is optional; at most one.`
+      : `No emoji.`;
+  return [
+    `Page: ${page.page_name}.`,
+    ``,
+    `Real posts by this page's editors${profile.source === "own" ? "" : " (some are from sister pages: copy the tone and shape, not the topics)"}:`,
+    examples,
+    ``,
+    `The story to post about. These are the only facts you may use:`,
+    facts,
+    ``,
+    classifyCaptionAgeTone(candidate) === "retro" ? `This is an older story being remembered: frame it as a look back, never as breaking news.` : null,
+    publishedNote(candidate),
+    `Length: about ${target} characters, never more than ${bodyLimit}.`,
+    emoji,
+    wantQuestion
+      ? `End with one genuine, specific question for fans about this story (never "thoughts?" and never asking them to comment).`
+      : `Don't end with a question.`,
+    retryNote ? `Note: ${retryNote}` : null,
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+// Stories more than 3 days old say so, so the post never presents an old
+// result as today's news.
+function publishedNote(candidate: Candidate): string | null {
+  const iso = candidate.realPublishedAt || candidate.publishedAt;
+  const t = iso ? Date.parse(iso) : NaN;
+  if (isNaN(t) || Date.now() - t < 3 * 24 * 3600 * 1000) return null;
+  const day = new Date(t).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return `This story was published on ${day}. Don't present it as something that just happened today.`;
+}
+
+// Hashtags a page uses for its sport/league travel with any story; anything
+// else (a player or event tag) only goes on a story that mentions it.
+const GENERIC_TAGS = new Set([
+  "nfl", "nba", "wnba", "mlb", "nhl", "ufc", "mma", "wwe", "nascar", "golf", "golfthreads", "tennis", "wta", "atp", "wtatour",
+  "boxing", "cfb", "collegefootball", "f1", "indycar", "sports", "basketball", "football", "baseball", "pga", "pgatour", "lpga",
+]);
+
+function letters(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Rejects a body that lifts a 6-word run from an example: examples set the
+// voice, never the facts.
+function copiesExample(body: string, profile: TeamStyleProfile): boolean {
+  const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").split(/\s+/).filter(Boolean);
+  const grams = new Set<string>();
+  for (const e of profile.examples) {
+    const w = words(exampleBody(e.text));
+    for (let i = 0; i + 6 <= w.length; i++) grams.add(w.slice(i, i + 6).join(" "));
+  }
+  const b = words(body);
+  for (let i = 0; i + 6 <= b.length; i++) if (grams.has(b.slice(i, i + 6).join(" "))) return true;
+  return false;
+}
+
+function teamExtras(candidate: Candidate, page: PageConfig, profile: TeamStyleProfile): { linkLine: string | null; hashtags: string | null } {
+  const key = candidate.key || candidate.headline;
+  const lines = profile.link_lines.length ? profile.link_lines : ["More details in the comments 👇"];
+  const linkLine = styleDraw(key, "link") < profile.link_line_rate ? lines[Math.floor(styleDraw(key, "linktext") * lines.length)] : null;
+  let hashtags: string | null = null;
+  if (profile.hashtags.length && styleDraw(key, "tags") < profile.hashtag_rate) {
+    const seen = new Set<string>();
+    const storyText = letters(`${candidate.headline} ${candidate.excerpt ?? ""} ${page.page_name}`);
+    const tags = profile.hashtags.filter((t) => {
+      const k = letters(t);
+      if (!k || seen.has(k)) return false;
+      if (!GENERIC_TAGS.has(k) && !storyText.includes(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    hashtags = tags.slice(0, 3).join(" ");
+  }
+  return { linkLine, hashtags };
+}
+
+async function buildTeamStyleCaption(
+  candidate: Candidate,
+  page: PageConfig,
+  athleteNames: string[],
+  profile: TeamStyleProfile,
+  charLimit: number
+): Promise<NarrativeCaptionResult | null> {
+  const { linkLine, hashtags } = teamExtras(candidate, page, profile);
+  const extrasLen = (linkLine ? linkLine.length + 2 : 0) + (hashtags ? hashtags.length + 2 : 0);
+  const bodyLimit = Math.min(320, charLimit - extrasLen);
+  const wantQuestion = styleDraw(candidate.key || candidate.headline, "question") < profile.question_rate;
+  let retryNote: string | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const prompt = buildTeamPrompt(candidate, page, athleteNames, profile, bodyLimit, wantQuestion, retryNote);
+      const raw = await callModel({ tag: "caption", model: "sonnet", system: TEAM_STYLE_GUIDE, content: prompt, maxTokens: 300, temperature: 0.8, timeoutMs: 45_000 });
+      const body = stripEmDashes(stripWrappingQuotesAndMarkdown(raw)).replace(/(^|\s)#\w+/g, "$1").trim();
+      const violation =
+        violatesPolicy(body, bodyLimit) ||
+        (/\breply\b/i.test(body) ? "MENTIONS_REPLY" : null) ||
+        (copiesExample(body, profile) ? "COPIED_EXAMPLE_TEXT" : null);
+      if (!violation) {
+        const text = [body, linkLine, hashtags].filter(Boolean).join("\n\n");
+        return { text, usedFallback: false };
+      }
+      retryNote = violation.startsWith("OVER_CHAR_LIMIT")
+        ? `your last attempt was ${body.length} characters; keep it under ${bodyLimit}`
+        : violation === "COPIED_EXAMPLE_TEXT"
+        ? `your last attempt reused wording from the example posts; write it fresh from the story facts`
+        : `your last attempt violated: ${violation}, fix that specifically`;
+      console.error(`buildTeamStyleCaption: attempt ${attempt + 1} violated policy (${violation}) for ${page.page_id}`);
+    } catch (e) {
+      console.error(`buildTeamStyleCaption: attempt ${attempt + 1} failed for ${page.page_id}: ${(e as Error).message}`);
+    }
+  }
+  return null; // caller falls back to the standard caption path
 }
 
 function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: string[], charLimit: number, retryNote?: string): string {
@@ -516,7 +695,8 @@ export interface NarrativeCaptionResult {
 export async function buildNarrativeCaptionText(
   candidate: Candidate,
   page: PageConfig,
-  athleteNames: string[]
+  athleteNames: string[],
+  teamStyle?: TeamStyleProfile | null
 ): Promise<NarrativeCaptionResult> {
   const charLimit = page.threads?.char_limit || 500;
   // Sanitized too, not just the AI path — a real headline pulled verbatim
@@ -525,6 +705,11 @@ export async function buildNarrativeCaptionText(
   const fallback = stripEmDashes(buildCaption(candidate, page));
 
   if (!aiConfigured()) return { text: fallback, usedFallback: true, violation: "NO_API_KEY" };
+
+  if (teamStyle) {
+    const team = await buildTeamStyleCaption(candidate, page, athleteNames, teamStyle, charLimit);
+    if (team) return team;
+  }
 
   let retryNote: string | undefined;
   let lastOverLimitText: string | null = null;

@@ -40,6 +40,7 @@ import {
 } from "../lib/checks";
 import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
+import { loadTeamStyleProfile } from "../lib/teamStyle";
 import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI, isCoherentHeadlineViaAI, factsFor } from "../lib/narrativeRenderSpec";
 import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
 import { searchImages, metadataMatchesSubject, captionShowsSomeoneElse } from "../lib/esDirect";
@@ -495,7 +496,8 @@ export async function verifyAndTagLink(candidate: Candidate, page: PageConfig): 
 // checks its output must pass before use. Falls back to the old templated
 // buildCaption on any failure; never blocks a post over this.
 export async function buildCaptionText(candidate: Candidate, page: PageConfig, athleteNames: string[]): Promise<string> {
-  const result = await buildNarrativeCaptionText(candidate, page, athleteNames);
+  const teamStyle = page.threads?.caption_style === "team" ? await loadTeamStyleProfile(page.page_id) : null;
+  const result = await buildNarrativeCaptionText(candidate, page, athleteNames, teamStyle);
   if (result.usedFallback) {
     console.error(`buildCaptionText: fell back to templated caption for ${page.page_id} (${result.violation})`);
   }
@@ -1209,7 +1211,10 @@ export async function postToThreads(
   // A visible hashtag is not a cosmetic defect; it's the actual Threads
   // discovery surface. Always append it when available; only attempt the
   // (still-unverified) strip cleanup afterward, never gate appending on it.
-  const wantsHashtagRegistration = page.threads?.topic_registration && page.threads?.hashtag_logic === "write_then_delete";
+  // (2026-10-17) a team-style caption already ends with the page's own
+  // hashtags (teamStyle.ts); appending ours too would double them up.
+  const captionHasHashtags = /(^|\s)#\w/.test(mainPostHtml);
+  const wantsHashtagRegistration = page.threads?.topic_registration && page.threads?.hashtag_logic === "write_then_delete" && !captionHasHashtags;
   const hashtag = wantsHashtagRegistration ? buildTopicHashtag(sportGroup) : null;
   // ⛔ OPERATOR FIX (2026-08-24, real live incident audit): confirmed live —
   // manual posts on this page's own account (Ohio State Wireline) carry a
@@ -1220,7 +1225,7 @@ export async function postToThreads(
   // repeats, never builds that same signal. Append the page's own confirmed
   // branded set alongside it; falls back to just the per-story tag (existing
   // behavior) if the combined string doesn't fit the char limit below.
-  const brandedTags = page.threads?.branded_hashtags?.length ? page.threads.branded_hashtags.join(" ") : null;
+  const brandedTags = page.threads?.branded_hashtags?.length && !captionHasHashtags ? page.threads.branded_hashtags.join(" ") : null;
   const fullHashtags = [hashtag, brandedTags].filter(Boolean).join(" ") || null;
   const withHashtag = fullHashtags ? `${mainPostHtml} ${fullHashtags}` : mainPostHtml;
 
