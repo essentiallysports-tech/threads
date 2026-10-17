@@ -137,6 +137,15 @@ export interface ThreadsConfig {
   // this page's own human editors, from its style profile (teamStyle.ts).
   // Unset keeps the standard narrative caption.
   caption_style?: "team";
+  // (2026-10-17, operator decision, CFB pages first) "team": the AI card is
+  // drawn in the layout of the team's own graphics (real photo full-bleed,
+  // dark fade over the bottom, a 2-3 line condensed headline with a
+  // highlighted word, a small tag above it and a "MORE DETAILS IN COMMENTS"
+  // pill below) instead of the giant-headline + "FULL STORY IN REPLY" bar
+  // card. card_accent_hex (no #) is the page's own color for the highlight,
+  // tag and pill. Unset keeps the current card.
+  card_style?: "team";
+  card_accent_hex?: string;
   // (2026-10-03, page-owner feedback) people this page no longer covers —
   // e.g. LeBron James on the Lakers page after his move to Philadelphia. A
   // story whose headline leads with one of them is rejected

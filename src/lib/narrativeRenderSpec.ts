@@ -110,7 +110,9 @@ function buildPrompt(
     facts,
     ``,
     `Write exactly these fields, reasoning about what's actually dramatic/newsworthy about THIS specific story (never a generic label):`,
-    `- headline: the giant on-image headline. A complete, coherent thought, 4-6 words when possible (never cut off mid-sentence — a slightly longer complete phrase beats a shorter broken one). Must be a real claim from the facts above, never rephrased into something the facts don't say.`,
+    page.threads?.card_style === "team"
+      ? `- headline: the on-image headline of a sports news graphic, set on 2-3 lines. A complete sentence of 7-12 words that says who did what (e.g. "GOLF COACH SUES COLLEGE FOR GENDER DISCRIMINATION"). Must be a real claim from the facts above, never rephrased into something the facts don't say.`
+      : `- headline: the giant on-image headline. A complete, coherent thought, 4-6 words when possible (never cut off mid-sentence — a slightly longer complete phrase beats a shorter broken one). Must be a real claim from the facts above, never rephrased into something the facts don't say.`,
     `- accent: ONE word — chosen FROM THE HEADLINE YOU JUST WROTE, copied verbatim (same spelling/case-insensitive match) — that carries the story's real drama (e.g. a word like "STUNNING", "CONFIRMED", "CHAOS", "SNUBBED"). This is NOT a separate word you invent and place elsewhere on the card — it is highlighted IN PLACE, inside the one continuous headline sentence, in accent color. Never pick a word that isn't already sitting in your own headline text; a headline with no genuinely dramatic word in it means you return null rather than forcing an accent, and NEVER rewrite the headline just to shoehorn a dramatic word in. Rules: it must NEVER be part of any named person's own name (${athleteNames.join(", ") || "none named"}), and it must be a DIFFERENT word from "${fallback.kicker}" (the card's fixed CTA strip, decided separately from your reasoning here — never repeat that text).`,
     `- story_type: a short phrase describing the story's real shape (e.g. "trade rumor", "career milestone", "coaching controversy") — this only steers the prompt's tone, keep it to 2-4 words.`,
     retryNote ? `\nIMPORTANT — your previous attempt failed because: ${retryNote}. Fix that specifically.` : "",
@@ -347,7 +349,8 @@ export async function buildNarrativeRenderCopy(
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
-        const headline = capHeadlineLength(parsed.headline, 6, 10, athleteNames);
+        const team = page.threads?.card_style === "team";
+        const headline = capHeadlineLength(parsed.headline, team ? 12 : 6, team ? 14 : 10, athleteNames);
         // Structural checks (violates()) can't catch a headline that reads
         // as two unrelated facts stitched together — this is a semantic
         // judgment, made fresh, independent of whatever reasoning produced

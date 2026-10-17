@@ -49,7 +49,8 @@ export async function verifyCardText(
   headline: string,
   kicker: string,
   accent: string | null,
-  photoSubjects: string[] = []
+  photoSubjects: string[] = [],
+  extraLabels: string[] = []
 ): Promise<CardTextQCResult> {
   if (!aiConfigured()) return { pass: true, reason: null }; // can't verify without a key — a missing check shouldn't block every post
   if (await isDailyBudgetExceeded()) return { pass: true, reason: null }; // over today's soft AI-gateway budget — see aiGatewayBudget.ts
@@ -61,6 +62,7 @@ export async function verifyCardText(
     accent
       ? `- Accent word: "${accent}" — this word is PART OF the headline above (it's one of the words in that same sentence), just rendered in a different accent color in place. It must NOT appear a second time anywhere else on the card as its own separate word/line.`
       : null,
+    extraLabels.length > 0 ? `- Small labels that also belong on the card: ${extraLabels.map((l) => `"${l}"`).join(", ")}` : null,
     photoSubjects.length > 0 ? `- The card should depict: ${photoSubjects.join(" and ")}` : null,
     ``,
     `Check ALL of the following. Reply with EXACTLY one line:`,
