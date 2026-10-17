@@ -1,0 +1,56 @@
+{
+ "p78": {
+  "name": "Eala",
+  "group": "TEST 2/day",
+  "posts_per_day": 3.4,
+  "median_views": 357,
+  "mean_views": 716,
+  "likes_per_post": 3.0,
+  "clicks_per_day": 223
+ },
+ "p40": {
+  "name": "Lions",
+  "group": "TEST 4/day",
+  "posts_per_day": 3.9,
+  "median_views": 213,
+  "mean_views": 11531,
+  "likes_per_post": 6.4,
+  "clicks_per_day": 372
+ },
+ "p74": {
+  "name": "Golf",
+  "group": "TEST 5/day",
+  "posts_per_day": 12.0,
+  "median_views": 76,
+  "mean_views": 2292,
+  "likes_per_post": 0.5,
+  "clicks_per_day": 96
+ },
+ "p41": {
+  "name": "Dallas",
+  "group": "control",
+  "posts_per_day": 9.9,
+  "median_views": 21,
+  "mean_views": 29,
+  "likes_per_post": 0.2,
+  "clicks_per_day": 10
+ },
+ "p71": {
+  "name": "Rogan",
+  "group": "control",
+  "posts_per_day": 6.4,
+  "median_views": 87,
+  "mean_views": 139,
+  "likes_per_post": 0.1,
+  "clicks_per_day": 13
+ },
+ "p92": {
+  "name": "Daytona",
+  "group": "control",
+  "posts_per_day": 10.0,
+  "median_views": 45,
+  "mean_views": 63,
+  "likes_per_post": 1.5,
+  "clicks_per_day": 13
+ }
+}
