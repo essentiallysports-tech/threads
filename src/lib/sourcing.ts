@@ -1076,11 +1076,14 @@ export function sharesStoryline(headline: string, page: PageConfig, arcs: Array<
   return arcs.some((a) => [...mine].some((w) => a.names.has(w)));
 }
 
-const LOSING_STORY_TYPE_RE =
-  /\b(injur(y|ed|ies)|hospital|surgery|warns?|warning|predicts?|prediction|emotional|tears?|cries|cried|heartbreak|heartfelt|fans?\s+(react|reacts|reaction|slam|slams|flood|go wild|erupt)|viral|internet reacts|social media reacts)\b/i;
-export function isLosingStoryType(headline: string): boolean {
-  return LOSING_STORY_TYPE_RE.test(headline || "");
-}
+// (2026-10-19) The "losing story type" demotion (#69: injury / warns /
+// emotional / fan-reaction headlines sorted last) is gone. Over 45 days of GA
+// those stories did as well as any other: team posts median 4 clicks either
+// way, mean 161 vs 92, top-5% share 6.3% vs 4.8%; ours median 1 either way,
+// top-5% share 5.2% vs 5.0%. Sorting them last only meant never posting them:
+// "NIKOLA JOKIC'S NUGGETS GET BAD NEWS AS SUDDEN INJURY BLOW..." sat at the
+// bottom of NBA Circuit's pool all day on Oct 17 while the team's own post of
+// it drew ~970 clicks.
 
 export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: string, postedLog: PostedLogEntry[]): Promise<Candidate[]> {
   const todaysEntries = postedLog.filter((p) => (p.posted_at || "").startsWith(dateISO));
@@ -1361,7 +1364,6 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     if (mentionsFocusEntity(c.headline, teamProfile?.overused_entities)) return -1;
     return 0;
   };
-  const losingScore = (c: Candidate): number => (isLosingStoryType(c.headline) ? 1 : 0);
   if (arcs.length > 0) {
     const boosted = unposted.filter((c) => arcScore(c) === 1).length;
     console.error(
@@ -1370,8 +1372,6 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   }
   if (page.page_type === "national") {
     unposted = unposted.sort((a, b) => {
-      const losingDiff = losingScore(a) - losingScore(b);
-      if (losingDiff !== 0) return losingDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);
@@ -1400,8 +1400,6 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       }
       const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
       if (entityDiff !== 0) return entityDiff;
-      const losingDiff = losingScore(a) - losingScore(b);
-      if (losingDiff !== 0) return losingDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);
