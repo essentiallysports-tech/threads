@@ -33,6 +33,31 @@ export interface TeamStyleProfile {
   median_chars: number;
   link_lines: string[];
   link_line_rate: number;
+  // (2026-10-19) story focus from the team's own posts on this page:
+  // focus_entities are names the team covers far more than we do (Kobe on
+  // Kobe 8/24: team 98% of posts vs ours 42%), overused_entities ones we
+  // cover far more than the team does (Shaq there: ours 71% vs team 6%).
+  // sourcing.ts ranks the first ahead and the second behind; nothing is
+  // filtered out.
+  focus_entities?: TeamFocusEntity[];
+  overused_entities?: TeamFocusEntity[];
+}
+
+export interface TeamFocusEntity {
+  name: string;
+  keywords: string[];
+}
+
+export function mentionsFocusEntity(text: string, entities: TeamFocusEntity[] | undefined): boolean {
+  if (!entities || entities.length === 0) return false;
+  const t = text.toLowerCase();
+  return entities.some((e) =>
+    [e.name, ...e.keywords].some((k) => {
+      const kw = k.trim().toLowerCase();
+      if (kw.length <= 3) return false;
+      return new RegExp(`(^|[^a-z0-9])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^a-z0-9])`).test(t);
+    })
+  );
 }
 
 const CACHE_MS = 60 * 60 * 1000;

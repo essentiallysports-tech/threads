@@ -100,6 +100,9 @@ export interface PromptOptions {
   subjectFromReference?: boolean;
 }
 
+// (2026-10-19) the quote's attribution line appears only when the speaker is
+// known (activities/index.ts quoteSpeaker): the old fallback to the second
+// headline name credited "VANDERBILT" with Eli Manning's quote.
 export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {}): string {
   const lines: string[] = [];
   const fromReference = options.subjectFromReference === true;
@@ -116,7 +119,7 @@ export function buildRenderPrompt(spec: RenderSpec, options: PromptOptions = {})
         : `Subject: ${subjectPhrase || "the quoted person"} — ${nameRealPeople ? "real likeness, " : ""}headshot or upper body, current look, candid press-photo style.`,
       `A giant opening quotation mark in #${spec.accent_hex} sits top-left or behind the text block.`,
       `THE QUOTE ITSELF MUST BE RENDERED AS LARGE, HIGH-CONTRAST, PERFECTLY SPELLED TEXT filling the middle third of the card: "${spec.quote_text}"`,
-      `Below the quote, a smaller attribution line rendered as text: "— ${spec.quote_attribution ?? spec.photo_subjects[0] ?? ""}"`,
+      spec.quote_attribution ? `Below the quote, a smaller attribution line rendered as text: "— ${spec.quote_attribution}"` : `No attribution line under the quote.`,
       `Accent color #${spec.accent_hex} applies ONLY to the quote mark and attribution; the photo stays real and untouched.`
     );
   } else if (spec.layout === "comparison" && spec.photo_subjects.length > 1) {
@@ -220,7 +223,7 @@ export function buildBackgroundOnlyPrompt(spec: RenderSpec): string {
       `Do NOT draw any person, face, silhouette, or figure anywhere on this card — leave ${regionDesc} as a clean, empty, softly blurred real-scene background (stadium/arena bokeh or a solid brand-color panel) with nothing drawn on top of it. A real photo of the subject will be placed there separately — your job is only the surrounding design.`,
       `A giant opening quotation mark in #${spec.accent_hex} sits top-left or behind the text block, OUTSIDE the empty panel.`,
       `THE QUOTE ITSELF MUST BE RENDERED AS LARGE, HIGH-CONTRAST, PERFECTLY SPELLED TEXT filling the middle third of the card: "${spec.quote_text}"`,
-      `Below the quote, a smaller attribution line rendered as text: "— ${spec.quote_attribution ?? spec.photo_subjects[0] ?? ""}"`,
+      spec.quote_attribution ? `Below the quote, a smaller attribution line rendered as text: "— ${spec.quote_attribution}"` : `No attribution line under the quote.`,
       `Accent color #${spec.accent_hex} applies ONLY to the quote mark and attribution.`
     );
   } else if (spec.layout === "comparison") {

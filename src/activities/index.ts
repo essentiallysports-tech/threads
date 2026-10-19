@@ -182,9 +182,39 @@ function stripLabelPrefix(headline: string): string {
   return match ? headline.slice(match[0].length) : headline;
 }
 
-function shortHeadline(headline: string, maxWords = 6, knownNames: string[] = []): string {
+// (2026-10-19) who said the quoted words in a headline, from its shape:
+// '"Quote": Name does X' (speaker right after the quote) or 'Name: "Quote"'
+// (right before). null when unsure: a quote card used to credit the second
+// headline name, which put "VANDERBILT" under Eli Manning's quote.
+export function quoteSpeaker(headline: string, names: string[]): string | null {
+  const m = headline.match(/["“]([^"”]{2,120})["”]/);
+  if (!m || m.index === undefined) return null;
+  const before = headline.slice(0, m.index);
+  const after = headline.slice(m.index + m[0].length);
+  const firstIn = (text: string, fromEnd: boolean): string | null => {
+    let best: { name: string; pos: number } | null = null;
+    for (const n of names) {
+      const last = n.trim().split(/\s+/).pop() || n;
+      const i = fromEnd ? Math.max(text.lastIndexOf(n), text.lastIndexOf(last)) : [text.indexOf(n), text.indexOf(last)].filter((x) => x >= 0).sort((a, b) => a - b)[0] ?? -1;
+      if (i < 0) continue;
+      if (!best || (fromEnd ? i > best.pos : i < best.pos)) best = { name: n, pos: i };
+    }
+    return best ? best.name : null;
+  };
+  if (before.trim().length === 0 && /^\s*[-–—:]/.test(after)) return firstIn(after.slice(0, 60), false);
+  if (/[:\-–—]\s*$/.test(before)) return firstIn(before, true);
+  return null;
+}
+
+function shortHeadline(headline: string, maxWords = 10, knownNames: string[] = []): string {
   const quoted = extractQuotedPhrase(headline);
-  if (quoted) return quoted; // complete quote, never truncated — a cut quote is worse than a longer one
+  if (quoted) {
+    // complete quote, never truncated — a cut quote is worse than a longer one;
+    // say who said it when the headline makes that clear
+    const speaker = quoteSpeaker(headline, knownNames);
+    const withSpeaker = speaker ? `${speaker.trim().split(/\s+/).pop()}: "${quoted}"` : quoted;
+    return withSpeaker.split(/\s+/).length <= maxWords + 2 ? withSpeaker : quoted;
+  }
 
   const withoutLabel = stripLabelPrefix(headline);
 
@@ -1017,7 +1047,7 @@ async function renderCardInner(
       // accent/kicker at all — only quote_text/quote_attribution, which stay
       // deterministic (extracted verbatim, never AI-paraphrased). Only the
       // comparison layout's copy is worth a real reasoning pass.
-      const comparisonHeadline = shortHeadline(candidate.headline, 6, athleteNames);
+      const comparisonHeadline = shortHeadline(candidate.headline, 10, athleteNames);
       const copy = isQuote
         ? { headline: comparisonHeadline, accent: chooseAccentWord(comparisonHeadline), kicker, story_type: "quote exchange" }
         : await buildNarrativeRenderCopy(candidate, page, athleteNames, "comparison", {
@@ -1038,7 +1068,7 @@ async function renderCardInner(
         reference_photo_url: subjectPhoto,
         is_quote: isQuote,
         quote_text: isQuote ? quotedPhrase : null,
-        quote_attribution: isQuote ? headlineNames[1] : null,
+        quote_attribution: isQuote ? quoteSpeaker(candidate.headline, headlineNames) : null,
       };
       // ⛔ OPERATOR FIX (2026-08-20, real live incident): last-resort safety
       // net — narrativeRenderSpec.ts's own retry loop already rejects this
@@ -1109,7 +1139,7 @@ async function renderCardInner(
   // never a layout-dependent story-category label.
   const singleLayout: TemplateId = template === "comparison" || template === "quote" ? "standard_editorial" : template;
   const singleAccentHex = isTradeStory && singleLayout !== "retro" ? ACCENT_HEX_TRADE : PALETTE_BY_LAYOUT[singleLayout];
-  const singleHeadline = shortHeadline(candidate.headline, 6, athleteNames);
+  const singleHeadline = shortHeadline(candidate.headline, 10, athleteNames);
   const singleCopy = await buildNarrativeRenderCopy(candidate, page, athleteNames, singleLayout, {
     headline: singleHeadline,
     accent: chooseAccentWord(singleHeadline),

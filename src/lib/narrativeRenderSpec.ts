@@ -61,12 +61,12 @@ function stripWrappingQuotesAndMarkdown(text: string): string {
   return codeBlock ? codeBlock[1].trim() : t;
 }
 
-async function callGateway(prompt: string, tag: string): Promise<string> {
+async function callGateway(prompt: string, tag: string, temperature = 0.7): Promise<string> {
   // The daily budget breaker lives in callModel (aiClient.ts); throwing
   // (rather than returning a sentinel) means every caller's own catch block
   // handles it exactly like any other AI failure, falling back to its own
   // deterministic default.
-  const content = await callModel({ tag, model: "sonnet", content: prompt, maxTokens: 300, temperature: 0.7, timeoutMs: 45_000 });
+  const content = await callModel({ tag, model: "sonnet", content: prompt, maxTokens: 300, temperature, timeoutMs: 45_000 });
   return stripWrappingQuotesAndMarkdown(content);
 }
 
@@ -110,7 +110,14 @@ function buildPrompt(
     facts,
     ``,
     `Write exactly these fields, reasoning about what's actually dramatic/newsworthy about THIS specific story (never a generic label):`,
-    `- headline: the giant on-image headline. A complete, coherent thought, 4-6 words when possible (never cut off mid-sentence — a slightly longer complete phrase beats a shorter broken one). Must be a real claim from the facts above, never rephrased into something the facts don't say.`,
+    // (2026-10-19, operator ask "infographic text as close to manual/better")
+    // our best cards last month (Sep 15-Oct 8) were named and specific: "DAK
+    // PRESCOTT EXCLUDES EX-FIANCEE FROM FAMILY PHOTOS AFTER CHEATING
+    // ACCUSATIONS", "JESSICA PEGULA QUESTIONS $10,000 FINE FOR EALA", "'IT'S A
+    // STUPID RULE': KELCE CALLS OUT NFL"; the weak ones were teasers ("IT'S
+    // WORSE NOW", "I WISH YOU COULD SEE THIS") or unnamed ("NFL LEGEND RIPS
+    // INTO MICAH PARSONS"). The team's own graphics read the same way.
+    `- headline: the on-image headline, 6-10 words, one complete and specific claim from the facts above (never rephrased into something the facts don't say). Lead with the name fans know (e.g. "DAK PRESCOTT", "SHILO SANDERS") whenever the facts name the person, and include the single most specific detail the facts give: an amount, a number, a relationship, the actual accusation or the quoted words. Never a vague teaser ("IT'S WORSE NOW", "I WISH YOU COULD SEE THIS", "MAJOR UPDATE") and never an unnamed subject ("NFL LEGEND", "ANALYST") when the facts name them. If you use quoted words, say who said them and about whom or what (e.g. "'IT'S A STUPID RULE': KELCE CALLS OUT NFL").`,
     `- accent: ONE word — chosen FROM THE HEADLINE YOU JUST WROTE, copied verbatim (same spelling/case-insensitive match) — that carries the story's real drama (e.g. a word like "STUNNING", "CONFIRMED", "CHAOS", "SNUBBED"). This is NOT a separate word you invent and place elsewhere on the card — it is highlighted IN PLACE, inside the one continuous headline sentence, in accent color. Never pick a word that isn't already sitting in your own headline text; a headline with no genuinely dramatic word in it means you return null rather than forcing an accent, and NEVER rewrite the headline just to shoehorn a dramatic word in. Rules: it must NEVER be part of any named person's own name (${athleteNames.join(", ") || "none named"}), and it must be a DIFFERENT word from "${fallback.kicker}" (the card's fixed CTA strip, decided separately from your reasoning here — never repeat that text).`,
     `- story_type: a short phrase describing the story's real shape (e.g. "trade rumor", "career milestone", "coaching controversy") — this only steers the prompt's tone, keep it to 2-4 words.`,
     retryNote ? `\nIMPORTANT — your previous attempt failed because: ${retryNote}. Fix that specifically.` : "",
@@ -137,7 +144,7 @@ export function accentIsWordInHeadline(accent: string, headline: string): boolea
   return words.includes(accent.trim().toLowerCase());
 }
 
-function violates(parsed: any, athleteNames: string[], kicker: string): string | null {
+function violates(parsed: any, athleteNames: string[]): string | null {
   if (!parsed || typeof parsed !== "object") return "NOT_AN_OBJECT";
   if (typeof parsed.headline !== "string" || !parsed.headline.trim()) return "MISSING_HEADLINE";
   // ⛔ OPERATOR FIX (2026-08-20, real live incident): "Dallas Goedert News &
@@ -148,18 +155,57 @@ function violates(parsed: any, athleteNames: string[], kicker: string): string |
   // just applied here too — a retry gets a real chance to write something
   // actually about the story instead of a label for it.
   if (isGenericFramingText(parsed.headline)) return "GENERIC_HEADLINE_FRAMING";
+  if (endsDangling(parsed.headline)) return "DANGLING_END";
+  // (2026-10-19) a named story's card names the person (see the headline rule).
+  if (athleteNames.length > 0 && !headlineNamesSomeone(parsed.headline, athleteNames)) return "HEADLINE_MISSING_NAME";
   if (typeof parsed.story_type !== "string" || !parsed.story_type.trim()) return "MISSING_STORY_TYPE";
-  if (parsed.accent !== null && parsed.accent !== undefined) {
-    if (typeof parsed.accent !== "string" || !parsed.accent.trim()) return "INVALID_ACCENT_TYPE";
-    const accentLower = parsed.accent.trim().toLowerCase();
-    if (accentLower === kicker.trim().toLowerCase()) return "ACCENT_DUPLICATES_KICKER";
-    if (!accentIsWordInHeadline(parsed.accent, parsed.headline)) return "ACCENT_NOT_IN_HEADLINE";
-    for (const name of athleteNames) {
-      const lastName = name.trim().split(/\s+/).pop()?.toLowerCase() || "";
-      if (lastName.length > 2 && (accentLower === lastName || accentLower.includes(lastName))) return "ACCENT_FROM_NAME";
-    }
-  }
   return null;
+}
+
+// (2026-10-19) "KOBE", "SHAQ", "STEPH" all name their man: any name part of 4+
+// letters, or a 4+ letter word that starts one, counts.
+export function headlineNamesSomeone(headline: string, athleteNames: string[]): boolean {
+  const words = headline.toLowerCase().replace(/['’]s\b/g, "").split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
+  return athleteNames.some((n) =>
+    n
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((p) => p.length >= 4)
+      .some((p) => words.some((w) => p === w || p.startsWith(w)))
+  );
+}
+
+// (2026-10-19) Oct 16-19 a bad accent pick cost 59 cards their whole AI
+// headline (both attempts failed ACCENT_NOT_IN_HEADLINE -> cut-down source
+// title or no card at all). The accent is optional — the prompt already says
+// to return null rather than force one — so a bad pick is now just dropped.
+export function cleanAccent(accent: unknown, headline: string, athleteNames: string[], kicker: string): string | null {
+  if (typeof accent !== "string" || !accent.trim()) return null;
+  const accentLower = accent.trim().toLowerCase();
+  if (accentLower === kicker.trim().toLowerCase()) return null;
+  if (!accentIsWordInHeadline(accent, headline)) return null;
+  for (const name of athleteNames) {
+    const lastName = name.trim().split(/\s+/).pop()?.toLowerCase() || "";
+    if (lastName.length > 2 && (accentLower === lastName || accentLower.includes(lastName))) return null;
+  }
+  return accent.trim();
+}
+
+// Words a headline can't end on: "LSU COACH ADMITS TURNING PLAYER AGAINST",
+// "EAGLES SIGN QB JOE MILTON OFF", "MICHIGAN FACES MAJOR SEC THREAT FOR
+// NATION'S NO." (all real, Oct 16-19) — or on a possessive with nothing after it.
+// Only words that can't close a sentence — not particles like "off"/"over"
+// ("SEASON KICKS OFF", "GAME OVER" are fine).
+const DANGLING_END_WORDS = new Set([
+  "a", "an", "the", "of", "to", "for", "with", "after", "before", "against", "from", "into", "onto", "and", "or",
+  "but", "as", "than", "amid", "despite", "his", "their", "its", "who", "how", "why", "which", "whether", "former",
+]);
+
+export function endsDangling(headline: string): boolean {
+  const rawLast = headline.trim().split(/\s+/).pop() || "";
+  if (/^no\.$/i.test(rawLast) || /\w['’]s[,:;]?$/i.test(rawLast)) return true;
+  const last = rawLast.replace(/["'“”‘’.,!?:;\-–—]+$/, "");
+  return DANGLING_END_WORDS.has(last.toLowerCase());
 }
 
 // Same word-boundary safety net shortHeadline (activities/index.ts) already
@@ -288,7 +334,16 @@ export async function isGenuineComparisonViaAI(
 // infra failure/missing key — same conservative-default posture as every
 // other AI-augmented check in this pipeline; an unreachable check must
 // never be the reason a real, otherwise-fine post gets dropped.
+// (2026-10-19) Oct 16-19 this judge (temperature 0.7, bare true/false) also
+// rejected complete headlines — "WHITTINGHAM BENCHES UNDERWOOD AFTER
+// EMBARRASSING FIRST HALF", "OPEN CHAMPION RYAN FOX AMONG BIGGEST NAMES TO
+// MISS CUT", "DODGERS FACE UNCOMFORTABLE OHTANI DECISION" — and each double
+// rejection cost the card its AI headline (75 times; 109 cards dropped). It
+// now runs at temperature 0, must name which of the three failures it saw,
+// and failures 2/3 are only accepted when the headline really has the shape
+// described (an opened wh-clause / a word that can't end a sentence).
 export async function isCoherentHeadlineViaAI(headline: string, facts: string): Promise<boolean> {
+  if (endsDangling(headline)) return false;
   if (!aiConfigured()) return true;
   const prompt = [
     `Here is a headline meant to be rendered as the giant on-image text of a sports infographic card:`,
@@ -305,12 +360,16 @@ export async function isCoherentHeadlineViaAI(headline: string, facts: string): 
     `(3) The headline ends on a word that grammatically REQUIRES something to follow it — most commonly a possessive ("Tyson Fury's", "the team's") with no noun after it, but also any other clearly dangling modifier/connector. Example: "Silence on Tyson Fury's" — "Fury's" is left holding nothing; a reader expects "Fury's [something]" and never gets it. This is different from a headline that simply ends — a headline ending on a complete noun, name, or short phrase is fine even if terse; it's specifically ending on a word whose own grammar promises a continuation that never comes.`,
     ``,
     `Answer false ONLY for one of those three specific failures, or if the text is so garbled it doesn't parse as English at all. When in doubt, answer true — a dense-but-connected real headline must never be rejected for being merely terse.`,
-    `Output ONLY a JSON object: {"coherent": true} or {"coherent": false}. No markdown, no explanation.`,
+    `Output ONLY a JSON object: {"coherent": true}, or {"coherent": false, "failure": 1, 2 or 3} naming which of the three failures above it is. No markdown, no explanation.`,
   ].join("\n");
   try {
-    const raw = await callGateway(prompt, "coherence");
+    const raw = await callGateway(prompt, "coherence", 0);
     const parsed = JSON.parse(raw);
-    return parsed?.coherent !== false; // any shape other than an explicit false is treated as "didn't flag it"
+    if (parsed?.coherent !== false) return true; // any shape other than an explicit false is treated as "didn't flag it"
+    const failure = Number(parsed.failure);
+    if (failure === 1 || failure === 3) return false;
+    if (failure === 2) return !/\b(how|why|what|which|who|when|where|whether)\b/i.test(headline);
+    return true; // no stated failure
   } catch (e) {
     console.error(`isCoherentHeadlineViaAI: failed: ${(e as Error).message}`);
     return true;
@@ -339,15 +398,19 @@ export async function buildNarrativeRenderCopy(
 ): Promise<RenderCopyResult> {
   if (!aiConfigured()) return { ...fallback, usedFallback: true, violation: "NO_API_KEY" };
 
+  const ATTEMPTS = 2;
   let retryNote: string | undefined;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     try {
       const prompt = buildPrompt(candidate, page, athleteNames, layout, fallback, retryNote);
       const raw = await callGateway(prompt, "render_copy");
       const parsed = JSON.parse(raw);
-      const violation = violates(parsed, athleteNames, fallback.kicker);
-      if (!violation) {
-        const headline = capHeadlineLength(parsed.headline, 6, 10, athleteNames);
+      const violation = violates(parsed, athleteNames);
+      // A full AI headline that just misses the name still beats the cut-down
+      // source title the fallback would use, so on the last try it's accepted.
+      const softOnly = violation === "HEADLINE_MISSING_NAME" && attempt === ATTEMPTS - 1;
+      if (!violation || softOnly) {
+        const headline = capHeadlineLength(parsed.headline, 10, 12, athleteNames);
         // Structural checks (violates()) can't catch a headline that reads
         // as two unrelated facts stitched together — this is a semantic
         // judgment, made fresh, independent of whatever reasoning produced
@@ -356,7 +419,7 @@ export async function buildNarrativeRenderCopy(
         if (coherent) {
           return {
             headline,
-            accent: parsed.accent ?? null,
+            accent: cleanAccent(parsed.accent, headline, athleteNames, fallback.kicker),
             // Kicker is the card's fixed CTA strip (see chooseKicker in
             // activities/index.ts) — never AI-reasoned, always carried
             // through from the caller's deterministic value.
