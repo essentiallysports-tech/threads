@@ -110,7 +110,14 @@ function buildPrompt(
     facts,
     ``,
     `Write exactly these fields, reasoning about what's actually dramatic/newsworthy about THIS specific story (never a generic label):`,
-    `- headline: the giant on-image headline. A complete, coherent thought, 4-6 words when possible (never cut off mid-sentence — a slightly longer complete phrase beats a shorter broken one). Must be a real claim from the facts above, never rephrased into something the facts don't say.`,
+    // (2026-10-19, operator ask "infographic text as close to manual/better")
+    // our best cards last month (Sep 15-Oct 8) were named and specific: "DAK
+    // PRESCOTT EXCLUDES EX-FIANCEE FROM FAMILY PHOTOS AFTER CHEATING
+    // ACCUSATIONS", "JESSICA PEGULA QUESTIONS $10,000 FINE FOR EALA", "'IT'S A
+    // STUPID RULE': KELCE CALLS OUT NFL"; the weak ones were teasers ("IT'S
+    // WORSE NOW", "I WISH YOU COULD SEE THIS") or unnamed ("NFL LEGEND RIPS
+    // INTO MICAH PARSONS"). The team's own graphics read the same way.
+    `- headline: the on-image headline, 6-10 words, one complete and specific claim from the facts above (never rephrased into something the facts don't say). Lead with the name fans know (e.g. "DAK PRESCOTT", "SHILO SANDERS") whenever the facts name the person, and include the single most specific detail the facts give: an amount, a number, a relationship, the actual accusation or the quoted words. Never a vague teaser ("IT'S WORSE NOW", "I WISH YOU COULD SEE THIS", "MAJOR UPDATE") and never an unnamed subject ("NFL LEGEND", "ANALYST") when the facts name them. If you use quoted words, say who said them and about whom or what (e.g. "'IT'S A STUPID RULE': KELCE CALLS OUT NFL").`,
     `- accent: ONE word — chosen FROM THE HEADLINE YOU JUST WROTE, copied verbatim (same spelling/case-insensitive match) — that carries the story's real drama (e.g. a word like "STUNNING", "CONFIRMED", "CHAOS", "SNUBBED"). This is NOT a separate word you invent and place elsewhere on the card — it is highlighted IN PLACE, inside the one continuous headline sentence, in accent color. Never pick a word that isn't already sitting in your own headline text; a headline with no genuinely dramatic word in it means you return null rather than forcing an accent, and NEVER rewrite the headline just to shoehorn a dramatic word in. Rules: it must NEVER be part of any named person's own name (${athleteNames.join(", ") || "none named"}), and it must be a DIFFERENT word from "${fallback.kicker}" (the card's fixed CTA strip, decided separately from your reasoning here — never repeat that text).`,
     `- story_type: a short phrase describing the story's real shape (e.g. "trade rumor", "career milestone", "coaching controversy") — this only steers the prompt's tone, keep it to 2-4 words.`,
     retryNote ? `\nIMPORTANT — your previous attempt failed because: ${retryNote}. Fix that specifically.` : "",
@@ -148,6 +155,16 @@ function violates(parsed: any, athleteNames: string[], kicker: string): string |
   // just applied here too — a retry gets a real chance to write something
   // actually about the story instead of a label for it.
   if (isGenericFramingText(parsed.headline)) return "GENERIC_HEADLINE_FRAMING";
+  // (2026-10-19) a named story's card names the person (see the headline rule).
+  if (athleteNames.length > 0) {
+    const h = parsed.headline.toLowerCase();
+    const named = athleteNames.some((n) => {
+      const parts = n.trim().toLowerCase().split(/\s+/);
+      const last = parts[parts.length - 1] || "";
+      return h.includes(n.trim().toLowerCase()) || (last.length > 2 && new RegExp(`(^|[^a-z])${last.replace(/[^a-z0-9]/g, "")}`).test(h));
+    });
+    if (!named) return "HEADLINE_MISSING_NAME";
+  }
   if (typeof parsed.story_type !== "string" || !parsed.story_type.trim()) return "MISSING_STORY_TYPE";
   if (parsed.accent !== null && parsed.accent !== undefined) {
     if (typeof parsed.accent !== "string" || !parsed.accent.trim()) return "INVALID_ACCENT_TYPE";
@@ -347,7 +364,7 @@ export async function buildNarrativeRenderCopy(
       const parsed = JSON.parse(raw);
       const violation = violates(parsed, athleteNames, fallback.kicker);
       if (!violation) {
-        const headline = capHeadlineLength(parsed.headline, 6, 10, athleteNames);
+        const headline = capHeadlineLength(parsed.headline, 10, 12, athleteNames);
         // Structural checks (violates()) can't catch a headline that reads
         // as two unrelated facts stitched together — this is a semantic
         // judgment, made fresh, independent of whatever reasoning produced

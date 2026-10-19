@@ -19,6 +19,7 @@ import { getPostContent } from "./beehiiv";
 import { isDailyBudgetExceeded } from "./aiGatewayBudget";
 import { callModel, aiConfigured } from "./aiClient";
 import { crossPageConflict } from "./crossPageLedger";
+import { loadTeamStyleProfile, mentionsFocusEntity } from "./teamStyle";
 
 // ⛔ OPERATOR FIX (2026-08-23, real live incident): today's removal of the
 // artificial 5-entity cap on sourceFromEsEvergreenArticles (a real coverage
@@ -1351,6 +1352,15 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
   // none of them clear it on a given run.
   const arcs = await hotStorylines(page, postedLog);
   const arcScore = (c: Candidate): number => (sharesStoryline(c.headline, page, arcs) ? 1 : 0);
+  // (2026-10-19) the page's own team focus (teamStyle.ts): stories about the
+  // names its team covers rank ahead, stories only about names we over-post
+  // rank behind. Ordering only, after hot storylines.
+  const teamProfile = await loadTeamStyleProfile(page.page_id);
+  const focusScore = (c: Candidate): number => {
+    if (mentionsFocusEntity(c.headline, teamProfile?.focus_entities)) return 1;
+    if (mentionsFocusEntity(c.headline, teamProfile?.overused_entities)) return -1;
+    return 0;
+  };
   const losingScore = (c: Candidate): number => (isLosingStoryType(c.headline) ? 1 : 0);
   if (arcs.length > 0) {
     const boosted = unposted.filter((c) => arcScore(c) === 1).length;
@@ -1364,6 +1374,8 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       if (losingDiff !== 0) return losingDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
+      const focusDiff = focusScore(b) - focusScore(a);
+      if (focusDiff !== 0) return focusDiff;
       const aScore = computeNationalStoryScore(a).total;
       const bScore = computeNationalStoryScore(b).total;
       const aAbove = aScore >= page.national_threshold ? 1 : 0;
@@ -1392,6 +1404,8 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       if (losingDiff !== 0) return losingDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
+      const focusDiff = focusScore(b) - focusScore(a);
+      if (focusDiff !== 0) return focusDiff;
       const rankDiff = tierRank(b) - tierRank(a);
       if (rankDiff !== 0) return rankDiff;
       const aFlat = isFlatStatDump(a) ? 0 : 1;

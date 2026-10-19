@@ -1,0 +1,86 @@
+{
+ "page_id": "p78",
+ "page_name": "Alex Eala Fan Club",
+ "sport": "Tennis",
+ "source": "own",
+ "built_from": {
+  "own_team_posts": 23,
+  "sport_team_posts": 76
+ },
+ "examples": [
+  {
+   "text": "Alex Eala claims the bronze medal at the 20th Asian Games following a thrilling three-set battle in the semifinals! Huge pride and achievement for the nation! 🥹\n\n#AlexEala #AsianGames #WTA #Tennis",
+   "likes": 907,
+   "views": 64555,
+   "from_page": "p78"
+  },
+  {
+   "text": "Alex Eala proudly embraces her bronze medal finish, standing tall with zero regrets after giving her absolute all on court! True champion spirit from the Filipino phenom! How proud are you of Alex?🔥   #AlexEala #WTATour #Tennis #Philippines",
+   "likes": 834,
+   "views": 12971,
+   "from_page": "p78"
+  },
+  {
+   "text": "Where it all started! 🎾 Alex Eala picked up a racket at just 4 years old, inspired by her grandfather Roberto \"Bobby\" Maniego. Isn't this origin story amazing?🇵🇭",
+   "likes": 582,
+   "views": 13327,
+   "from_page": "p78"
+  },
+  {
+   "text": "Alex Eala knows how to take criticism in stride 🎾🔥 She values honest feedback, but not opinions from people who don’t know the full story. 💯",
+   "likes": 273,
+   "views": 6265,
+   "from_page": "p78"
+  },
+  {
+   "text": "Alex Eala targets the ultimate prize at the 2026 Asian Games! 🇵🇭 Resilient, grounded, and hungry for gold, the tennis star embraces both the grind and the risks of the game. 🎾 Let's go, Alex! Bring home that historic win for the Philippines! 🥇 #AlexEala #AsianGames2026 #PinoyPride #Tennis",
+   "likes": 215,
+   "views": 3813,
+   "from_page": "p78"
+  },
+  {
+   "text": "Proud of her roots! 🇵🇭✨ Did you know Alex Eala custom-prints \"Kapag lumago, hindi na hihinto\" on her Nike visors to remind her that once growth starts, it can't be stopped? How inspiring is this? 👇🎾\n\n#AlexEala #WTA #Tennis #Philippines",
+   "likes": 203,
+   "views": 2754,
+   "from_page": "p78"
+  },
+  {
+   "text": "Proven winner! 🇵🇭 Alex Eala conquered the junior Grand Slam stage across AO, RG, and the US Open. Will she win a senior Grand Slam title in her career?🔥",
+   "likes": 150,
+   "views": 5341,
+   "from_page": "p78"
+  },
+  {
+   "text": "Filipina tennis star Alex Eala stuns in chic tweed during her Paris Fashion Week debut at the Chanel show! Bringing ultimate style and elegance from the court to Paris! 🔥\n\n#AlexEala #PFW #Chanel #WTATour",
+   "likes": 112,
+   "views": 1345,
+   "from_page": "p78"
+  }
+ ],
+ "n": 23,
+ "hashtags": [
+  "#AlexEala",
+  "#Tennis",
+  "#WTA",
+  "#WTATour"
+ ],
+ "hashtag_rate": 0.7,
+ "emoji_rate": 1.0,
+ "question_rate": 0.39,
+ "median_chars": 170,
+ "link_lines": [
+  "More details in the comments 👇",
+  "Read more in the comments."
+ ],
+ "link_line_rate": 0.2,
+ "focus_entities": [
+  {
+   "name": "Alexandra Eala",
+   "keywords": [
+    "alex eala",
+    "eala"
+   ]
+  }
+ ],
+ "overused_entities": []
+}
