@@ -219,6 +219,19 @@ export function extractHistoryId(text: string): string | null {
   return match ? match[1] : null;
 }
 
+// The poll result leads with the full prompt, so slicing its first 300
+// characters never reached the reason. Oct 17-21 every FAILED render was a
+// safety-system rejection of the real-photo edit ("[minimax]/[openai] ...
+// rejected by the safety system") — this keeps that visible in the logs.
+export function failureSummary(text: string): string {
+  try {
+    const j = JSON.parse(text);
+    return JSON.stringify({ status: j.status, historyId: j.historyId, error: j.error, failedCode: j.failedCode }).slice(0, 400);
+  } catch {
+    return text.slice(0, 300);
+  }
+}
+
 export function isTerminalFailure(text: string): boolean {
   return /\b(FAILED|CANCELLED|CANCELED|ERROR|REJECTED|BLOCKED)\b/i.test(text);
 }
@@ -234,7 +247,12 @@ export const OPENART_POLL_INTERVAL_MS = 5_000;
 // completes in well under 90s in practice; if it hasn't finished by then
 // it's effectively stuck, and failing fast to let the pipeline try the next
 // path/candidate/page beats waiting out a 5-minute hang on a doomed render.
-export const OPENART_POLL_TIMEOUT_MS = 90_000;
+// (2026-10-21) 90s was too short: of 56 renders abandoned as still RUNNING at
+// 90s (Oct 17-21), 53 completed afterwards — cards already paid for, each a
+// lost post. Waiting longer costs no credits; dailyRunWorkflow's renderCard
+// timeout was raised to match so the longer wait can't trip a Temporal retry
+// (which would pay for a second render).
+export const OPENART_POLL_TIMEOUT_MS = 150_000;
 
 export interface OpenArtCardResult {
   imageUrl: string;
@@ -265,14 +283,18 @@ async function pollForImage(historyId: string, startedText: string): Promise<Ope
   if (!historyId) throw new Error(`OpenArt generate_image: no historyId in result: ${startedText.slice(0, 300)}`);
 
   const pollTool = process.env.OPENART_MCP_POLL_TOOL?.trim() || "openart_creation_get";
-  const deadline = Date.now() + OPENART_POLL_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + OPENART_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, OPENART_POLL_INTERVAL_MS));
     const poll = await callTool(pollTool, { historyId });
     if (poll.isError) throw new Error(`OpenArt poll tool error: ${poll.text.slice(0, 200)}`);
     const url = extractImageUrl(poll.text);
-    if (url) return { imageUrl: url };
-    if (isTerminalFailure(poll.text)) throw new Error(`OpenArt generation did not complete: ${poll.text.slice(0, 300)}`);
+    if (url) {
+      console.error(`OpenArt render ok in ${Math.round((Date.now() - startedAt) / 1000)}s historyId=${historyId}`);
+      return { imageUrl: url };
+    }
+    if (isTerminalFailure(poll.text)) throw new Error(`OpenArt generation did not complete: ${failureSummary(poll.text)}`);
   }
   throw new Error(`OpenArt poll timeout: historyId=${historyId} after ${OPENART_POLL_TIMEOUT_MS / 1000}s`);
 }

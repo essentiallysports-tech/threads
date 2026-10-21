@@ -134,8 +134,10 @@ const { sourceCandidatePool } = proxyActivities<typeof activities>({
 // activities/index.ts) within this worker — no separate MCP Routine or S3
 // polling. A slightly longer timeout than the default 2 minutes covers a slow
 // heartbeats.
+// (2026-10-21) 5 minutes: OpenArt's poll wait went 90s -> 150s (openart.ts);
+// a timeout here would retry the activity and pay for a second render.
 const { renderCard } = proxyActivities<typeof activities>({
-  startToCloseTimeout: "3 minutes",
+  startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 3 },
 });
 
