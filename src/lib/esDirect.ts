@@ -535,6 +535,161 @@ async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Pro
   }
 }
 
+// ── RSS fallback (2026-10-21) ────────────────────────────────────────────
+// From ~09:00 UTC Oct 21 staging.essentiallysports.com (the only wp-json
+// origin; www 308s to it) answered every request with an instant 503, the
+// circuit breaker above stayed open, and every page sourced zero ES articles.
+// The public feeds on www stay up through that because the CDN caches them:
+// /feed/ and /category/<sport>/feed/ (10 newest each, with every category and
+// player tag listed per item). Team/player feeds that aren't cached time out,
+// so entity lookups also match names against every feed item already fetched.
+// Used only while WordPress is failing; never instead of it.
+export interface RssItem extends EsArticleResult {
+  terms: string[];
+}
+
+const RSS_BASE = "https://www.essentiallysports.com";
+const RSS_TIMEOUT_MS = 8_000;
+const RSS_FEED_TTL_MS = 10 * 60 * 1000;
+const RSS_FAIL_TTL_MS = 15 * 60 * 1000;
+const RSS_POOL_MAX = 600;
+const limitRss = createLimiter(4);
+const rssFeedCache = new Map<string, { at: number; items: RssItem[] | null }>();
+const rssPool = new Map<string, RssItem>();
+
+export function rssSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’.]/g, "")
+    .replace(/&/g, " ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function cdata(text: string): string {
+  return text.replace(/^\s*<!\[CDATA\[/, "").replace(/\]\]>\s*$/, "").trim();
+}
+
+export function parseRssItems(xml: string): RssItem[] {
+  const items: RssItem[] = [];
+  for (const block of xml.match(/<item>[\s\S]*?<\/item>/g) || []) {
+    const tag = (name: string) => {
+      const m = block.match(new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`));
+      return m ? cdata(m[1]) : "";
+    };
+    const title = stripHtml(tag("title"));
+    const url = tag("link").trim();
+    const t = Date.parse(tag("pubDate"));
+    if (!title || !url || isNaN(t)) continue;
+    const dateGmt = new Date(t).toISOString().slice(0, 19);
+    // The description is the excerpt paragraph plus a "The post … appeared first on" footer.
+    const description = tag("description").replace(/<p>\s*The post [\s\S]*?appeared first on[\s\S]*$/i, "");
+    const terms = [...block.matchAll(/<category>([\s\S]*?)<\/category>/g)].map((m) => stripHtml(cdata(m[1])));
+    items.push({ title, url, publishedTime: utcTimeOfDay(dateGmt), dateGmt, excerpt: cleanExcerpt(description), terms });
+  }
+  return items;
+}
+
+async function fetchRssFeed(path: string): Promise<RssItem[]> {
+  const hit = rssFeedCache.get(path);
+  if (hit) {
+    const ttl = hit.items === null ? RSS_FAIL_TTL_MS : RSS_FEED_TTL_MS;
+    if (Date.now() - hit.at < ttl) return hit.items || [];
+  }
+  let items: RssItem[] | null = null;
+  try {
+    const res = await limitRss(() => fetchWithTimeout(`${RSS_BASE}/${path}`, {}, RSS_TIMEOUT_MS));
+    if (res.ok) items = parseRssItems(await res.text());
+    else console.error(`esDirect RSS: ${path} -> ${res.status}`);
+  } catch (e) {
+    console.error(`esDirect RSS: ${path} failed: ${(e as Error).message}`);
+  }
+  rssFeedCache.set(path, { at: Date.now(), items });
+  for (const it of items || []) {
+    rssPool.delete(it.url);
+    rssPool.set(it.url, it);
+  }
+  while (rssPool.size > RSS_POOL_MAX) {
+    const oldest = rssPool.keys().next();
+    if (oldest.done) break;
+    rssPool.delete(oldest.value);
+  }
+  return items || [];
+}
+
+function inWindow(item: RssItem, dateStart: string, dateEnd: string): boolean {
+  const day = (item.dateGmt || "").slice(0, 10);
+  return day >= dateStart && day <= dateEnd;
+}
+
+function newestFirst(items: RssItem[], limit: number): EsArticleResult[] {
+  const seen = new Set<string>();
+  return items
+    .filter((it) => !seen.has(it.url) && seen.add(it.url))
+    .sort((a, b) => (b.dateGmt || "").localeCompare(a.dateGmt || ""))
+    .slice(0, limit)
+    .map(({ terms: _terms, ...rest }) => rest);
+}
+
+function mentions(item: RssItem, name: string): boolean {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) return false;
+  if (item.terms.some((t) => t.toLowerCase() === wanted)) return true;
+  return new RegExp(`(^|[^a-z0-9])${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(item.title);
+}
+
+async function rssRecent(sport: string | null, dateISO: string, limit: number, dateStart?: string): Promise<EsArticleResult[]> {
+  const items = await fetchRssFeed(sport ? `category/${rssSlug(sport)}/feed/` : "feed/");
+  return newestFirst(items.filter((it) => inWindow(it, dateStart || dateISO, dateISO)), limit);
+}
+
+// Sport feeds the CDN had cached on Oct 21 (team/player feeds weren't). Loading
+// them all first lets team and player lookups match names in their items.
+const RSS_SPORT_FEEDS = [
+  "nfl", "nba", "wnba", "tennis", "golf", "nascar", "ufc", "mma", "boxing", "college-football",
+  "college-basketball", "mlb", "f1", "soccer", "olympics", "wwe",
+];
+
+async function warmRssPool(): Promise<void> {
+  await Promise.all(["feed/", ...RSS_SPORT_FEEDS.map((slug) => `category/${slug}/feed/`)].map((path) => fetchRssFeed(path)));
+}
+
+async function rssByCategory(name: string, dateStart: string, dateEnd: string, limit: number): Promise<EsArticleResult[]> {
+  await warmRssPool();
+  const own = await fetchRssFeed(`category/${rssSlug(name)}/feed/`);
+  const pooled = [...rssPool.values()].filter((it) => it.terms.some((t) => t.toLowerCase() === name.trim().toLowerCase()));
+  return newestFirst([...own, ...pooled].filter((it) => inWindow(it, dateStart, dateEnd)), limit);
+}
+
+async function rssByEntity(entity: string, dateStart: string, dateEnd: string, limit: number): Promise<EsArticleResult[]> {
+  await warmRssPool();
+  const own = await fetchRssFeed(`tag/${rssSlug(entity)}/feed/`);
+  const pooled = [...rssPool.values()].filter((it) => mentions(it, entity));
+  return newestFirst([...own, ...pooled].filter((it) => inWindow(it, dateStart, dateEnd)), limit);
+}
+
+// WordPress first; RSS only when the WP circuit is open or the WP call failed.
+async function wpOrRss(label: string, wp: () => Promise<EsArticleResult[]>, rss: () => Promise<EsArticleResult[]>): Promise<EsArticleResult[]> {
+  const viaRss = async (why: string) => {
+    const out = await rss();
+    console.error(`esDirect: RSS fallback for ${label} (${why}) -> ${out.length} article(s)`);
+    return out;
+  };
+  if (circuitIsOpen()) return viaRss("WP circuit open");
+  // Term lookups swallow their own errors (they return null and the caller
+  // returns []), so a failure during this lookup shows up only in the counter.
+  const failuresBefore = circuitConsecutiveFailures;
+  try {
+    const out = await wp();
+    if (out.length === 0 && (circuitIsOpen() || circuitConsecutiveFailures > failuresBefore)) return viaRss("WP lookup failed");
+    return out;
+  } catch (e) {
+    return viaRss(`WP failed: ${(e as Error).message.slice(0, 80)}`);
+  }
+}
+
 // sport=null means no filter at all — WordPress's own default
 // (chronological, newest first) over the date window, matching
 // query_articles's original "no sport filter" behavior. sport given now
@@ -562,25 +717,27 @@ async function resolveTaxonomyId(kind: "tags" | "categories", name: string): Pro
 // code already assumes everywhere else.
 export async function queryRecentArticles(sport: string | null, dateISO: string, limit = 20, dateStart?: string): Promise<EsArticleResult[]> {
   const args = { kind: "recent", sport, dateISO, limit, dateStart };
-  return cachedArticleQuery(args, async () => {
-    const params = new URLSearchParams({
-      _fields: FIELDS,
-      per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
-      orderby: "date",
-      order: "desc",
-      after: `${dateStart || dateISO}T00:00:00+00:00`,
-      before: `${dateISO}T23:59:59+00:00`,
-    });
-    if (sport) {
-      const categoryId = await resolveTaxonomyId("categories", sport);
-      if (categoryId === null) {
-        console.error(`queryRecentArticles: no WP category found for sport="${sport}" — returning no results rather than an unindexed search= scan`);
-        return [];
+  return cachedArticleQuery(args, () =>
+    wpOrRss(`recent ${sport ?? "all"}`, async () => {
+      const params = new URLSearchParams({
+        _fields: FIELDS,
+        per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
+        orderby: "date",
+        order: "desc",
+        after: `${dateStart || dateISO}T00:00:00+00:00`,
+        before: `${dateISO}T23:59:59+00:00`,
+      });
+      if (sport) {
+        const categoryId = await resolveTaxonomyId("categories", sport);
+        if (categoryId === null) {
+          console.error(`queryRecentArticles: no WP category found for sport="${sport}" — returning no results rather than an unindexed search= scan`);
+          return [];
+        }
+        params.set("categories", String(categoryId));
       }
-      params.set("categories", String(categoryId));
-    }
-    return toArticleResults(await fetchWpPosts(params));
-  });
+      return toArticleResults(await fetchWpPosts(params));
+    }, () => rssRecent(sport, dateISO, limit, dateStart))
+  );
 }
 
 // Real query_articles `entity` filter equivalent. Resolves to a WP tag id
@@ -617,40 +774,44 @@ async function resolveExactCategoryId(name: string): Promise<number | null> {
 
 export async function queryArticlesByCategory(name: string, dateStart: string, dateEnd: string, limit = 20): Promise<EsArticleResult[]> {
   const args = { kind: "category", name: name.trim(), dateStart, dateEnd, limit };
-  return cachedArticleQuery(args, async () => {
-    const categoryId = await resolveExactCategoryId(name);
-    if (categoryId === null) return [];
-    const params = new URLSearchParams({
-      _fields: FIELDS,
-      per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
-      orderby: "date",
-      order: "desc",
-      categories: String(categoryId),
-      after: `${dateStart}T00:00:00+00:00`,
-      before: `${dateEnd}T23:59:59+00:00`,
-    });
-    return toArticleResults(await fetchWpPosts(params));
-  });
+  return cachedArticleQuery(args, () =>
+    wpOrRss(`category ${name.trim()}`, async () => {
+      const categoryId = await resolveExactCategoryId(name);
+      if (categoryId === null) return [];
+      const params = new URLSearchParams({
+        _fields: FIELDS,
+        per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
+        orderby: "date",
+        order: "desc",
+        categories: String(categoryId),
+        after: `${dateStart}T00:00:00+00:00`,
+        before: `${dateEnd}T23:59:59+00:00`,
+      });
+      return toArticleResults(await fetchWpPosts(params));
+    }, () => rssByCategory(name, dateStart, dateEnd, limit))
+  );
 }
 
 export async function queryArticlesByEntity(entity: string, dateStart: string, dateEnd: string, limit = 20): Promise<EsArticleResult[]> {
   const args = { kind: "entity", entity, dateStart, dateEnd, limit };
-  return cachedArticleQuery(args, async () => {
-    const tagId = await resolveTaxonomyId("tags", entity);
-    if (tagId === null) {
-      console.error(`queryArticlesByEntity: no WP tag found for entity="${entity}" — returning no results rather than an unindexed search= scan`);
-      return [];
-    }
-    const params = new URLSearchParams({
-      _fields: FIELDS,
-      per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
-      orderby: "date",
-      order: "desc",
-      tags: String(tagId),
-      // Same UTC-vs-site-timezone fix as queryRecentArticles above.
-      after: `${dateStart}T00:00:00+00:00`,
-      before: `${dateEnd}T23:59:59+00:00`,
-    });
-    return toArticleResults(await fetchWpPosts(params));
-  });
+  return cachedArticleQuery(args, () =>
+    wpOrRss(`entity ${entity}`, async () => {
+      const tagId = await resolveTaxonomyId("tags", entity);
+      if (tagId === null) {
+        console.error(`queryArticlesByEntity: no WP tag found for entity="${entity}" — returning no results rather than an unindexed search= scan`);
+        return [];
+      }
+      const params = new URLSearchParams({
+        _fields: FIELDS,
+        per_page: String(Math.min(limit, WP_MAX_PER_PAGE)),
+        orderby: "date",
+        order: "desc",
+        tags: String(tagId),
+        // Same UTC-vs-site-timezone fix as queryRecentArticles above.
+        after: `${dateStart}T00:00:00+00:00`,
+        before: `${dateEnd}T23:59:59+00:00`,
+      });
+      return toArticleResults(await fetchWpPosts(params));
+    }, () => rssByEntity(entity, dateStart, dateEnd, limit))
+  );
 }
