@@ -75,7 +75,19 @@ export async function loadTeamStyleProfile(pageId: string): Promise<TeamStylePro
     const body = await getObject(teamStyleKey(pageId));
     if (body) {
       const parsed = JSON.parse(body) as TeamStyleProfile;
-      if (Array.isArray(parsed.examples) && parsed.examples.length > 0) profile = parsed;
+      // (2026-10-19) p70/p79's profiles have no hashtags (their team posts
+      // never used any) and teamExtras crashed reading hashtags.length.
+      if (Array.isArray(parsed.examples) && parsed.examples.length > 0) {
+        profile = {
+          ...parsed,
+          hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags : [],
+          hashtag_rate: typeof parsed.hashtag_rate === "number" ? parsed.hashtag_rate : 0,
+          emoji_rate: typeof parsed.emoji_rate === "number" ? parsed.emoji_rate : 0,
+          question_rate: typeof parsed.question_rate === "number" ? parsed.question_rate : 0,
+          link_lines: Array.isArray(parsed.link_lines) ? parsed.link_lines : [],
+          link_line_rate: typeof parsed.link_line_rate === "number" ? parsed.link_line_rate : 0,
+        };
+      }
     }
   } catch (e) {
     console.error(`loadTeamStyleProfile: ${pageId}: ${(e as Error).message}`);
