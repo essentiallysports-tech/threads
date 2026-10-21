@@ -955,9 +955,16 @@ export function isPromoBettingContent(candidate: Candidate): boolean {
 // the shape; sourcing.ts's evergreen tiers still need their own follow-up
 // to stop generating this framing in the first place, not just get caught
 // here after the fact.
+// (2026-10-21) The list patterns only count at the START of a headline — a
+// headline that IS a list ("Top 10 …", "Ranking the Top 5 …", "5 Best …").
+// Anywhere in the text they also caught reactions TO a ranking: "Packers:
+// 'We Swept the Detroit Lions': Micah Parsons Blasts NFL Top 100 Ranking…"
+// (the Lions page's only Lions story that day) and Bisping snubbing Chimaev
+// from his top-10 list (Rogan's).
+const LIST_LEAD = String.raw`^\W*(?:ranking\s+)?(?:the\s+)?`;
 const LISTICLE_FILLER_PATTERNS = [
-  /\b\d+\s+(?:funniest|best|worst|greatest|craziest|wildest|weirdest|dumbest|smartest|most\s+\w+)\b/i,
-  /\btop\s+\d+\b/i,
+  new RegExp(`${LIST_LEAD}\\d+\\s+(?:funniest|best|worst|greatest|craziest|wildest|weirdest|dumbest|smartest|most\\s+\\w+)\\b`, "i"),
+  new RegExp(`${LIST_LEAD}top\\s+\\d+\\b`, "i"),
   // ES's daily "September 23rd's Complete Sports Schedule: Where, When, and
   // How to Watch..." listing is filed under every sport category, so a
   // general-news page would post it daily and every such page would post the
@@ -966,8 +973,8 @@ const LISTICLE_FILLER_PATTERNS = [
 ];
 
 export function isListicleFillerContent(candidate: Candidate): boolean {
-  const text = `${candidate.subject} ${candidate.headline} ${candidate.rawText || ""}`;
-  return LISTICLE_FILLER_PATTERNS.some((re) => re.test(text));
+  const fields = [candidate.subject, candidate.headline, candidate.rawText].filter((t): t is string => Boolean(t));
+  return fields.some((text) => LISTICLE_FILLER_PATTERNS.some((re) => re.test(text)));
 }
 
 // ⛔ OPERATOR FIX (2026-08-12, real live incident, high volume): at least a
