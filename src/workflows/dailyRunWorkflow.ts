@@ -1,7 +1,7 @@
 import { proxyActivities, proxyLocalActivities, log, workflowInfo, patched } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { PageRunResult, PageConfig, Candidate, PostedLogEntry } from "../lib/types";
-import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday, isGapDue, pacedDailyCap } from "../lib/checks";
+import { matchedEntityNames, matchedSportGroup, isTrueSingleFlagshipPage, isPageStarvedToday, isGapDue, pacedDailyCap, hoursSinceLastPost } from "../lib/checks";
 
 // ⛔ OPERATOR FIX (2026-08-22, real live incident): checkCandidate,
 // checkTopicFrequency, and checkDominantNarrative were all proxied as full
@@ -136,6 +136,13 @@ const { sourceCandidatePool } = proxyActivities<typeof activities>({
 // heartbeats.
 // (2026-10-21) 5 minutes: OpenArt's poll wait went 90s -> 150s (openart.ts);
 // a timeout here would retry the activity and pay for a second render.
+// (2026-10-21) last-resort repost for a top-10 page 11h+ without a post — one
+// attempt only: a retry would write (and pay for) a second caption.
+const { buildGapRescuePost } = proxyActivities<typeof activities>({
+  startToCloseTimeout: "3 minutes",
+  retry: { maximumAttempts: 1 },
+});
+
 const { renderCard } = proxyActivities<typeof activities>({
   startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 3 },
@@ -647,7 +654,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         }
 
         const linkCheck = await verifyAndTagLink(candidate, state.page);
-        if (!linkCheck.finalLink || !linkCheck.resolves || !linkCheck.hasUtmTag) {
+        if (!candidate.linkFree && (!linkCheck.finalLink || !linkCheck.resolves || !linkCheck.hasUtmTag)) {
           state.attemptFailures.push(
             `${candidate.key}:${!linkCheck.finalLink ? "UTM_MISSING" : !linkCheck.resolves ? "LINK_DEAD" : "UTM_TAG_MISSING"}`
           );
@@ -840,7 +847,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
             caption,
             cardUrl,
             sourcePhotoUrl,
-            finalLink: linkCheck.finalLink,
+            finalLink: linkCheck.finalLink ?? "",
             template,
             entity: resolvedPrimaryEntity,
             sportGroup,
@@ -850,7 +857,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         state.thisRunEntries.push({
           key: candidate.key,
           posted_at: nowISO,
-          reply_url: linkCheck.finalLink,
+          reply_url: linkCheck.finalLink || undefined,
           headline: candidate.headline,
           template: template ?? undefined,
           entity: resolvedPrimaryEntity ?? undefined,
@@ -956,6 +963,47 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
     if (totalPostedThisRun() === postedBeforePass) break;
   }
 
+  // ⛔ OPERATOR RULE (2026-10-21): "none of the top 10 pages ever go without a
+  // post for more than 12 hours." A top-10 (ai_priority) page that posted
+  // nothing this run and nothing for GAP_RESCUE_HOURS reposts its own best
+  // recent post (activities' buildGapRescuePost). Posts publish 1-2h after the
+  // run, so 11h here keeps the published gap within 12h.
+  const GAP_RESCUE_HOURS = 11;
+  if (patched("gap-rescue-12h")) {
+    for (const state of states) {
+      if (state.postedThisRun > 0 || !state.page.threads?.ai_priority) continue;
+      const idleHours = hoursSinceLastPost(state.postedLog, runStartMs);
+      if (idleHours < GAP_RESCUE_HOURS) continue;
+      try {
+        const rescue = await buildGapRescuePost(state.page, state.postedLog, dateISO);
+        if (!rescue) {
+          state.attemptFailures.push("GAP_RESCUE:NOTHING_TO_REPOST");
+          continue;
+        }
+        log.warn("GAP_RESCUE_REPOST", { page_id: state.page.page_id, idleHours: Math.round(idleHours), key: rescue.candidate.key });
+        if (!opts.livePosting) {
+          results.push({ page_id: state.page.page_id, outcome: "dry_run_would_post", candidate: rescue.candidate, cardUrl: rescue.cardUrl });
+        } else {
+          readyToPost.push({
+            page: state.page,
+            candidate: rescue.candidate,
+            caption: rescue.caption,
+            cardUrl: rescue.cardUrl,
+            sourcePhotoUrl: null,
+            finalLink: rescue.finalLink,
+            template: rescue.template,
+            entity: rescue.entity,
+            sportGroup: rescue.sportGroup,
+          });
+        }
+        state.postedThisRun++;
+        state.postedTodayCount++;
+      } catch (e) {
+        state.attemptFailures.push(`GAP_RESCUE:FAILED:${(e as Error).message?.slice(0, 200)}`);
+      }
+    }
+  }
+
   for (const state of states) {
     if (state.postedThisRun > 0) continue;
     if (!state.hadAnyCandidateInitially && state.attemptFailures.length === 0) {
@@ -1022,7 +1070,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         key: item.candidate.key,
         post_id: posted.id,
         posted_at: new Date().toISOString(),
-        reply_url: item.finalLink,
+        reply_url: item.finalLink || undefined,
         headline: item.candidate.headline,
         template: item.template ?? undefined,
         entity: item.entity ?? undefined,

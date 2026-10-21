@@ -4,7 +4,7 @@
 // is wrapped here and invoked from the workflow via proxyActivities.
 
 import { PageConfig, Candidate, PostedLogEntry, PageRunResult, TemplateId } from "../lib/types";
-import { loadActiveThreadsPages, getPostedLog, appendPostedLog, writeDryRunResult, recordRenderFailure } from "../lib/s3registry";
+import { loadActiveThreadsPages, getPostedLog, appendPostedLog, writeDryRunResult, recordRenderFailure, getObject } from "../lib/s3registry";
 import { sourceFromNewsletter, sourceFromSharedPool, shouldSourceFromNewsletter, sourceCandidatePoolForPage } from "../lib/sourcing";
 import { factCheckClaim } from "../lib/webSearch";
 import {
@@ -42,7 +42,7 @@ import { buildReplyLink, buildTopicHashtag } from "../lib/caption";
 import { buildNarrativeCaptionText } from "../lib/narrativeCaption";
 import { loadTeamStyleProfile } from "../lib/teamStyle";
 import { buildNarrativeRenderCopy, chooseLayoutViaAI, isGenuineComparisonViaAI, isCoherentHeadlineViaAI, factsFor } from "../lib/narrativeRenderSpec";
-import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified } from "../lib/postiz";
+import { scheduleThreadsPost, stripHashtagFromPost, hashtagStripVerified, postViews } from "../lib/postiz";
 import { searchImages, metadataMatchesSubject, captionShowsSomeoneElse } from "../lib/esDirect";
 import { fetchWithTimeout } from "../lib/httpUtil";
 import { renderCardViaAi } from "../lib/renderChain";
@@ -135,6 +135,7 @@ const NEWSLETTER_SPORT_LABELS: Record<string, string> = {
 const DAILY_NEWSLETTER_PUB_ID = "pub_902529ab-962e-41b8-b981-e9a33d055a65";
 
 function chooseKicker(candidate: Candidate, page: PageConfig): string {
+  if (candidate.linkFree) return "LATEST UPDATE";
   if (candidate.linkContext !== "subscribe") return "FULL STORY IN REPLY";
   const pubId = page.threads?.beehiiv_publication_id;
   if (pubId === DAILY_NEWSLETTER_PUB_ID) return "JOIN OUR DAILY NEWSLETTER, LINK BELOW";
@@ -513,6 +514,8 @@ export interface LinkVerification {
 }
 
 export async function verifyAndTagLink(candidate: Candidate, page: PageConfig): Promise<LinkVerification> {
+  // A link-free update has nothing to link or tag (newsUpdates.ts).
+  if (candidate.linkFree) return { finalLink: "", resolves: true, hasUtmTag: true };
   const link = buildReplyLink(candidate, page); // null if this page has no registered utm_string — a real, expected outcome, not an error
   if (!link) return { finalLink: null, resolves: false, hasUtmTag: false };
   const resolves = await linkResolves(candidate.link); // verify the underlying article/edition, not the UTM'd copy
@@ -1314,6 +1317,98 @@ export async function postToThreads(
   }
 
   return posted;
+}
+
+// ⛔ OPERATOR RULE (2026-10-21): "make sure that none of the top 10 pages ever
+// go without a post for more than 12 hours." The gap guard (isGapDue) widens a
+// due page's pool, but a page can still fail every candidate for days: Kings
+// Court went 154h (every LeBron story judged critical), Eala 77h and Lions a
+// full day (ES wrote nothing about them). This is the last resort the workflow
+// calls when a top-10 page has posted nothing this run and nothing for 11h+
+// (posts publish 1-2h after the run): repost the page's own best post from
+// 3-30 days ago, not reposted in the last 14 days. Its card is reused (no new
+// render to fail) and its caption is written fresh, with the age note that
+// publishedNote adds for stories more than 3 days old. Everything in it already
+// passed every gate when it first posted.
+export interface GapRescuePost {
+  candidate: Candidate;
+  caption: string;
+  cardUrl: string;
+  finalLink: string;
+  template: string | null;
+  entity: string | null;
+  sportGroup: string | null;
+}
+
+const GAP_RESCUE_MIN_AGE_HOURS = 72;
+const GAP_RESCUE_LOOKBACK_DAYS = 30;
+const GAP_RESCUE_REPEAT_DAYS = 14;
+const GAP_RESCUE_VIEW_LOOKUPS = 8;
+const DASHBOARD_SNAPSHOT_30D = "config/es-threads-dashboard/snapshots/30d.json";
+
+async function snapshotViews(): Promise<Map<string, number>> {
+  const byId = new Map<string, number>();
+  try {
+    const raw = await getObject(DASHBOARD_SNAPSHOT_30D);
+    const parsed = raw ? JSON.parse(raw) : null;
+    for (const p of ((parsed?.data ?? parsed)?.posts || []) as Array<{ id?: string; metrics?: { views?: number } }>) {
+      if (p.id && typeof p.metrics?.views === "number") byId.set(p.id, p.metrics.views);
+    }
+  } catch (e) {
+    console.error(`gapRescue: dashboard snapshot read failed: ${(e as Error).message}`);
+  }
+  return byId;
+}
+
+export async function buildGapRescuePost(page: PageConfig, postedLog: PostedLogEntry[], dateISO: string): Promise<GapRescuePost | null> {
+  const now = Date.now();
+  const ageHours = (p: PostedLogEntry) => (now - Date.parse(p.posted_at || "")) / 3_600_000;
+  const recentlyRescued = new Set(
+    postedLog.filter((p) => (p.key || "").includes(":rescue:") && ageHours(p) < GAP_RESCUE_REPEAT_DAYS * 24).map((p) => p.key.split(":rescue:")[0])
+  );
+  const pool = postedLog.filter(
+    (p) =>
+      p.card_url && p.reply_url && p.post_id && p.headline && p.source !== "news_update" &&
+      !(p.key || "").includes(":rescue:") && !recentlyRescued.has(p.key) &&
+      ageHours(p) >= GAP_RESCUE_MIN_AGE_HOURS && ageHours(p) <= GAP_RESCUE_LOOKBACK_DAYS * 24
+  );
+  if (pool.length === 0) {
+    console.error(`gapRescue: ${page.page_id} has no post from the last ${GAP_RESCUE_LOOKBACK_DAYS} days to repost`);
+    return null;
+  }
+  const views = await snapshotViews();
+  if (!pool.some((p) => (views.get(p.post_id!) || 0) > 0)) {
+    // The snapshot has no metrics for this account: ask Postiz for the newest few.
+    for (const p of [...pool].sort((a, b) => Date.parse(b.posted_at!) - Date.parse(a.posted_at!)).slice(0, GAP_RESCUE_VIEW_LOOKUPS)) {
+      try {
+        views.set(p.post_id!, await postViews(p.post_id!));
+      } catch (e) {
+        console.error(`gapRescue: views lookup failed for ${p.post_id}: ${(e as Error).message}`);
+      }
+    }
+  }
+  pool.sort((a, b) => (views.get(b.post_id!) || 0) - (views.get(a.post_id!) || 0) || Date.parse(b.posted_at!) - Date.parse(a.posted_at!));
+  for (const p of pool.slice(0, 5)) {
+    if (!(await linkResolves(p.card_url!)) || !(await linkResolves(p.reply_url!))) continue;
+    const published = p.source_published_at || p.posted_at!;
+    const candidate = {
+      source: (p.source as Candidate["source"]) || "es_article",
+      key: `${p.key}:rescue:${dateISO}`,
+      subject: p.headline!,
+      headline: p.headline!,
+      link: p.reply_url!.split("?")[0],
+      publishedAt: published,
+      realPublishedAt: published,
+      rawText: p.headline!,
+      rescue: true,
+    } as Candidate;
+    const names = p.entity ? [p.entity] : matchedEntityNames(candidate, page);
+    const caption = await buildCaptionText(candidate, page, names);
+    console.error(`gapRescue: ${page.page_id} reposting ${p.post_id} (${views.get(p.post_id!) || 0} views, ${Math.round(ageHours(p) / 24)}d old): "${p.headline!.slice(0, 80)}"`);
+    return { candidate, caption, cardUrl: p.card_url!, finalLink: p.reply_url!, template: p.template ?? null, entity: p.entity ?? null, sportGroup: p.sportGroup ?? null };
+  }
+  console.error(`gapRescue: ${page.page_id} none of its top posts has a live card and article`);
+  return null;
 }
 
 export async function recordPosted(pageId: string, entry: PostedLogEntry): Promise<void> {

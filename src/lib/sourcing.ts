@@ -20,6 +20,7 @@ import { isDailyBudgetExceeded } from "./aiGatewayBudget";
 import { callModel, aiConfigured } from "./aiClient";
 import { crossPageConflict } from "./crossPageLedger";
 import { loadTeamStyleProfile, mentionsFocusEntity } from "./teamStyle";
+import { sourceLinkFreeNews } from "./newsUpdates";
 
 // ⛔ OPERATOR FIX (2026-08-23, real live incident): today's removal of the
 // artificial 5-entity cap on sourceFromEsEvergreenArticles (a real coverage
@@ -1294,6 +1295,14 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     await mapWithConcurrency(unposted, LINK_RESOLUTION_CONCURRENCY, (c) => resolveExternalLink(c, page, dateISO))
   ).filter((c): c is Candidate => c !== null);
 
+  // (2026-10-21) link-free news updates (newsUpdates.ts) join only after link
+  // resolution: they are never re-linked to an ES article or the newsletter.
+  if (page.threads?.link_free_news) {
+    const news = (await sourceLinkFreeNews(page, postedLog, dateISO)).filter((c) => !postedKeys.has(c.key));
+    if (news.length > 0) console.error(`sourceCandidatePoolForPage: ${page.page_id} ${news.length} link-free news update candidate(s)`);
+    unposted = [...unposted, ...news];
+  }
+
   // ⛔ OPERATOR FIX (2026-08-10): "there shouldn't be any ES article left on
   // which we have not created a post" — es_article candidates now sort
   // ahead of every other tier (still newest-first within each group), so a
@@ -1396,6 +1405,8 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
     unposted = unposted.sort((a, b) => {
       const freshDiff = freshTier(a) - freshTier(b);
       if (freshDiff !== 0) return freshDiff;
+      const linkFreeDiff = (a.linkFree ? 1 : 0) - (b.linkFree ? 1 : 0);
+      if (linkFreeDiff !== 0) return linkFreeDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);
@@ -1426,6 +1437,9 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       if (entityDiff !== 0) return entityDiff;
       const freshDiff = freshTier(a) - freshTier(b);
       if (freshDiff !== 0) return freshDiff;
+      // A linked ES article earns clicks; a link-free update only fills a gap.
+      const linkFreeDiff = (a.linkFree ? 1 : 0) - (b.linkFree ? 1 : 0);
+      if (linkFreeDiff !== 0) return linkFreeDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);

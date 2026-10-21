@@ -281,6 +281,7 @@ function buildTeamPrompt(
     classifyCaptionAgeTone(candidate) === "retro" ? `This is an older story being remembered: frame it as a look back, never as breaking news.` : null,
     publishedNote(candidate),
     heroDefenceNote(candidate, page, "caption"),
+    linkFreeNote(candidate),
     `Length: about ${target} characters, never more than ${bodyLimit}.`,
     emoji,
     wantQuestion
@@ -292,6 +293,13 @@ function buildTeamPrompt(
     .join("\n");
 }
 
+// (2026-10-21) link-free updates (newsUpdates.ts): the post is the whole
+// story, built only from the reported headlines given.
+function linkFreeNote(candidate: Candidate): string | null {
+  if (!candidate.linkFree) return null;
+  return `This post has NO link: never mention a reply, link, comments, "full story" or "more below". Write it as a short live update for fans in 1-2 sentences, using only facts stated in the reported headlines above (names, scores, rounds, opponents, dates); add nothing they don't say.`;
+}
+
 // Stories more than 3 days old say so, so the post never presents an old
 // result as today's news.
 function publishedNote(candidate: Candidate): string | null {
@@ -299,7 +307,10 @@ function publishedNote(candidate: Candidate): string | null {
   const t = iso ? Date.parse(iso) : NaN;
   if (isNaN(t) || Date.now() - t < 3 * 24 * 3600 * 1000) return null;
   const day = new Date(t).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
-  return `This story was published on ${day}. Don't present it as something that just happened today.`;
+  // (2026-10-21) a gap-rescue repost said "after that Falcons loss back in '24"
+  // for a story published September 25, 2026: any time reference must come
+  // from this date, never a guessed year.
+  return `This story was published on ${day}. Don't present it as something that just happened today. If you say when it happened, use only this date (e.g. "back on ${day}", "last month"), never a different year or season, and don't guess the date of anything the story refers to.`;
 }
 
 // Hashtags a page uses for its sport/league travel with any story; anything
@@ -330,7 +341,8 @@ function copiesExample(body: string, profile: TeamStyleProfile): boolean {
 function teamExtras(candidate: Candidate, page: PageConfig, profile: TeamStyleProfile): { linkLine: string | null; hashtags: string | null } {
   const key = candidate.key || candidate.headline;
   const lines = profile.link_lines.length ? profile.link_lines : ["More details in the comments 👇"];
-  const linkLine = styleDraw(key, "link") < profile.link_line_rate ? lines[Math.floor(styleDraw(key, "linktext") * lines.length)] : null;
+  // A link-free update has no comment link to point at.
+  const linkLine = !candidate.linkFree && styleDraw(key, "link") < profile.link_line_rate ? lines[Math.floor(styleDraw(key, "linktext") * lines.length)] : null;
   let hashtags: string | null = null;
   if (profile.hashtags.length && styleDraw(key, "tags") < profile.hashtag_rate) {
     const seen = new Set<string>();
@@ -449,6 +461,7 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
       ? `Timing: this is a genuinely OLD story — either evergreen archive content of unconfirmed age, or confirmed 6+ months old — being resurfaced as callback/banter content. Write it that way ("remember when", "on this day", "throwback to...") — NEVER present-tense urgency or as if this just happened.`
       : null,
     heroDefenceNote(candidate, page, "caption"),
+    linkFreeNote(candidate),
   ]
     .filter(Boolean)
     .join("\n");

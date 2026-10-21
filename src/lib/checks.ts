@@ -2454,6 +2454,10 @@ export async function accuracyGate(candidate: Candidate, primaryEntityName: stri
     // upstream; nothing further to check evidence against here.
     return { pass: true, reason: null };
   }
+  // (2026-10-21) a link-free update's evidence is the trusted outlet's own
+  // headline, already required to name the subject (newsUpdates.ts); its link
+  // is a Google News redirect page that may not contain the article text.
+  if (candidate.linkFree) return { pass: true, reason: null };
   // Verify against where the claim actually came from — sourceLink for a
   // candidate whose reply `link` was resolved to an ES-owned URL (see
   // sourcing.ts's resolveExternalLink), otherwise `link` itself.
@@ -2540,7 +2544,9 @@ export const RETRO_TONE_MIN_DAYS = 180;
 export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
   // (2026-10-02) a gap-guard rescue item is older than its page's normal
   // window by definition — frame it as a throwback, never as news.
-  if (candidate.rescue && candidate.source === "evergreen_search") return "retro";
+  // (2026-10-21) also a 12h gap-rescue repost (activities' buildGapRescuePost),
+  // which is a 3-30-day-old post told again — never as if it just happened.
+  if (candidate.rescue) return "retro";
   // sourceFromEsEvergreenArticles (sourcing.ts) deliberately stamps
   // publishedAt as "now" — ES-MCP's older-article results carry no real
   // date, and this tier is a 5-YEAR lookback by design (genuinely-old ES
@@ -2824,7 +2830,8 @@ export function runDeterministicChecks(candidate: Candidate, page: PageConfig, p
   // (anything on COMPETITOR_DOMAINS necessarily fails this too), and also
   // catches the real incident that motivated it: a tweet/social URL, or any
   // other external site, ending up as the reply link.
-  if (!isEsOwnedLink(candidate.link)) {
+  // A link-free update (newsUpdates.ts) posts no reply, so there is no link to own.
+  if (!candidate.linkFree && !isEsOwnedLink(candidate.link)) {
     return { pass: false, reason: "LINK_NOT_ES_OWNED" };
   }
   if (!isStarvedToday && alreadyPostedRecently(candidate, postedLog, 24 * 14)) {
