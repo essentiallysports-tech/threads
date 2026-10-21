@@ -115,6 +115,13 @@ export interface ThreadsConfig {
   // (CRITICAL_OF_PAGE_HERO) and left to the league newsroom page. See
   // checks.ts's flagshipStanceCheck.
   protect_flagship?: boolean;
+  // (2026-10-21, operator decision) what protect_flagship does with stories
+  // that read as a shot at the hero. "reject" (default) leaves them to the
+  // league newsroom page; "defend" posts them with the caption and card copy
+  // written from the hero's fans' side (back him/her, push back on the
+  // critics), the way the page's own team posts them. Kings Court went 149h
+  // without a post (Oct 15-21) with every LeBron story judged critical.
+  flagship_critical_stories?: "reject" | "defend";
   // (2026-10-09) how far back this page's throwback search reaches, in days
   // (default 120 — see GAP_RESCUE_EVERGREEN_DAYS in activities/index.ts). For a
   // page whose subject ES covers only a few times a week (Alex Eala: ~3

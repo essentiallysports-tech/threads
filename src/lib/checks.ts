@@ -1884,6 +1884,19 @@ export function isRoundupHeadline(headline: string): boolean {
   return ROUNDUP_MORE_RE.test(unquoted) || unquoted.split(",").length >= 3;
 }
 
+// On a "defend" flagship page every story naming the hero gets this line in
+// the caption and card prompts, so critical stories are told from the fans'
+// side (harmless on the positive ones).
+export function heroDefenceNote(candidate: Candidate, page: PageConfig, target: "caption" | "headline"): string | null {
+  const hero = pageHero(page);
+  if (!hero || page.threads?.flagship_critical_stories !== "defend") return null;
+  const text = `${candidate.headline} ${candidate.rawText || ""}`.toLowerCase();
+  if (!hero.keywords.some((k) => k.length > 2 && text.includes(k.toLowerCase()))) return null;
+  return target === "caption"
+    ? `This page is a ${hero.name} fan page and its followers are ${hero.name}'s fans. If the story criticises, mocks or doubts ${hero.name}, write it the way his/her fans would: back ${hero.name} and push back on the critics as an opinion (never by inventing facts). Never pile on, mock or agree with the shot at ${hero.name}.`
+    : `This card is for a ${hero.name} fan page. If the story is a criticism of ${hero.name}, state what happened plainly and factually; never word the headline as a dig at ${hero.name} or as agreeing with the critic.`;
+}
+
 export function fanPageHeroMismatch(candidate: Candidate, page: PageConfig): string | null {
   const hero = pageHero(page);
   if (!hero) return null;
@@ -1914,7 +1927,8 @@ export async function flagshipStanceCheck(candidate: Candidate, page: PageConfig
     const content = await checksAiCaller(prompt, { tag: "hero_stance", maxTokens: 60, temperature: 0, timeoutMs: 20_000 });
     const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, ""));
     if (parsed?.about_hero === false) return { pass: false, reason: "NOT_ABOUT_PAGE_HERO" };
-    return parsed?.critical_of_hero === true ? { pass: false, reason: "CRITICAL_OF_PAGE_HERO" } : { pass: true, reason: null };
+    if (parsed?.critical_of_hero === true && page.threads?.flagship_critical_stories !== "defend") return { pass: false, reason: "CRITICAL_OF_PAGE_HERO" };
+    return { pass: true, reason: null };
   } catch (e) {
     console.error(`flagshipStanceCheck: failed, letting the story through: ${(e as Error).message}`);
     return { pass: true, reason: null };

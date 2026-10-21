@@ -15,7 +15,7 @@
 
 import { Candidate, PageConfig } from "./types";
 import { TemplateId } from "./renderSpec";
-import { isGenericFramingText, classifyCaptionAgeTone } from "./checks";
+import { isGenericFramingText, classifyCaptionAgeTone, heroDefenceNote } from "./checks";
 import { callModel, aiConfigured } from "./aiClient";
 import { truncateAtWordBoundary } from "./headlineTruncation";
 
@@ -99,6 +99,7 @@ function buildPrompt(
     classifyCaptionAgeTone(candidate) === "retro"
       ? `Timing: this is a genuinely OLD story (evergreen archive content of unconfirmed age, or confirmed 6+ months old) being resurfaced as callback/banter content — write the headline with retrospective "on this day"/"remember when" framing, NEVER present-tense urgency or as if this just happened.`
       : null,
+    heroDefenceNote(candidate, page, "headline"),
   ]
     .filter(Boolean)
     .join("\n");
