@@ -13,7 +13,7 @@
 import { Candidate, PageConfig } from "./types";
 import { buildCaption } from "./caption";
 import { callModel, aiConfigured } from "./aiClient";
-import { classifyCaptionAgeTone } from "./checks";
+import { classifyCaptionAgeTone, heroDefenceNote } from "./checks";
 import type { TeamStyleProfile } from "./teamStyle";
 import { styleDraw } from "./teamStyle";
 
@@ -280,6 +280,7 @@ function buildTeamPrompt(
     ``,
     classifyCaptionAgeTone(candidate) === "retro" ? `This is an older story being remembered: frame it as a look back, never as breaking news.` : null,
     publishedNote(candidate),
+    heroDefenceNote(candidate, page, "caption"),
     `Length: about ${target} characters, never more than ${bodyLimit}.`,
     emoji,
     wantQuestion
@@ -447,6 +448,7 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
     classifyCaptionAgeTone(candidate) === "retro"
       ? `Timing: this is a genuinely OLD story — either evergreen archive content of unconfirmed age, or confirmed 6+ months old — being resurfaced as callback/banter content. Write it that way ("remember when", "on this day", "throwback to...") — NEVER present-tense urgency or as if this just happened.`
       : null,
+    heroDefenceNote(candidate, page, "caption"),
   ]
     .filter(Boolean)
     .join("\n");
