@@ -1085,6 +1085,27 @@ export function sharesStoryline(headline: string, page: PageConfig, arcs: Array<
 // bottom of NBA Circuit's pool all day on Oct 17 while the team's own post of
 // it drew ~970 clicks.
 
+// (2026-10-21, operator: "stale news doesn't work on Threads") ES article
+// first-posts Sep 7-Oct 21, joined to GA: on the top click pages a post made
+// within 3h of the article going live reached 100+ clicks 11-13% of the time,
+// one made 3-24h later 2-5%. Half our posts went out more than 1h late, and of
+// those 3-72h late since Oct 1, 85% waited behind other posts on the same page
+// (55% behind OLDER stories) — publish time was the last tie-breaker in the
+// sort below. Now it's the first one after the entity match: fresh (<= 3h)
+// news, then 3-24h news and follow-ups to a page's hot storyline, then older
+// news and throwbacks. Ordering only; nothing is dropped for age here.
+export const FRESH_NEWS_HOURS = 3;
+export const STALE_NEWS_HOURS = 24;
+export function freshnessTier(c: Candidate, onHotStoryline: boolean, now = Date.now()): number {
+  // evergreen_search stamps publishedAt as today; without a real date it's archive.
+  if (c.source === "evergreen_search" && !c.realPublishedAt) return 2;
+  const t = Date.parse(c.realPublishedAt || c.publishedAt || "");
+  const ageHours = isNaN(t) ? Infinity : (now - t) / 3_600_000;
+  if (ageHours <= FRESH_NEWS_HOURS) return 0;
+  if (ageHours <= STALE_NEWS_HOURS || onHotStoryline) return 1;
+  return 2;
+}
+
 export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: string, postedLog: PostedLogEntry[]): Promise<Candidate[]> {
   const todaysEntries = postedLog.filter((p) => (p.posted_at || "").startsWith(dateISO));
   const newsletterCount = todaysEntries.filter((p) => p.reply_url?.includes("utm_content=reply_link")).length;
@@ -1370,8 +1391,11 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       `sourceCandidatePoolForPage: ${page.page_id} hot storyline(s) — ${arcs.map((a) => `${Math.round(a.views / 1000)}k views "${a.headline.slice(0, 60)}"`).join("; ")} — ${boosted} follow-up candidate(s) moved up`
     );
   }
+  const freshTier = (c: Candidate): number => (pageIsRetrospectiveOnly ? 0 : freshnessTier(c, arcScore(c) === 1));
   if (page.page_type === "national") {
     unposted = unposted.sort((a, b) => {
+      const freshDiff = freshTier(a) - freshTier(b);
+      if (freshDiff !== 0) return freshDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);
@@ -1400,6 +1424,8 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       }
       const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
       if (entityDiff !== 0) return entityDiff;
+      const freshDiff = freshTier(a) - freshTier(b);
+      if (freshDiff !== 0) return freshDiff;
       const arcDiff = arcScore(b) - arcScore(a);
       if (arcDiff !== 0) return arcDiff;
       const focusDiff = focusScore(b) - focusScore(a);
