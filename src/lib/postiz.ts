@@ -119,10 +119,8 @@ export async function scheduleThreadsPost(
       posts: [
         {
           integration: { id: integrationId },
-          value: [
-            { content: mainPostHtml, image },
-            { content: replyLinkHtml, image: [] },
-          ],
+          // (2026-10-21) a link-free update (newsUpdates.ts) is one post, no reply.
+          value: replyLinkHtml ? [{ content: mainPostHtml, image }, { content: replyLinkHtml, image: [] }] : [{ content: mainPostHtml, image }],
           settings: { __type: "threads" },
         },
       ],
@@ -190,4 +188,12 @@ export async function stripHashtagFromPost(postId: string, integrationId: string
       posts: [{ integration: { id: integrationId }, value: [{ content: contentWithoutHashtag }] }],
     }),
   });
+}
+
+// (2026-10-21) a post's lifetime Threads views, for picking a gap-rescue repost
+// (activities/index.ts) where the dashboard snapshot has no metrics.
+export async function postViews(postId: string): Promise<number> {
+  const series = await postizFetch<Array<{ label?: string; data?: Array<{ total?: number | string }> }>>(`/analytics/post/${postId}?date=30`);
+  const views = (Array.isArray(series) ? series : []).find((s) => /view|impression/i.test(s.label || ""));
+  return (views?.data || []).reduce((max, d) => Math.max(max, Number(d.total) || 0), 0);
 }

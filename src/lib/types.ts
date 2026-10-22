@@ -122,6 +122,18 @@ export interface ThreadsConfig {
   // critics), the way the page's own team posts them. Kings Court went 149h
   // without a post (Oct 15-21) with every LeBron story judged critical.
   flagship_critical_stories?: "reject" | "defend";
+  // (2026-10-21, operator: "build eala link free updates") short news updates
+  // with no link, like the page team's own live match posts, sourced from
+  // Google News when ES has nothing on the page's subject. See newsUpdates.ts.
+  link_free_news?: {
+    query: string; // Google News search, e.g. "\"Alex Eala\""
+    entity: string; // must be named in the headline
+    hl?: string;
+    gl?: string;
+    ceid?: string;
+    max_age_hours?: number; // default 12
+    max_per_day?: number; // default 3
+  };
   // (2026-10-09) how far back this page's throwback search reaches, in days
   // (default 120 — see GAP_RESCUE_EVERGREEN_DAYS in activities/index.ts). For a
   // page whose subject ES covers only a few times a week (Alex Eala: ~3
@@ -241,7 +253,11 @@ export interface PageIndex {
 // an article-style story from the shared T2 pool the Facebook pipeline also
 // produces. This is the ONE thing per page this workflow tries to post.
 export interface Candidate {
-  source: "beehiiv_newsletter" | "shared_pool" | "es_article" | "web_search" | "social_search" | "evergreen_search" | "beehiiv_poll";
+  source: "beehiiv_newsletter" | "shared_pool" | "es_article" | "web_search" | "social_search" | "evergreen_search" | "beehiiv_poll" | "news_update";
+  // (2026-10-21) a link-free update (see newsUpdates.ts): posted as a single
+  // Threads post with no reply link; `link` is the news source, kept only for
+  // dedupe and never published.
+  linkFree?: boolean;
   key: string; // stable id for dedup — beehiiv post id, or source_story_id
   subject: string;
   headline: string;
