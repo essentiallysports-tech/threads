@@ -282,6 +282,7 @@ function buildTeamPrompt(
     publishedNote(candidate),
     heroDefenceNote(candidate, page, "caption"),
     linkFreeNote(candidate),
+    reshareNote(candidate),
     `Length: about ${target} characters, never more than ${bodyLimit}.`,
     emoji,
     wantQuestion
@@ -291,6 +292,17 @@ function buildTeamPrompt(
   ]
     .filter((l) => l !== null)
     .join("\n");
+}
+
+// (2026-10-23) a gap-rescue repost (activities' buildGapRescuePost). Framed as
+// a throwback it read "Looking back to 2026: after LeBron left for Philly…"
+// about a 2-week-old story; it's a recap for fans who missed it.
+function reshareNote(candidate: Candidate): string | null {
+  if (!candidate.reshare) return null;
+  const iso = candidate.realPublishedAt || candidate.publishedAt;
+  const t = iso ? Date.parse(iso) : NaN;
+  const day = isNaN(t) ? "earlier" : new Date(t).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+  return `This post re-shares a story from ${day} for fans who missed it. Write it as a recap of what happened then (e.g. "Earlier this month…", "Back on ${day}…"): never as breaking news, never as a "throwback", and never "looking back to" a year.`;
 }
 
 // (2026-10-21) link-free updates (newsUpdates.ts): the post is the whole
@@ -462,6 +474,7 @@ function buildPrompt(candidate: Candidate, page: PageConfig, athleteNames: strin
       : null,
     heroDefenceNote(candidate, page, "caption"),
     linkFreeNote(candidate),
+    reshareNote(candidate),
   ]
     .filter(Boolean)
     .join("\n");

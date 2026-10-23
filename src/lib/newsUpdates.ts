@@ -127,7 +127,9 @@ export function buildNewsCandidates(items: NewsItem[], entity: string, maxAgeHou
     out.push({
       source: "news_update",
       linkFree: true,
-      key: `news:${norm.replace(/\s+/g, "-").slice(0, 100)}`,
+      // No ":" in the key: checks.ts's articleBaseKey cuts at the first one, so
+      // "news:<slug>" made every update count as the same article.
+      key: `news_${norm.replace(/\s+/g, "-").slice(0, 100)}`,
       subject: it.title,
       headline: it.title,
       link: it.link,
