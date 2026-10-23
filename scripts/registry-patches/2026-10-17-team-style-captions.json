@@ -1,0 +1,190 @@
+{
+ "why": "2026-10-17, operator decision: team-style captions on every active page (threads#89). Style profiles uploaded to config/page-registry/style/{page}.json. Revert = remove caption_style.",
+ "pages": {
+  "p35": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p37": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p39": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p40": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p41": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p44": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p46": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p47": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p49": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p50": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p51": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p52": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p53": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p54": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p55": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p56": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p60": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p61": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p62": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p65": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p66": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p68": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p70": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p71": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p72": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p74": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p75": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p76": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p77": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p78": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p79": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p80": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p81": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p92": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p98": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p99": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  },
+  "p100": {
+   "setThreads": {
+    "caption_style": "team"
+   }
+  }
+ }
+}
