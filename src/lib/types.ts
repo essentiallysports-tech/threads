@@ -258,6 +258,9 @@ export interface Candidate {
   // Threads post with no reply link; `link` is the news source, kept only for
   // dedupe and never published.
   linkFree?: boolean;
+  // (2026-10-23) a gap-rescue repost of the page's own earlier post — written
+  // as a recap with its real date, never as news or as a throwback.
+  reshare?: boolean;
   key: string; // stable id for dedup — beehiiv post id, or source_story_id
   subject: string;
   headline: string;

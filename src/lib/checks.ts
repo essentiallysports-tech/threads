@@ -2544,9 +2544,7 @@ export const RETRO_TONE_MIN_DAYS = 180;
 export function classifyCaptionAgeTone(candidate: Candidate): CaptionAgeTone {
   // (2026-10-02) a gap-guard rescue item is older than its page's normal
   // window by definition — frame it as a throwback, never as news.
-  // (2026-10-21) also a 12h gap-rescue repost (activities' buildGapRescuePost),
-  // which is a 3-30-day-old post told again — never as if it just happened.
-  if (candidate.rescue) return "retro";
+  if (candidate.rescue && candidate.source === "evergreen_search") return "retro";
   // sourceFromEsEvergreenArticles (sourcing.ts) deliberately stamps
   // publishedAt as "now" — ES-MCP's older-article results carry no real
   // date, and this tier is a 5-YEAR lookback by design (genuinely-old ES

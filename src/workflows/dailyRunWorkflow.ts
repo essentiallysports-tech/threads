@@ -964,11 +964,13 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   }
 
   // ⛔ OPERATOR RULE (2026-10-21): "none of the top 10 pages ever go without a
-  // post for more than 12 hours." A top-10 (ai_priority) page that posted
-  // nothing this run and nothing for GAP_RESCUE_HOURS reposts its own best
-  // recent post (activities' buildGapRescuePost). Posts publish 1-2h after the
-  // run, so 11h here keeps the published gap within 12h.
-  const GAP_RESCUE_HOURS = 11;
+  // post for more than 12 hours"; (2026-10-23) "you are not even maintaining 4
+  // posts a day cadence on our top 10 pages" — Oct 16-23, Eala posted 0-3/day,
+  // Kings Court 0-3, Dallas 2-4, Rogan 2-8. A top-10 (ai_priority) page that
+  // posted nothing this run and nothing for GAP_RESCUE_HOURS reposts its own
+  // best recent post (activities' buildGapRescuePost). 5h idle at claim time
+  // keeps every top-10 page at a post at least every ~6h: 4+ a day.
+  const GAP_RESCUE_HOURS = 5;
   if (patched("gap-rescue-12h")) {
     for (const state of states) {
       if (state.postedThisRun > 0 || !state.page.threads?.ai_priority) continue;

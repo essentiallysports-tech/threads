@@ -22,6 +22,8 @@ import {
   PersonalLifeCheckResult,
   matchedSportGroup,
   matchedEntityNames,
+  fanPageHeroMismatch,
+  isTrueSingleFlagshipPage,
   realRegisteredEntityMatches,
   hasUnaccountedOtherName,
   extractSimilarPlayerName,
@@ -461,11 +463,14 @@ export async function checkTopicFrequency(
   // is unsatisfiable until N>=4, so a 2 or 3-entity page is just as
   // structurally guaranteed to fail as a literal single-entity one. Same
   // reasoning for the sport-group league cap on a single-sport-group page.
-  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog, page.entities.length <= 3, page.sport_groups.length <= 1, isGapDue(page, postedLog));
+  // (2026-10-23) a page built around one dominant subject (Eala at weight 30,
+  // plus lower-weight players added as fallback content) keeps that exemption.
+  const singleSubject = page.entities.length <= 3 || isTrueSingleFlagshipPage(page);
+  return topicFrequencyCheck(primaryEntityName, sportGroup, postedLog, singleSubject, page.sport_groups.length <= 1, isGapDue(page, postedLog));
 }
 
 export async function checkDominantNarrative(primaryEntityName: string | null, postedLog: PostedLogEntry[], page: PageConfig): Promise<FrequencyCheckResult> {
-  return dominantNarrativeCheck(primaryEntityName, postedLog, page.entities.length <= 3, isGapDue(page, postedLog));
+  return dominantNarrativeCheck(primaryEntityName, postedLog, page.entities.length <= 3 || isTrueSingleFlagshipPage(page), isGapDue(page, postedLog));
 }
 
 // ⛔ OPERATOR FIX (2026-08-24, real live incident, severe): see
@@ -1328,7 +1333,7 @@ export async function postToThreads(
 // (posts publish 1-2h after the run): repost the page's own best post from
 // 3-30 days ago, not reposted in the last 14 days. Its card is reused (no new
 // render to fail) and its caption is written fresh, with the age note that
-// publishedNote adds for stories more than 3 days old. Everything in it already
+// reshareNote (narrativeCaption.ts) adds. Everything in it already
 // passed every gate when it first posted.
 export interface GapRescuePost {
   candidate: Candidate;
@@ -1388,8 +1393,7 @@ export async function buildGapRescuePost(page: PageConfig, postedLog: PostedLogE
     }
   }
   pool.sort((a, b) => (views.get(b.post_id!) || 0) - (views.get(a.post_id!) || 0) || Date.parse(b.posted_at!) - Date.parse(a.posted_at!));
-  for (const p of pool.slice(0, 5)) {
-    if (!(await linkResolves(p.card_url!)) || !(await linkResolves(p.reply_url!))) continue;
+  for (const p of pool.slice(0, 12)) {
     const published = p.source_published_at || p.posted_at!;
     const candidate = {
       source: (p.source as Candidate["source"]) || "es_article",
@@ -1400,8 +1404,14 @@ export async function buildGapRescuePost(page: PageConfig, postedLog: PostedLogE
       publishedAt: published,
       realPublishedAt: published,
       rawText: p.headline!,
-      rescue: true,
+      reshare: true,
     } as Candidate;
+    // (2026-10-23) only what fits the page as it is now: a Kings Court rescue
+    // picked a Keegan Murray / Sacramento post from before it became the LeBron
+    // page. It must name one of the page's current entities and pass the
+    // fan-page hero rule.
+    if (realRegisteredEntityMatches(candidate, page).length === 0 || fanPageHeroMismatch(candidate, page)) continue;
+    if (!(await linkResolves(p.card_url!)) || !(await linkResolves(p.reply_url!))) continue;
     const names = p.entity ? [p.entity] : matchedEntityNames(candidate, page);
     const caption = await buildCaptionText(candidate, page, names);
     console.error(`gapRescue: ${page.page_id} reposting ${p.post_id} (${views.get(p.post_id!) || 0} views, ${Math.round(ageHours(p) / 24)}d old): "${p.headline!.slice(0, 80)}"`);

@@ -21,6 +21,11 @@ const TRUSTED_PUBLISHERS = [
   "philippine news agency", "spin.ph", "tiebreaker times", "one sports", "manila times", "sunstar", "cnn philippines",
   "espn", "tennis.com", "wta", "reuters", "associated press", "ap news", "bbc", "the guardian", "yahoo sports",
   "tennis majors", "tennis365", "the athletic", "nbc sports", "cbs sports",
+  // (2026-10-23) for All Things Rogan: MMA outlets, and reputable entertainment
+  // press for his podcast. Political stories are still dropped by
+  // runDeterministicChecks' political gate like any other candidate.
+  "mma fighting", "mma junkie", "sherdog", "bloody elbow", "cageside press", "fox sports", "sports illustrated",
+  "sporting news", "usa today", "variety", "the hollywood reporter", "rolling stone",
 ];
 const EXCLUDED_LEADS = /^\s*(\[|opinion\b|editorial\b|column\b|commentary\b|analysis\b|letters?\b|watch\b|listen\b|podcast\b)/i;
 
@@ -127,7 +132,9 @@ export function buildNewsCandidates(items: NewsItem[], entity: string, maxAgeHou
     out.push({
       source: "news_update",
       linkFree: true,
-      key: `news:${norm.replace(/\s+/g, "-").slice(0, 100)}`,
+      // No ":" in the key: checks.ts's articleBaseKey cuts at the first one, so
+      // "news:<slug>" made every update count as the same article.
+      key: `news_${norm.replace(/\s+/g, "-").slice(0, 100)}`,
       subject: it.title,
       headline: it.title,
       link: it.link,
