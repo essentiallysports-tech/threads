@@ -122,6 +122,11 @@ export interface ThreadsConfig {
   // critics), the way the page's own team posts them. Kings Court went 149h
   // without a post (Oct 15-21) with every LeBron story judged critical.
   flagship_critical_stories?: "reject" | "defend";
+  // (2026-10-24, operator: "a maximum of 5 in 24 hours ... only the top 5
+  // should go" on Alex Eala Fan Club) a rolling cap across ALL automated posts
+  // (ES, link-free updates, gap rescues). daily_budget_max counts per UTC day,
+  // which can let more than that through across midnight.
+  max_posts_24h?: number;
   // (2026-10-21, operator: "build eala link free updates") short news updates
   // with no link, like the page team's own live match posts, sourced from
   // Google News when ES has nothing on the page's subject. See newsUpdates.ts.

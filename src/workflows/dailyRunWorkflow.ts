@@ -582,13 +582,21 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
       results.push({ page_id: page.page_id, outcome: "skipped_capped", reason: `${postedToday}/${cap}` });
       continue;
     }
+    // (2026-10-24) threads.max_posts_24h: a rolling 24h cap over every
+    // automated post, gap rescues included (they only run for pages in `states`).
+    const max24 = page.threads?.max_posts_24h;
+    const postedLast24 = max24 ? postedLog.filter((p) => Date.parse(p.posted_at || "") > runStartMs - 24 * 3600 * 1000).length : 0;
+    if (max24 && postedLast24 >= max24) {
+      results.push({ page_id: page.page_id, outcome: "skipped_capped", reason: `${postedLast24}/${max24} in 24h` });
+      continue;
+    }
 
     states.push({
       page,
       postedLog,
       postedTodayCount: postedToday,
       cap,
-      perRunCap: perRunCapFor(fullCap),
+      perRunCap: max24 ? Math.min(perRunCapFor(fullCap), max24 - postedLast24) : perRunCapFor(fullCap),
       thisRunEntries: [],
       triedKeys: new Set(),
       postedThisRun: 0,
