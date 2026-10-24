@@ -1435,6 +1435,12 @@ export async function sourceCandidatePoolForPage(page: PageConfig, dateISO: stri
       }
       const entityDiff = hasRealEntityMatch(b) - hasRealEntityMatch(a);
       if (entityDiff !== 0) return entityDiff;
+      // (2026-10-24) a fan page's own focus subject comes before freshness:
+      // Oct 23-24 the Eala page posted three Monfils-Svitolina split stories
+      // ahead of slightly older Eala news. Only pages with a team-style focus
+      // profile are affected (Eala, Hamlin, Curry, LeBron, Kobe, Buckeyes).
+      const focusFirst = focusScore(b) - focusScore(a);
+      if (focusFirst !== 0) return focusFirst;
       const freshDiff = freshTier(a) - freshTier(b);
       if (freshDiff !== 0) return freshDiff;
       // A linked ES article earns clicks; a link-free update only fills a gap.
