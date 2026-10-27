@@ -1236,6 +1236,13 @@ export async function postToThreads(
   }
   const integrationId = page.threads!.postiz_integration_id;
 
+  // threads.topic_hashtag: this tag first (the topic), then at most 2 of the caption's own.
+  const topicTag = page.threads?.topic_hashtag?.replace(/^#/, "").trim();
+  if (topicTag) {
+    const others = [...new Set(mainPostHtml.match(/#\w+/g) || [])].filter((t) => t.toLowerCase() !== `#${topicTag.toLowerCase()}`).slice(0, 2);
+    const body = mainPostHtml.replace(/#\w+/g, "").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+    mainPostHtml = `${body}\n\n${[`#${topicTag}`, ...others].join(" ")}`;
+  }
   // ⛔ OPERATOR FIX (2026-08-20, real live incident — see postToThreads
   // history): the write-then-delete design previously left the hashtag OFF
   // entirely unless the unverified strip endpoint was confirmed, on the
