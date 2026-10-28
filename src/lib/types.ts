@@ -127,6 +127,11 @@ export interface ThreadsConfig {
   // (ES, link-free updates, gap rescues). daily_budget_max counts per UTC day,
   // which can let more than that through across midnight.
   max_posts_24h?: number;
+  // (2026-10-27, operator-approved test) the post's Threads topic: Threads uses
+  // the first tag in a post as its topic, so this one goes first. The page
+  // teams tag "UFC Threads" / "TennisThreads" style community topics; our
+  // pages used plain #UFC/#NFL, except Golf (#golfthreads), our best-reach page.
+  topic_hashtag?: string;
   // (2026-10-21, operator: "build eala link free updates") short news updates
   // with no link, like the page team's own live match posts, sourced from
   // Google News when ES has nothing on the page's subject. See newsUpdates.ts.
