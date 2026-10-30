@@ -1400,7 +1400,11 @@ export async function buildGapRescuePost(page: PageConfig, postedLog: PostedLogE
     }
   }
   pool.sort((a, b) => (views.get(b.post_id!) || 0) - (views.get(a.post_id!) || 0) || Date.parse(b.posted_at!) - Date.parse(a.posted_at!));
-  for (const p of pool.slice(0, 12)) {
+  // (2026-10-30) the page-fit check below used to run on only the top 12 by
+  // views: Lions' top 12 were all rival-team stories, so its rescue failed 38
+  // times in 3 days ("none of its top posts…") and Lions fell to 1-2 posts/day.
+  // Every post in the pool is now a candidate, best views first.
+  for (const p of pool) {
     const published = p.source_published_at || p.posted_at!;
     const candidate = {
       source: (p.source as Candidate["source"]) || "es_article",
