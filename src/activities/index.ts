@@ -760,8 +760,15 @@ async function chooseTemplate(
   postedLog: PostedLogEntry[],
   dateISO: string
 ): Promise<TemplateId> {
-  const genuineComparison =
-    headlineNames.length >= 2 ? await isGenuineComparisonViaAI(candidate, page, headlineNames[0], headlineNames[1]) : false;
+  // ⛔ OPERATOR ESCALATION (2026-11-02): "wrong player in the graphic" — the
+  // VS card looked up a real photo for both people but passed only the first
+  // to the image model (spec.reference_photo_url), so the model drew the
+  // second person itself: an invented face labelled as a real player ("Eala
+  // battles Parks"). 217 VS cards in 30 days were built this way. Two-person
+  // layouts are off until both real photos can be supplied and verified; such
+  // stories get a single-subject card from a real photo instead.
+  void isGenuineComparisonViaAI;
+  const genuineComparison = false;
   // ⛔ OPERATOR FIX (2026-08-31, policy): "dramatic_news" is this pipeline's
   // urgency layout — red accent, high-drama lighting, built for "firings/
   // suspensions/trades/controversy" (see narrativeRenderSpec.ts's own

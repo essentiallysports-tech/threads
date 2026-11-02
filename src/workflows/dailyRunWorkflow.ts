@@ -768,7 +768,13 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
         // starved-page exemption as ALREADY_POSTED/DUPLICATE_LINK_24H,
         // applied here too since this is the same "have we shown this
         // before" class of check, just AI-judged instead of deterministic.
-        const duplicateStory = isPageStarvedToday(effectivePostedLog)
+        // (2026-11-02) a capped page (max_posts_24h) is always under the
+        // 3-a-day "starved" line, so the same-event check never ran there: Eala
+        // posted "Eala takes on Parks in Hong Kong opener" and "Eala battles
+        // Parks in Hong Kong Open" 4 hours apart. It always runs for capped
+        // pages and link-free updates now.
+        const starvedExempt = isPageStarvedToday(effectivePostedLog) && !state.page.threads?.max_posts_24h && !candidate.linkFree;
+        const duplicateStory = starvedExempt
           ? { pass: true, reason: null }
           : await checkDuplicateStory(candidate, primaryEntity, effectivePostedLog);
         if (!duplicateStory.pass) {
