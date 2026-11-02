@@ -1782,8 +1782,13 @@ export async function duplicateStoryCheck(
 ): Promise<DuplicateStoryCheckResult> {
   if (!primaryEntityName) return { pass: true, reason: null }; // no entity match — nothing reliable to compare against
   const now = Date.now();
+  // (2026-11-02) the log records one person as "Eala", "eala", "alex eala" or
+  // "Alex Eala" depending on which step named them, so an exact-string match
+  // found nothing to compare and two posts on one match went out 4h apart.
+  const surname = (n: string) => n.trim().toLowerCase().split(/\s+/).pop() || "";
+  const sameSubject = (a: string | undefined) => !!a && surname(a) === surname(primaryEntityName);
   const recentSameEntity = postedLog
-    .filter((p) => p.entity === primaryEntityName && withinHours(p, DUPLICATE_STORY_WINDOW_HOURS, now) && p.headline)
+    .filter((p) => sameSubject(p.entity) && withinHours(p, DUPLICATE_STORY_WINDOW_HOURS, now) && p.headline)
     .slice(-5); // bound the prompt — the most recent handful is what a real reader would actually remember seeing
   if (recentSameEntity.length === 0) return { pass: true, reason: null }; // nothing on this entity recently — cheap exit, no AI call needed
 
