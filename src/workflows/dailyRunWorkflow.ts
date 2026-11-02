@@ -981,7 +981,7 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
   const GAP_RESCUE_HOURS = 5;
   if (patched("gap-rescue-12h")) {
     for (const state of states) {
-      if (state.postedThisRun > 0 || !state.page.threads?.ai_priority) continue;
+      if (state.postedThisRun > 0 || !state.page.threads?.ai_priority || state.page.threads?.gap_rescue !== true) continue;
       const idleHours = hoursSinceLastPost(state.postedLog, runStartMs);
       if (idleHours < GAP_RESCUE_HOURS) continue;
       try {

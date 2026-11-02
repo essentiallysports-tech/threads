@@ -132,6 +132,11 @@ export interface ThreadsConfig {
   // teams tag "UFC Threads" / "TennisThreads" style community topics; our
   // pages used plain #UFC/#NFL, except Golf (#golfthreads), our best-reach page.
   topic_hashtag?: string;
+  // (2026-11-02, operator: pull back) gap-rescue reposts are off unless a page
+  // opts in. After they started (Oct 22-23) the network posted ~25% more, much
+  // of it reposts and throwbacks, and Eala, Lions, MMA Archives and the
+  // team-only ES WNBA account each lost 95-99% of their reach within days.
+  gap_rescue?: boolean;
   // (2026-10-21, operator: "build eala link free updates") short news updates
   // with no link, like the page team's own live match posts, sourced from
   // Google News when ES has nothing on the page's subject. See newsUpdates.ts.
