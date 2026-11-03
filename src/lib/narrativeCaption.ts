@@ -350,11 +350,36 @@ function copiesExample(body: string, profile: TeamStyleProfile): boolean {
   return false;
 }
 
+// (2026-11-03) No "More details in the comments 👇" line. On the same page and
+// day, our posts with one drew about a third of the views of those without
+// (x0.36, n=320, Oct 16-Nov 2, held out from the Oct 1-15 fit) and ~9 fewer
+// clicks each; the team's own Golf posts show the same (median 37 views with
+// it, 214 without). The link reply stays. Until Nov 10, 20% of posts (by key)
+// keep the old behaviour so the effect is measured live; logged as CTA_HOLDOUT.
+const CTA_HOLDOUT_UNTIL = Date.parse("2026-11-10T00:00:00Z");
+// A line that only points readers to the comments/reply.
+const POINTER_LINE = /\b(in|to) (the )?(comments?|reply|replies|first reply|thread)\b|\blink (below|in)\b|\b(full story|details|more) below\b/i;
+
+function inCtaHoldout(key: string): boolean {
+  return Date.now() < CTA_HOLDOUT_UNTIL && styleDraw(key, "cta-holdout") < 0.2;
+}
+
+// The standard (non-team) caption prompt still ends on a short "it's in the
+// reply" line; drop that line there too, unless the post is in the holdout.
+function dropPointerLines(text: string, candidate: Candidate): string {
+  if (inCtaHoldout(candidate.key || candidate.headline)) return text;
+  const kept = text.split("\n").filter((l) => !(l.trim().length <= 80 && (POINTER_LINE.test(l) || /\breply\b/i.test(l))));
+  const out = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out.length >= 40 ? out : text;
+}
+
 function teamExtras(candidate: Candidate, page: PageConfig, profile: TeamStyleProfile): { linkLine: string | null; hashtags: string | null } {
   const key = candidate.key || candidate.headline;
   const lines = profile.link_lines.length ? profile.link_lines : ["More details in the comments 👇"];
   // A link-free update has no comment link to point at.
-  const linkLine = !candidate.linkFree && styleDraw(key, "link") < profile.link_line_rate ? lines[Math.floor(styleDraw(key, "linktext") * lines.length)] : null;
+  const holdout = inCtaHoldout(key);
+  if (holdout) console.log(`CTA_HOLDOUT ${page.page_id} ${key}`);
+  const linkLine = holdout && !candidate.linkFree && styleDraw(key, "link") < profile.link_line_rate ? lines[Math.floor(styleDraw(key, "linktext") * lines.length)] : null;
   let hashtags: string | null = null;
   if (profile.hashtags.length && styleDraw(key, "tags") < profile.hashtag_rate) {
     const seen = new Set<string>();
@@ -391,6 +416,7 @@ async function buildTeamStyleCaption(
       const violation =
         violatesPolicy(body, bodyLimit) ||
         (/\breply\b/i.test(body) ? "MENTIONS_REPLY" : null) ||
+        (POINTER_LINE.test(body) ? "POINTS_TO_COMMENTS" : null) ||
         (copiesExample(body, profile) ? "COPIED_EXAMPLE_TEXT" : null);
       if (!violation) {
         const text = [body, linkLine, hashtags].filter(Boolean).join("\n\n");
@@ -754,7 +780,7 @@ export async function buildNarrativeCaptionText(
       const prompt = buildPrompt(candidate, page, athleteNames, charLimit, retryNote);
       const text = await callGateway(prompt);
       const violation = violatesPolicy(text, charLimit);
-      if (!violation) return { text, usedFallback: false };
+      if (!violation) return { text: dropPointerLines(text, candidate), usedFallback: false };
       if (violation.startsWith("OVER_CHAR_LIMIT")) lastOverLimitText = text;
       retryNote =
         violation.startsWith("OVER_CHAR_LIMIT")
@@ -775,7 +801,7 @@ export async function buildNarrativeCaptionText(
   // still produce a genuinely coherent, non-truncated-mid-sentence result.
   if (lastOverLimitText) {
     const trimmed = trimToFit(lastOverLimitText, charLimit);
-    if (trimmed) return { text: trimmed, usedFallback: false, violation: "TRIMMED_AFTER_RETRY" };
+    if (trimmed) return { text: dropPointerLines(trimmed, candidate), usedFallback: false, violation: "TRIMMED_AFTER_RETRY" };
   }
 
   return { text: fallback, usedFallback: true, violation: "FAILED_AFTER_RETRY" };
