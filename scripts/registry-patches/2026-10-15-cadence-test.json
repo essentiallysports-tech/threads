@@ -1,0 +1,8 @@
+{
+  "why": "2026-10-15, operator-approved one-week test (ends 2026-10-22). Hypothesis: on these accounts, more posts per day lowers reach per post (Eala 1.3/day: median 3,505 views, 71 likes/post; 5.0/day: 457 views, 18 likes. Golf 4.6/day: 250 views; 15.3/day: 120 views). Test pages go back to their Sep 15-21 cadence; controls p41 Dallas, p71 Rogan, p92 Daytona keep current caps. Captions unchanged so cadence is the only variable. Baseline Oct 8-14 in 2026-10-15-cadence-test-baseline.json. Pass: test pages' median views/post and GA autopost clicks/day beat baseline over Oct 16-22 while controls don't. Revert = previous caps: p78 6/12, p40 8/12, p74 8/16 (registry-backups/ has the exact files).",
+  "pages": {
+    "p78": { "setThreads": { "daily_budget_min": 2, "daily_budget_max": 2 } },
+    "p40": { "setThreads": { "daily_budget_min": 4, "daily_budget_max": 4 } },
+    "p74": { "setThreads": { "daily_budget_min": 5, "daily_budget_max": 5 } }
+  }
+}
