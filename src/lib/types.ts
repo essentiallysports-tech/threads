@@ -137,6 +137,8 @@ export interface ThreadsConfig {
   // of it reposts and throwbacks, and Eala, Lions, MMA Archives and the
   // team-only ES WNBA account each lost 95-99% of their reach within days.
   gap_rescue?: boolean;
+  // (2026-11-03) the cadence guard in dailyRunWorkflow is on unless this is false.
+  cadence_guard?: boolean;
   // (2026-10-21, operator: "build eala link free updates") short news updates
   // with no link, like the page team's own live match posts, sourced from
   // Google News when ES has nothing on the page's subject. See newsUpdates.ts.

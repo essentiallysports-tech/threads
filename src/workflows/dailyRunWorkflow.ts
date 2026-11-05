@@ -590,13 +590,30 @@ export async function dailyRunWorkflow(opts: DailyRunOptions): Promise<PageRunRe
       results.push({ page_id: page.page_id, outcome: "skipped_capped", reason: `${postedLast24}/${max24} in 24h` });
       continue;
     }
+    // (2026-11-03) cadence guard. Of 26 account reach cliffs Aug 20-Nov 2, 15
+    // came within 5 days of a posting step-up (3-day rate at least 2x the
+    // account's own 14-day rate and +3 posts/day), vs 7.4 expected from healthy
+    // accounts on the same dates, and recovered accounts relapsed right after
+    // one (Lions went 1 -> 4 -> 12 posts/day Oct 29-31). Ramp instead of
+    // jumping: at most 3 x max(avg14 + 2, 1.5 x avg14) posts in any 72h.
+    let cadenceRoom = Infinity;
+    if (page.threads?.cadence_guard !== false) {
+      const since = (h: number) => postedLog.filter((p) => Date.parse(p.posted_at || "") > runStartMs - h * 3600 * 1000).length;
+      const avg14 = since(14 * 24) / 14;
+      const limit72 = Math.floor(3 * Math.max(avg14 + 2, 1.5 * avg14));
+      cadenceRoom = limit72 - since(72);
+      if (cadenceRoom <= 0) {
+        results.push({ page_id: page.page_id, outcome: "skipped_capped", reason: `cadence guard: ${since(72)}/${limit72} in 72h` });
+        continue;
+      }
+    }
 
     states.push({
       page,
       postedLog,
       postedTodayCount: postedToday,
       cap,
-      perRunCap: max24 ? Math.min(perRunCapFor(fullCap), max24 - postedLast24) : perRunCapFor(fullCap),
+      perRunCap: Math.min(max24 ? Math.min(perRunCapFor(fullCap), max24 - postedLast24) : perRunCapFor(fullCap), cadenceRoom),
       thisRunEntries: [],
       triedKeys: new Set(),
       postedThisRun: 0,
