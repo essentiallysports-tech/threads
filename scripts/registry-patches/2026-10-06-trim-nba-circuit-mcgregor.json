@@ -1,0 +1,7 @@
+{
+  "why": "Operator decision 2026-10-06. NBA Circuit (p53) and Conor McGregor UFC Fanpage (p54) are top-10 by past traffic but their reach collapsed after 2026-09-21: median Threads views 41 -> 10 (p53, at 9.5 posts/day) and 64 -> 4 (p54, at 4.1/day); GA4 autopost 3.4 and 6.7 sessions per post. Fewer, better posts instead of filler: daily cap 4 (one every ~6h, which still meets their min_post_gap_hours of 6). Revert = restore daily_budget_min/max from registry-backups/.",
+  "pages": {
+    "p53": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } },
+    "p54": { "setThreads": { "daily_budget_max": 4, "daily_budget_min": 4 } }
+  }
+}
