@@ -1,0 +1,8 @@
+{
+  "why": "2026-10-16, operator decision: end the Oct 15-22 cadence test early (2026-10-15-cadence-test) and put caps back to their pre-test values from registry-backups/*.2026-10-15T121259312Z.json. Golf had dropped from 12 posts/day to its test cap of 5. Eala's throwback_every: 5 (separate change) stays.",
+  "pages": {
+    "p74": { "setThreads": { "daily_budget_min": 8, "daily_budget_max": 16 } },
+    "p40": { "setThreads": { "daily_budget_min": 8, "daily_budget_max": 12 } },
+    "p78": { "setThreads": { "daily_budget_min": 6, "daily_budget_max": 12 } }
+  }
+}
