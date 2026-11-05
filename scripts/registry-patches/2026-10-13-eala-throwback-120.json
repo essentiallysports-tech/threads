@@ -1,0 +1,4 @@
+{
+  "why": "2026-10-13, operator-approved: undo 2026-10-09-eala-throwback-2y. After the 730-day window went live (Oct 9 evening), Eala's GA4 autopost sessions fell from 350-1,139/day to 53-190/day and median views per post from 771 to 241. 120 is the code default (GAP_RESCUE_EVERGREEN_DAYS), i.e. the window in place while she earned those clicks. Revert = set 730 again.",
+  "pages": { "p78": { "setThreads": { "throwback_max_age_days": 120 } } }
+}
